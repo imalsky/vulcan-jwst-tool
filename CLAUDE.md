@@ -127,6 +127,27 @@ proven-convergent particles, not disposable proposals. Mutation proposals keep t
 ~13 min when a marginal survivor is present -- once per run, and correctness is not
 negotiable. Regression: `test_warm_reject.py::test_init_eval_is_uncapped`.
 
+**...and uncapped is still not enough: cull-and-backfill (job 64897, same day).** With
+phase 2 uncapped, 3/96 survivors STILL died -- these columns certify cold from baseline
+within 5000 steps but cannot RE-certify warm from their own converged column even in
+5000 (marginal oscillators / stall-fallback certifications re-pay the time-based window
+on restart and lose). A repeatable class (5/96, then 3/96 on a different seed), so it is
+handled like phase 1 handles non-convergence: **phase 2 now evaluates
+`N + init_phase2_spare` survivors (default spare 8; width ~free in lockstep), culls the
+re-certification failures, and backfills from the spares** -- part of the operational
+prior, logged loudly, reported alongside the phase-1 reject fraction. The init eval
+threads the accept counts out so a TRUE RT/AD death (non-finite forward with a
+NON-exhausted count) still raises. PROBE_MEMORY now probes the widened init eval (the
+widest gradient batch in the run: N+8 = 152 at the gpu preset, projected ~80.5 GiB).
+Raise `init_phase2_spare` only with a probe. Tests: `test_init_state.py` (cull/backfill,
+RT-death raise, spares-exhausted raise).
+
+**warm_extrapolate is ON in the gpu preset (Isaac, 2026-07-10).** The schema default
+stays False; the gpu preset enables it, so the staged CALIBRATE -> SYNTH -> production
+sequence exercises it end-to-end (and validate_warm gates the result) before real data.
+`warm_count_max` stays 1500 -- drop toward ~800 only after the per-sweep heartbeat's
+rejected-counts confirm typical warm solves sit well under it.
+
 ## Mutation sweep cost — the <24 h rework (2026-07-09, after job 64745)
 
 Job 64745 (N=48, 12 sweeps/stage, 44 h governor) sat >3 h in SMC stage 1 at 100%

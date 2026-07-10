@@ -172,6 +172,13 @@ def gpu_config(**overrides: Any) -> Config:
         # drop. More particles also directly answer the small-N SMC criticism
         # (ladder-adaptation noise, evidence variance).
         smc_num_particles=144, smc_num_mcmc_steps=6, smc_max_steps=40,
+        # Tangent-extrapolated warm starts ON (Isaac, 2026-07-10): proposals seed at
+        # Y + (dy/dtheta).dtheta -- measured 1.65x fewer warm steps, same certified
+        # state (parity unit-tested; validate_warm gates the production result and
+        # the staged CALIBRATE->SYNTH->production sequence exercises it end-to-end
+        # before real data). warm_count_max stays 1500; drop toward ~800 only after
+        # heartbeat rejected-counts confirm typical warm solves sit well under it.
+        warm_extrapolate=True,
         smc_target_ess_frac=0.6,
         # 12-wide RT vjp at nu_pts=1652 (~half the 5000-probed per-lane cost applies;
         # est. ~40-55 GiB vs the ~81 GiB pool). PROBE_MEMORY=1 once before the first

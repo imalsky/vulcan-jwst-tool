@@ -198,7 +198,13 @@ runs the same warm map UNCAPPED (`batch_eval_init_vg`, gated at the cold
 converged columns — proven-convergent particles, not disposable proposals — and
 a marginal survivor can legitimately need more than the mutation cap just to
 re-certify (NAS job 64854: the cap gated 5/96 healthy survivors into a spurious
-"crippled cloud" raise). Optional on top: `warm_extrapolate=true` seeds each
+"crippled cloud" raise). Some marginal columns cannot re-certify even at the
+cold cap (job 64897: 3/96 — oscillating/stall-fallback certifications re-pay
+the time-based window on restart and lose), so phase 2 evaluates
+`N + init_phase2_spare` survivors and CULLS the re-certification failures,
+backfilling from the spares — the same reject-don't-carry philosophy as
+phase 1, logged as part of the operational prior. A true RT/AD death at
+phase 2 (non-finite forward with a NON-exhausted accept count) still raises. Optional on top: `warm_extrapolate=true` seeds each
 proposal's warm solve at the first-order prediction `Y + (dy/dθ)·Δθ` using the
 tangents the gradient pass already computes (measured 1.65x fewer warm steps,
 same certified state; opt-in pending a SYNTH A/B — see the lever list below and

@@ -51,10 +51,16 @@ fraction in the paper.
   `warm_count_max=1500` mutation cap + merged diag (+ N=96, 6 sweeps, 20 h
   governor); the job-64854 init failure is fixed by running init phase 2
   UNCAPPED (the mutation cap must not gate proven survivors).
-- **`warm_extrapolate=false` by default** (the measured-1.65x tangent-extrapolated
-  warm start): flip it only after the same-seed `SYNTH=1` A/B validates it
-  (`SMC_RETRIEVAL_OVERRIDES='{"warm_extrapolate": true}'`), then consider
-  `warm_count_max` 1500 → ~800.
+- **`warm_extrapolate=true` in the gpu preset** (Isaac, 2026-07-10; schema default
+  stays false): the measured-1.65x tangent-extrapolated warm start rides the whole
+  staged sequence (calibrate → SYNTH → production), so SYNTH + the automatic
+  warm-vs-cold validation gate it before real data. `warm_count_max` stays 1500;
+  drop toward ~800 only after heartbeat rejected-counts confirm the margin.
+- **Init phase 2 = uncapped + cull-and-backfill** (jobs 64854/64897): marginal
+  survivors that cannot re-certify warm are culled and backfilled from
+  `init_phase2_spare=8` extras — expect a loud but benign warning; a genuine
+  RT/AD failure still raises. Report the phase-2 cull count with the phase-1
+  reject fraction (operational prior).
 - **N=144 as of 2026-07-10** (raised from 96 to spend the measured GPU power
   headroom on particles — ~300 of 700 W drawn during primal phases; width is
   nearly free in the lockstep chemistry, RT tail goes 8 → 12 chunks). Projected

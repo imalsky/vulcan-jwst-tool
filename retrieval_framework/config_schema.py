@@ -149,6 +149,15 @@ class Config:
     # Both only apply when has_chem_state (real pipelines); stubs draw exactly N.
     init_max_nonconverged_frac: float = 0.1
     init_oversample: float = 2.0
+    # Phase 2 (the init gradient pass) evaluates target_n + init_phase2_spare survivors
+    # and culls the ones that certify cold but cannot RE-certify warm within the cold
+    # count_max (marginal oscillators / stall-fallback columns; NAS jobs 64854 + 64897
+    # saw 5/96 and 3/96 respectively -- a repeatable class, not a fluke). Width is
+    # nearly free in the lockstep chemistry; MEMORY is the constraint on the spare
+    # (gradient peak grows ~0.13 GiB/particle over the probed base -- PROBE_MEMORY
+    # covers the widened init eval). A true RT/AD failure at phase 2 (non-finite
+    # forward WITHOUT a count_max-exhausted accept count) still raises.
+    init_phase2_spare: int = 8
     fastchem_met_scale: float = 10.0   # BASELINE metallicity (x solar); lnZ is relative to this
     cfg_overrides: Dict[str, Any] = field(default_factory=dict)
 
@@ -447,6 +456,8 @@ def validate_config(cfg: Config) -> None:
                          "deliberately no gradient-free fallback kernel")
     if not (0.0 < cfg.smc_target_ess_frac <= 1.0):
         raise ValueError("smc_target_ess_frac must be in (0, 1]")
+    if int(cfg.init_phase2_spare) < 0:
+        raise ValueError("init_phase2_spare must be >= 0")
     if not (1.0 <= cfg.init_oversample <= 10.0):
         raise ValueError("init_oversample must be in [1, 10] (draw factor for the cold "
                          "init so the reject-and-cull leaves N healthy particles)")

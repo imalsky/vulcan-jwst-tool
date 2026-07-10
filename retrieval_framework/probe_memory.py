@@ -140,6 +140,13 @@ def main() -> int:
     report(f"FULL cold_vg (chem_chunk={cfg.smc_chem_chunk}, "
            f"rt_vjp_chunk={cfg.smc_rt_vjp_chunk})",
            pipe.batch_eval_cold_vg, U, Y0, refs0)
+    # init phase 2 runs at N + init_phase2_spare width -- the WIDEST gradient eval
+    # in the run (the mutation kernel matches cold_vg at width N)
+    n2 = N + int(cfg.init_phase2_spare)
+    U2 = pipe.sample_prior_u(jax.random.PRNGKey(1), n2)
+    Y2, refs2 = P._blank_state(pipe, n2)
+    report(f"FULL init_vg x{n2} (N+{int(cfg.init_phase2_spare)} phase-2 spares)",
+           pipe.batch_eval_init_vg, U2, Y2, refs2)
     report("FULL cold_l (primal likelihood batch)",
            pipe.batch_eval_cold_l, U, Y0, refs0)
 

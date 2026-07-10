@@ -41,6 +41,18 @@ def _chem_like_pipe(count_max=100, oversample=1.6, y_shape=(4, 3)):
         G = -U
         return L, G, Y, refs, jnp.int32(0), None                 # survivors: no AD pathology
 
+    def init_vg(U, Y, refs):
+        """Phase-2 stub (7-tuple, like a real pipeline's batch_eval_init_vg).
+        Second coordinate > 0 -> cannot RE-certify warm (dead, ACC=count_max: cull);
+        third coordinate > 0 -> RT/AD death (dead, finite ACC: must raise)."""
+        L = -0.5 * jnp.sum(U ** 2, axis=1)
+        G = -U
+        recert = U[:, 1] > 0.0
+        rtdead = U[:, 2] > 0.0
+        L = jnp.where(recert | rtdead, -1.0e30, L)
+        ACC = jnp.where(recert, count_max, 1).astype(jnp.int32)
+        return L, G, Y, refs, jnp.int32(0), None, ACC
+
     def _unused(*a, **k):                                        # never called on this path
         raise AssertionError("unexpected evaluator call")
 
@@ -50,7 +62,8 @@ def _chem_like_pipe(count_max=100, oversample=1.6, y_shape=(4, 3)):
         fwd=types.SimpleNamespace(chem=types.SimpleNamespace(count_max=count_max)),
         batch_eval_cold_l_diag=cold_l_diag,
         batch_eval_cold_vg=_unused, batch_eval_cold_l=_unused,
-        batch_eval_move_vg=move_vg, batch_eval_move_l=_unused,
+        batch_eval_move_vg=move_vg, batch_eval_init_vg=init_vg,
+        batch_eval_move_l=_unused,
     )
 
 
@@ -112,3 +125,34 @@ def test_init_state_all_healthy_default_target_is_len_u():
     U_keep, L, G, Y, refs, DY = P._init_state(pipe, U)   # target_n=None -> len(U)
     assert U_keep.shape[0] == 4
     assert np.all(np.isfinite(np.asarray(L)))
+
+
+def test_init_phase2_culls_recert_failures_and_backfills():
+    pipe = _chem_like_pipe(count_max=100)
+    # 12 phase-1-healthy draws; draws 2 and 5 certify cold but cannot re-certify warm
+    a = np.column_stack([-np.arange(1.0, 13.0), np.zeros(12), np.zeros(12)])
+    a[2, 1] = 1.0
+    a[5, 1] = 1.0
+    U_keep, L, G, Y, refs, DY = P._init_state(pipe, jnp.asarray(a), target_n=8)
+    assert U_keep.shape[0] == 8 and L.shape[0] == 8
+    # culled draws (first coords -3, -6) replaced by the next spares, order preserved
+    assert np.allclose(np.asarray(U_keep)[:, 0], [-1, -2, -4, -5, -7, -8, -9, -10])
+    assert np.all(np.isfinite(np.asarray(L))) and np.all(np.isfinite(np.asarray(G)))
+
+
+def test_init_phase2_rt_death_raises():
+    pipe = _chem_like_pipe(count_max=100)
+    a = np.column_stack([-np.arange(1.0, 11.0), np.zeros(10), np.zeros(10)])
+    a[3, 2] = 1.0                          # non-finite forward, NON-exhausted ACC
+    with pytest.raises(RuntimeError, match="RT/AD"):
+        P._init_state(pipe, jnp.asarray(a), target_n=8)
+
+
+def test_init_phase2_spares_exhausted_raises():
+    pipe = _chem_like_pipe(count_max=100)
+    # 9 healthy phase-1 draws, target 8: killing 2 at phase 2 leaves only 7
+    a = np.column_stack([-np.arange(1.0, 10.0), np.zeros(9), np.zeros(9)])
+    a[0, 1] = 1.0
+    a[1, 1] = 1.0
+    with pytest.raises(RuntimeError, match="Spares exhausted"):
+        P._init_state(pipe, jnp.asarray(a), target_n=8)

@@ -650,6 +650,11 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
                     # garbage, and though MH can never accept it into the carried
                     # state (-1e30 L), zeroed is strictly safer than untouched
                     DY = jnp.where(ok[:, None, None, None], DY, jnp.zeros_like(DY))
+                if not mutation_cap:
+                    # init phase 2 also gets the accept counts, so _init_state can
+                    # tell a re-certification failure (ACC >= count_max: cull) from
+                    # a true RT/AD blow-up (finite ACC, non-finite forward: raise)
+                    return L, G, Ynew, refs_new, n_bad, DY, ACC
                 return L, G, Ynew, refs_new, n_bad, DY
             if diag:
                 return L, Ynew, refs_new, worst_accept
@@ -893,19 +898,6 @@ def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
     has_diag = bool(getattr(pipe, "has_chem_state", False))
     cold_l_init = pipe.batch_eval_cold_l_diag if has_diag else cold_l
 
-    def _dead_check(L_arr, where):
-        L_np = np.asarray(jax.device_get(L_arr), np.float64)
-        dead = ~np.isfinite(L_np) | (L_np <= -1.0e29)
-        if np.any(dead):
-            raise RuntimeError(
-                f"{int(dead.sum())}/{len(L_np)} SURVIVING particle(s) produced a "
-                f"non-finite forward model at {where} (indices "
-                f"{np.flatnonzero(dead).tolist()}). These already converged in phase 1 "
-                "and phase 2 runs UNCAPPED (cold count_max), so this is either an "
-                "RT/AD problem or a column that certifies cold but cannot re-certify "
-                "warm within count_max -- refusing to start the SMC on a crippled "
-                "cloud either way.")
-
     if not hasattr(pipe, "_init_l_jit"):
         pipe._init_l_jit = jax.jit(cold_l_init)
         # phase 2 uses the UNCAPPED move evaluator where the pipeline provides one:
@@ -962,18 +954,31 @@ def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
             "or raise count_max. This is a systemic prior/config problem, not a few hard "
             "corners.")
 
-    sel = jnp.asarray(alive[:target_n])
+    # phase 2 evaluates a few SPARE survivors beyond target_n (width is ~free in the
+    # lockstep chemistry) so marginal columns that cannot RE-certify warm can be
+    # culled and backfilled instead of killing the run (NAS jobs 64854/64897)
+    spare = int(getattr(pipe.cfg, "init_phase2_spare", 8)) if has_diag else 0
+    n_phase2 = min(n_alive, target_n + spare)
+    sel = jnp.asarray(alive[:n_phase2])
     U_keep = jnp.asarray(U)[sel]
     Y, refs = Y[sel], refs[sel]
     logger.info(f"init 1/2 done in {time.perf_counter() - t0:.1f}s "
-                f"({n_alive} converged, kept {target_n})")
+                f"({n_alive} converged; phase 2 on {n_phase2} = {target_n}"
+                f"+{n_phase2 - target_n} spare)")
 
-    # ---- phase 2: gradient on the survivors only ----
+    # ---- phase 2: gradient on the survivors (+spares) ----
     t0 = time.perf_counter()
-    logger.info("init 2/2: move-map gradient at the kept cloud (jvp lanes on short "
-                "re-converges from each survivor's own converged column)")
-    L, G, Y, refs, n_bad, DY = pipe._init_mv_jit(U_keep, Y, refs)
-    jax.block_until_ready(L)
+    logger.info("init 2/2: move-map gradient at the kept cloud (jvp lanes on warm "
+                "re-certifications from each survivor's own converged column; "
+                "UNCAPPED -- bounded by the cold count_max)")
+    out = pipe._init_mv_jit(U_keep, Y, refs)
+    jax.block_until_ready(out[0])
+    if len(out) == 7:                      # real pipelines: init eval threads ACC
+        L, G, Y, refs, n_bad, DY, ACC2 = out
+        acc2_np = np.asarray(jax.device_get(ACC2), np.int64)
+    else:                                  # stub pipelines: no accept-count concept
+        L, G, Y, refs, n_bad, DY = out
+        acc2_np = None
     n_bad = int(jax.device_get(n_bad))
     if n_bad > 0:
         raise RuntimeError(
@@ -981,10 +986,45 @@ def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
             "NON-FINITE gradient at initialization -- AD pathology in the chemistry "
             "tangents or RT vjp (these already converged in phase 1, so it is not a "
             "hard corner); refusing to continue (no silent gradient-free fallback).")
-    _dead_check(L, "the gradient pass of initialization")
+
+    # cull re-certification failures; raise on true RT/AD deaths
+    L_np = np.asarray(jax.device_get(L), np.float64)
+    dead2 = ~np.isfinite(L_np) | (L_np <= -1.0e29)
+    if acc2_np is not None:
+        cmax2 = int(pipe.fwd.chem.count_max)
+        recert_fail = dead2 & (acc2_np >= cmax2)
+        rt_dead = dead2 & ~recert_fail
+    else:
+        recert_fail, rt_dead = dead2, np.zeros_like(dead2)
+    if np.any(rt_dead):
+        raise RuntimeError(
+            f"{int(rt_dead.sum())}/{n_phase2} phase-2 particle(s) produced a "
+            f"non-finite forward with a NON-exhausted accept count (indices "
+            f"{np.flatnonzero(rt_dead).tolist()}) -- a genuine RT/AD problem, not a "
+            "convergence cull; refusing to start the SMC on a crippled cloud.")
+    if np.any(recert_fail):
+        logger.warning(
+            f"init 2/2: culled {int(recert_fail.sum())}/{n_phase2} marginal "
+            f"survivor(s) that certify cold but cannot RE-certify warm within "
+            f"count_max (indices {np.flatnonzero(recert_fail).tolist()}); "
+            "backfilling from spares. A repeatable class (oscillating/stall-fallback "
+            "columns), part of the operational prior -- report alongside the phase-1 "
+            "reject fraction.")
+    alive2 = np.flatnonzero(~dead2)
+    if alive2.size < target_n:
+        raise RuntimeError(
+            f"only {int(alive2.size)}/{n_phase2} phase-2 particles are healthy; need "
+            f"{target_n}. Spares exhausted -- raise init_phase2_spare (currently "
+            f"{spare}) or init_oversample, or investigate why so many survivors "
+            "cannot re-certify warm.")
+    sel2 = jnp.asarray(alive2[:target_n])
+    U_keep, L, G, Y, refs = U_keep[sel2], L[sel2], G[sel2], Y[sel2], refs[sel2]
+    if DY is not None:
+        DY = DY[sel2]
     if not np.all(np.isfinite(np.asarray(jax.device_get(G)))):
         raise RuntimeError("non-finite gradient entries at initialization")
-    logger.info(f"init 2/2 done in {time.perf_counter() - t0:.1f}s")
+    logger.info(f"init 2/2 done in {time.perf_counter() - t0:.1f}s "
+                f"(kept {target_n}/{n_phase2})")
     return U_keep, L, G, Y, refs, DY
 
 
