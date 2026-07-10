@@ -15,15 +15,22 @@ cd ../VULCAN-JAX
 git pull --ff-only
 ```
 
-One-time setup (front end; git https rides the same NAS proxy the PBS exports):
+One-time setup (front end). MEASURED 2026-07-10 on cghfe02: **direct https to
+github.com works and the proxy hostname does NOT resolve** -- make sure
+`https_proxy`/`http_proxy` are UNSET for git (the "Could not resolve proxy" failure
+mode), no proxy exports needed:
 
 ```
 cd /nobackup/imalsky/VULCAN_W39b_HPC
-export https_proxy=http://proxy.nas.nasa.gov:3128
-export http_proxy=$https_proxy
+unset https_proxy http_proxy
 git clone https://github.com/imalsky/vulcan_exojax_run.git
 git clone https://github.com/imalsky/jax-vulcan.git VULCAN-JAX
 ```
+
+(A tree that was previously scp'd from the Mac already IS a clone -- scp carries
+`.git` -- so instead of recloning, `git remote set-url origin <https url>` (the
+scp'd copy carries the Mac's ssh remote, and outbound ssh to github is blocked)
+and `git pull --ff-only`. This is how the 2026-07-10 cutover actually went.)
 
 - The **`VULCAN-JAX` clone target name is load-bearing** (the PBS preflight hard-codes
   it; the GitHub repo is named `jax-vulcan`). Same for `vulcan_exojax_run`.
