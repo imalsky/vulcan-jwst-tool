@@ -162,6 +162,17 @@ wired, suite 18/18):
   via `jax.debug.callback` — a slow stage is visible as it happens, never hours of silence.
 - **Walltime: 24 h PBS / 20 h governor** (gpu preset). Projected ~15-25 min/stage after
   the fixes; `CALIBRATE_ONLY=1` (~1 h) gives timing.json before committing a run.
+- **conv_step 500 → 300 probed and REJECTED (2026-07-10, measured).** conv_step is the
+  convergence ring depth; the criterion itself is time-based (y unchanged vs the run at
+  t·st_factor=0.5, lookback clamped to the ring). Smoke-chain probe (same small MALA
+  move): extrapolated warm 472 → 472 steps (ZERO saving — the ring never binds once the
+  seed starts at the answer), plain warm 779 → 722 (7%), cold 4484 → 2885 — and that
+  cold "saving" is the tell: the 300-window certifies a state that differs from the
+  500-certified one by up to **0.072 dex**, 7x the yconv tolerance. It is not the same
+  answer faster; it is a less-converged answer, which inflates exactly the warm-vs-cold
+  path dependence validate_warm gates. Unlike dt_max (validated state-preserving), this
+  changes the certified state — keep the master default 500. The step-count lever is
+  warm_extrapolate (+ warm_count_max→800 after its A/B), not the certification window.
 - **fp32 considered and REJECTED** (Isaac: only if much faster — it isn't): chemistry
   must stay f64 (VULCAN-JAX numerical-hygiene rule; rate constants span ~50 dex), and
   the RT is not the dominant cost, so fp32-RT is <2× on a minority term. Precedent
