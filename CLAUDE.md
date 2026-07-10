@@ -292,11 +292,14 @@ step can't start before the previous finishes), so headroom converts to WIDTH
 
 - **Width: gpu preset raised N 96 → 144 (2026-07-10, "more aggressive" per Isaac).**
   Chemistry rides ~free; RT-vjp goes 8 → 12 serialized chunks of 12 (tail ×1.5).
-  Memory projection from the N=96 probe (FULL cold_vg 73.25 GiB; chem tangents ~0.13
-  GiB/particle): ~79.5 GiB — inside the ~81 GiB budget, but **PROBE_MEMORY=1 is
-  REQUIRED before the first submit** (standing rule; the probe is compile-only). If it
-  busts, drop `smc_rt_vjp_chunk` to 9 (16 chunks) before touching N. **N=192 projects
-  ~86 GiB — AT the real pool; do not, without a probe showing margin.**
+  **MEASURED (probe job 64944): peak memory is WIDTH-INDEPENDENT** — FULL cold_vg at
+  N=144 and FULL init_vg at 152 are both **73.25 GiB, byte-identical to N=96**. The
+  peak lives inside the fixed-width RT-vjp chunk stage; the chemistry tangent buffers
+  (~0.13 GiB/particle) are freed before it and only become the peak owner near
+  N≈500. So N buys memory-free width; its only real cost is the serialized RT chunk
+  count (N/12). **N=192 is memory-viable** (16 chunks, RT tail ×2 vs 96) if more
+  particles are ever wanted. PROBE_MEMORY=1 stays REQUIRED after any N / chunk /
+  nu_pts change — nu_pts and rt_vjp_chunk DO move the peak.
 - **Speed: two untested XLA A/B experiments** (launch-overhead reduction; judged purely
   by `t_mutation_sweep_s` vs a baseline calibration — they change scheduling, not math;
   the PBS XLA_FLAGS line is `${XLA_FLAGS:-...}` so qsub -v overrides it cleanly):

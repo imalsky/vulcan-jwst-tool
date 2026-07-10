@@ -153,9 +153,9 @@ class Config:
     # and culls the ones that certify cold but cannot RE-certify warm within the cold
     # count_max (marginal oscillators / stall-fallback columns; NAS jobs 64854 + 64897
     # saw 5/96 and 3/96 respectively -- a repeatable class, not a fluke). Width is
-    # nearly free in the lockstep chemistry; MEMORY is the constraint on the spare
-    # (gradient peak grows ~0.13 GiB/particle over the probed base -- PROBE_MEMORY
-    # covers the widened init eval). A true RT/AD failure at phase 2 (non-finite
+    # nearly free in the lockstep chemistry, and MEASURED width-free in memory too
+    # (probe 64944: the 152-wide init eval peaks at the same 73.25 GiB as N=96 --
+    # the peak is the fixed-width RT-vjp chunk stage; PROBE_MEMORY covers it). A true RT/AD failure at phase 2 (non-finite
     # forward WITHOUT a count_max-exhausted accept count) still raises.
     init_phase2_spare: int = 8
     fastchem_met_scale: float = 10.0   # BASELINE metallicity (x solar); lnZ is relative to this

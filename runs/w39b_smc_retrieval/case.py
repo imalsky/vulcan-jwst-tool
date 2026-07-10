@@ -165,11 +165,11 @@ def gpu_config(**overrides: Any) -> Config:
         # (~300 W of 700 W during the 192-lane primal, ~360-390 W at 672 gradient
         # lanes) -- width fills the GPU nearly for free in the launch-bound
         # while_loop, so spend the idle silicon on particles. 144 = 12 exact RT-vjp
-        # chunks of 12 (RT tail x1.5 vs N=96's 8 chunks); projected gradient-eval
-        # peak ~79 GiB vs the 73.25 GiB probed at N=96 (chem tangents ~0.13
-        # GiB/particle) -- PROBE_MEMORY=1 required before the first submit. N=192
-        # would project ~86 GiB, AT the real pool: don't, without a probe + chunk
-        # drop. More particles also directly answer the small-N SMC criticism
+        # chunks of 12 (RT tail x1.5 vs N=96's 8 chunks). MEASURED (probe job 64944):
+        # peak memory is WIDTH-INDEPENDENT -- 73.25 GiB at N=96, 144, and the
+        # 152-wide init eval alike (the peak is the fixed-width RT-vjp chunk stage;
+        # chem tangents are freed before it). N=192 is memory-viable (16 chunks) if
+        # ever wanted. More particles also directly answer the small-N SMC criticism
         # (ladder-adaptation noise, evidence variance).
         smc_num_particles=144, smc_num_mcmc_steps=6, smc_max_steps=40,
         # Tangent-extrapolated warm starts ON (Isaac, 2026-07-10): proposals seed at
