@@ -9,6 +9,12 @@ retrieval (`SWAMPE_Project/MY_SWAMP/retrieval`), rebuilt for this forward model
 with no BlackJAX dependency (the SMC core is ~200 lines of pure JAX, validated
 against an analytic Gaussian posterior including its evidence estimate).
 
+To our knowledge (literature review 2026-07) this is the first Bayesian retrieval
+with gradients through a full photochemical-kinetics forward model, the first SMC
+atmospheric retrieval, and the first full-kinetics retrieval that fits on a single
+GPU in under 24 h — see the bundle-level `../README.md` "Firsts" block for the
+supporting citations (FRECKLL / ExoJAX / Khorshid et al. anchors).
+
 **Framework vs case (2026-07-08 reorg).** Everything reusable lives HERE
 (`config_schema.py`, `observations.py`, `tp_profile.py`, `retrieval_forward.py`,
 `pipeline.py`, the `run_smc.py` driver, `plot_smc.py`, the

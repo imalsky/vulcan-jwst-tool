@@ -163,6 +163,24 @@ chain (no BlackJAX; the SMC core is ~200 lines of pure JAX validated on an analy
 Gaussian). `retrieval_framework/` holds the machinery; each concrete run is a minimal
 **case directory** in `runs/` (`case.py` = planet identity + priors + presets, plus the
 PBS script, overrides, and outputs).
+**Firsts** (to our knowledge; literature review 2026-07): this is the first
+
+1. **Bayesian retrieval with gradients through a full photochemical-kinetics forward
+   model.** No published kinetics retrieval uses gradients: the FRECKLL line — the only
+   prior full-kinetics retrievals (Al-Refaie et al. 2024; Bardet et al. 2025) — is
+   gradient-free nested sampling at 5–10 parameters on 180 CPU cores × 24 h and
+   ~874,000 CPU-hours respectively, and Khorshid et al. 2024 call retrieval with
+   photochemistry computationally "impractical". Published gradient-based retrievals
+   (ExoJAX HMC-NUTS) use free-chemistry forward models that run in ~ms, not a stiff
+   kinetics solver.
+2. **Atmospheric retrieval sampled with Sequential Monte Carlo** (adaptive-tempered
+   SMC with preconditioned-MALA mutations; no published SMC atmospheric retrieval
+   found, 2022–2026).
+3. **Full-kinetics retrieval on a single GPU inside 24 hours** (10 parameters, one
+   GH200), versus the CPU-cluster scale of all prior kinetics retrievals.
+
+Statements are as of the 2026-07 review; the WASP-39b production run is the
+demonstration case.
 **Assumptions (WASP-39b case):** Guillot T-P retrieved jointly with (lnZ, C/O, lnKzz) +
 radius + cloud + instrument offset; two-stage solve (converge baseline composition at the
 retrieved T, then apply the composition scaling and re-converge — the T-transient
