@@ -178,12 +178,25 @@ Hessian-campaign continuation pattern; `converged_y(warm_y=...)`) instead of
 re-running the full cold two-stage solve — measured ~500–800-step re-converges
 for MALA-sized moves (the `conv_step=500` longdy certification window dominates
 the warm floor, not `count_min`), still ~6–8× fewer chemistry steps than cold.
-Warm solves run under `warm_count_max` (default 1500, a twin runner with the
-smaller cap baked in): a proposal still unconverged there is REJECTED (-inf L)
-instead of dragging the whole lockstep batch to the cold `count_max` — without
-this, any single bad proposal among N gated EVERY early-ladder sweep at 5000
-steps (the ~3-6 h/stage pathology of job 64745; while the cloud is prior-like
-that is essentially every sweep). The cold
+Don't shrink `conv_step` to buy speed: probed 500→300 (2026-07-10), it saves
+NOTHING on extrapolated seeds and 7% on plain ones while certifying a state
+0.07 dex off the 500-window one — see `../CLAUDE.md` for the full numbers.
+MUTATION warm solves run under `warm_count_max` (default 1500, a twin runner
+with the smaller cap baked in): a proposal still unconverged there is REJECTED
+(-inf L) instead of dragging the whole lockstep batch to the cold `count_max` —
+without this, any single bad proposal among N gated EVERY early-ladder sweep at
+5000 steps (the ~3-6 h/stage pathology of job 64745; while the cloud is
+prior-like that is essentially every sweep). The INIT gradient pass (phase 2)
+runs the same warm map UNCAPPED (`batch_eval_init_vg`, gated at the cold
+`count_max`): its inputs are phase-1 survivors re-certifying from their own
+converged columns — proven-convergent particles, not disposable proposals — and
+a marginal survivor can legitimately need more than the mutation cap just to
+re-certify (NAS job 64854: the cap gated 5/96 healthy survivors into a spurious
+"crippled cloud" raise). Optional on top: `warm_extrapolate=true` seeds each
+proposal's warm solve at the first-order prediction `Y + (dy/dθ)·Δθ` using the
+tangents the gradient pass already computes (measured 1.65x fewer warm steps,
+same certified state; opt-in pending a SYNTH A/B — see the lever list below and
+`config_schema.py`). The cold
 two-stage map runs exactly once per particle, at state initialization (and on
 `smc_chem_mode="cold"`, which restores the published solve-from-baseline map for
 every evaluation). The carried

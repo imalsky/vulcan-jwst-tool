@@ -27,28 +27,33 @@ SMC_RETRIEVAL_PRESET=smoke python -m retrieval_framework.run_smc runs/w39b_smc_r
 python -m retrieval_framework.smoke_retrieval runs/w39b_smc_retrieval   # gradient FD checks
 ```
 
-NAS GH200 (from this directory):
+NAS GH200 (from this directory), in the staged order for a fresh campaign:
 
 ```
+qsub -v PROBE_MEMORY=1 run_nas_w39b.pbs        # compile-only buffer report (REQUIRED after any N/chunk/nu_pts change)
+qsub -v CALIBRATE_ONLY=1 run_nas_w39b.pbs      # ~1.5 h; check timing.json t_mutation_sweep_s
+qsub -v SYNTH=1 run_nas_w39b.pbs               # synthetic recovery test at gpu fidelity
 qsub run_nas_w39b.pbs                          # real-data production (gpu preset)
-qsub -v SYNTH=1 run_nas_w39b.pbs               # synthetic recovery test first
+qsub -v RESUME=1 run_nas_w39b.pbs              # continue a governor-stopped ladder
 qsub -v CALIBRATE_COUNT_MAX=1,CALIBRATE_COUNT_MAX_PROBE=60000,CALIBRATE_N_DRAWS=96 run_nas_w39b.pbs
 ```
 
-## Status / open items (2026-07-08)
+On success, plots + the warm-vs-cold validation (`validate_warm`, PASS gate
+max|dlogL| < 0.1) run automatically; quote the verdict and the init reject
+fraction in the paper.
 
-- **`count_max=5000`** (lowered from 10000, Isaac 2026-07-08; do NOT raise it). The earlier "≥21% of draws exceed
-  the cap" finding (calib job 64437/64523) was traced to a **`dt_max` ballooning**
-  numerical artifact, not slow chemistry: VULCAN's default `dt_max=1e17 s` let the
-  step balloon to ~1e16 s on high-Kzz columns so the solver spun without settling.
-  **Fixed** by `dt_max=1e11` in `case.py` (converges the ballooning draws in ~1000
-  steps; the truth is untouched). See the root-level `../../CLAUDE.md` "dt_max
-  ballooning" section for the full diagnosis and the VULCAN-publication check.
-- **Re-run the calibration** (now cheap at native R=100 by default) to measure the
-  residual non-convergence with `dt_max=1e11`:
-  `qsub -v CALIBRATE_COUNT_MAX=1,CALIBRATE_COUNT_MAX_PROBE=5000,CALIBRATE_N_DRAWS=96 run_nas_w39b.pbs`
-  A genuine residual (marginal-`longdy` and photochemical-limit-cycle columns) will
-  remain; those get **rejected at init** (count_max=5k, failures accepted) — wire
-  the init-reject once the residual fraction is known.
-- Do one `SYNTH=1` recovery run at gpu fidelity before trusting the real-data
-  posterior.
+## Status / open items (2026-07-10)
+
+- **Resolved history** (full details in `../../CLAUDE.md`): the >10k-step tail was
+  `dt_max` ballooning (fixed, `dt_max=1e11`, `count_max=5000` — do NOT raise);
+  measured residual non-convergence at the prior is ~27-30%, absorbed by
+  init reject-and-oversample; the job-64745 sweep pathology is fixed by the
+  `warm_count_max=1500` mutation cap + merged diag (+ N=96, 6 sweeps, 20 h
+  governor); the job-64854 init failure is fixed by running init phase 2
+  UNCAPPED (the mutation cap must not gate proven survivors).
+- **`warm_extrapolate=false` by default** (the measured-1.65x tangent-extrapolated
+  warm start): flip it only after the same-seed `SYNTH=1` A/B validates it
+  (`SMC_RETRIEVAL_OVERRIDES='{"warm_extrapolate": true}'`), then consider
+  `warm_count_max` 1500 → ~800.
+- **Before trusting the real-data posterior:** one clean `SYNTH=1` recovery at gpu
+  fidelity, and `VERDICT: PASS` from the automatic warm-vs-cold validation.

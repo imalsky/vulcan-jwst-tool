@@ -148,8 +148,9 @@ wired, suite 18/18):
   1500 gives ~2x margin and still cuts the gated worst case 3.3x vs 5000.
   Proposals that would converge in (1500, 5000] become extra MH rejections — a valid
   kernel either way. Cold/two-stage solves keep `count_max` (init phase 1 and the
-  two_stage_z stage-2 increment genuinely need it). `warm_count_max > count_max` raises
-  (schema + build).
+  two_stage_z stage-2 increment genuinely need it), and so does the INIT phase-2
+  gradient pass (see "Init phase 2 must run UNCAPPED" above — job 64854).
+  `warm_count_max > count_max` raises (schema + build).
 - **`warm_extrapolate` (opt-in, WIRED 2026-07-10, default off).** Seeds each proposal's
   warm solve at the first-order prediction `Y + (dy/dθ)·Δθ`, where dy/dθ = the converged
   column's parameter tangents read off the SAME jvp lanes that produce the gradient
