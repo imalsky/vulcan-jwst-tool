@@ -560,9 +560,11 @@ guard, threshold 1e-3) if `|dL/dlnZ|` or `|dL/dc_o|` ever go dead again.
   `vulcan_exojax_run/` (incl. `data/`, which carries its own
   `data/opacity_cache/` -- cached CO ExoMol + H2-H2/H2-He CIA, no other project
   needed as of 2026-07-07).
-- The `vulcan` env's numpy 1.26 has **no `np.trapezoid`** (it's a numpy-2 name);
-  `zco_lib.bin_to_obs` uses it and only ran under the base env. Use `np.trapz`
-  in anything that must run in `vulcan`.
+- numpy 1.x/2.x split: `np.trapz` was removed in numpy 2 and `np.trapezoid`
+  doesn't exist in 1.26 (the `vulcan` env). The tree uses a module-level
+  `_trapezoid = getattr(np, "trapezoid", None) or np.trapz` alias
+  (`zco_lib`, `fig_fisher_forecast`, `test_binning`) so both majors work --
+  use that pattern in new code, never either name directly.
 - Memory on GH200 at N=48/nz=50: dominated by the convergence ring buffer
   (`y_time_ring`, ~18 MB/lane) × ~288 tangent-augmented lanes × primal+tangent
   ≈ 10–12 GB — comfortable; no device-batch tiling needed (the 512×nz150

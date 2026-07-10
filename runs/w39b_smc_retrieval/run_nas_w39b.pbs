@@ -56,6 +56,9 @@
 #                           utilization timeline; needs a recent nsys)
 #   VULCAN_SCRATCH          cache root                 (default /nobackup/$USER/.vulcan)
 #
+# On a successful run, plots + the warm-vs-cold validation (validate_warm; PASS gate
+# max|dlogL| < 0.1) run automatically; the verdict lands in the log + validate_warm.npz.
+#
 # Live log:  tail -f <w39b_smc_retrieval>/logs/W39B_SMC_<jobid>.log
 # =============================================================================
 set -euo pipefail
@@ -314,6 +317,14 @@ else
     echo "========== PLOTS =========="
     python -u -m retrieval_framework.plot_smc "${SMC_RETRIEVAL_OUT_DIR:-${SMC_DIR}/data/${SMC_RETRIEVAL_PRESET}}" \
       || echo "WARNING: plotting failed (posterior npz files are still on disk)."
+    # Warm-continuation bias measurement on the final cloud (cold re-solve vs the
+    # warm-carried logL; PASS gate max|dlogL| < 0.1 -- quote the result in the paper).
+    # A FAIL verdict is a science finding, not a job failure: the posterior is already
+    # on disk, so surface it loudly but keep rc=0. Rerunnable standalone any time:
+    #   python -m retrieval_framework.validate_warm <case dir>
+    echo "========== WARM-VS-COLD VALIDATION =========="
+    python -u -m retrieval_framework.validate_warm "${SMC_DIR}" \
+      || echo "WARNING: validate_warm verdict FAIL -- warm-continuation bias above the gate; see validate_warm.npz + log above."
   fi
 fi
 
