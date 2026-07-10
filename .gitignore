@@ -14,6 +14,7 @@ data/opacity_cache/
 # Run outputs (posteriors, checkpoints, logs, PBS job logs) -- regenerated per run
 runs/*/data/
 runs/*/logs/
+runs/*/*.o[0-9]*
 *.nsys-rep
 
 # Editor / OS noise

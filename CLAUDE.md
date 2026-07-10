@@ -3,20 +3,51 @@
 Critical rules and decisions for this bundle. Read before touching the retrieval or
 running anything on the supercomputer.
 
-## Supercomputer transfer — ALWAYS scp -r, NEVER rsync
+## Supercomputer sync — git pull for CODE (preferred, 2026-07-10), scp for DATA
 
-Transfer with **exactly** this style (one command per top-level dir, no backslashes):
+**Code updates: `git pull` on the NAS front end** (both repos are public on GitHub and
+every local change is committed + pushed, so GitHub is always current):
+
+```
+cd /nobackup/imalsky/VULCAN_W39b_HPC/vulcan_exojax_run
+git pull --ff-only
+cd ../VULCAN-JAX
+git pull --ff-only
+```
+
+One-time setup (front end; git https rides the same NAS proxy the PBS exports):
+
+```
+cd /nobackup/imalsky/VULCAN_W39b_HPC
+export https_proxy=http://proxy.nas.nasa.gov:3128
+export http_proxy=$https_proxy
+git clone https://github.com/imalsky/vulcan_exojax_run.git
+git clone https://github.com/imalsky/jax-vulcan.git VULCAN-JAX
+```
+
+- The **`VULCAN-JAX` clone target name is load-bearing** (the PBS preflight hard-codes
+  it; the GitHub repo is named `jax-vulcan`). Same for `vulcan_exojax_run`.
+- The NAS clones are **read-only deploys**: never edit there; `--ff-only` guarantees a
+  pull can never merge; run outputs / PBS `.o` files / caches are all gitignored so the
+  tree stays clean.
+- **Data is NOT in git** and needs a ONE-TIME seed into the fresh clone —
+  `data/opacity_cache/` (preflight ERRORS without it) and `data/exojax_linelists/`
+  (else re-downloaded via the proxy). Copy from a parked old tree on /nobackup:
+  `cp -r <old tree>/data/opacity_cache vulcan_exojax_run/data/` (same for
+  exojax_linelists), or scp them once from local.
+
+**scp fallback / data transfers** (also if git https is ever blocked), **exactly** this
+style (one command per dir, no backslashes):
 
 ```
 scp -r -oProxyCommand='ssh imalsky@sfe6.nas.nasa.gov ssh-proxy %h' [local dir] imalsky@pfe.nas.nasa.gov:[hpc location]
 ```
 
 - **Never use rsync.** Never make tarballs.
-- **Never** wrap remote commands in `ssh nas '...'`. Give the `scp -r` transfer, then the
+- **Never** wrap remote commands in `ssh nas '...'`. Give the transfer, then the
   commands to run **while logged in on the node** (`cd …`, `qsub …`) as plain commands.
-- The two trees to send for a run: `VULCAN-JAX` and `vulcan_exojax_run`, into the same
-  `PROJECT_ROOT` on `/nobackup` (currently `/nobackup/imalsky/VULCAN_W39b_HPC`). The PBS
-  preflight requires both.
+- `PROJECT_ROOT` is currently `/nobackup/imalsky/VULCAN_W39b_HPC`; the PBS preflight
+  requires both trees under it.
 
 ## nsys masks the exit code — never profile a first/debug run (learned 2026-07-09)
 
