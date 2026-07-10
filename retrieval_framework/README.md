@@ -263,13 +263,17 @@ any config change — it times init + one mutation call and projects 15/25/40
 stages. The governor makes the budget a guarantee rather than a hope; if
 calibration says a stage is slow, the levers in order of pain:
 
-1. `warm_count_max` 1500 → ~1000 (bounds the worst-case sweep; measured typical
-   warm re-converge is ~500-800 steps, so watch the per-sweep rejected count in
-   the heartbeat lines for collateral rejections — tangent-extrapolated warm
-   starts, once wired in, cut the typical to ~470 and allow ~800)
-2. `smc_num_mcmc_steps` 6 → 4 (linear savings, some mixing loss)
-3. `nz` 50 → 40 (chemistry cost ~linear in nz)
-4. band: drop to G395H-only (halves n_bin; loses NIRISS lever + offset)
+1. `warm_extrapolate=true` (opt-in, wired 2026-07-10): seed each proposal's warm
+   solve from `Y + (dy/dtheta)·dtheta` using the tangents the gradient pass
+   already computes — measured 780 → ~470 typical warm steps (1.65x), same
+   converged column (parity unit-tested). Validate once with a SYNTH A/B, then
+   also drop `warm_count_max` 1500 → ~800 for the second half of the win.
+2. `warm_count_max` 1500 → ~1000 (bounds the worst-case sweep; measured typical
+   plain warm re-converge is ~500-800 steps, so watch the per-sweep rejected
+   count in the heartbeat lines for collateral rejections)
+3. `smc_num_mcmc_steps` 6 → 4 (linear savings, some mixing loss)
+4. `nz` 50 → 40 (chemistry cost ~linear in nz)
+5. band: drop to G395H-only (halves n_bin; loses NIRISS lever + offset)
 
 (`yconv_cri` is NOT a speed lever here — it's fixed at the master `0.01`, and the
 operative gate is the loose branch anyway; the real step-count lever was `dt_max`.)

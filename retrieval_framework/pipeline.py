@@ -507,12 +507,19 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
         g = jnp.where(finite & jnp.isfinite(g), g, jnp.zeros_like(g))
         return val, g, bad_grad
 
-    def _make_batch_eval(mode: str, want_grad: bool, diag: bool = False):
-        """Build eval(U, Y, refs) -> (L, G, Y_new, refs_new, n_bad_grad) when
+    def _make_batch_eval(mode: str, want_grad: bool, diag: bool = False,
+                         want_dy: bool = False):
+        """Build eval(U, Y, refs) -> (L, G, Y_new, refs_new, n_bad_grad, DY) when
         want_grad, else (L, Y_new, refs_new) [+ worst_accept when diag]; all
         (N,)-batched. ``n_bad_grad`` counts finite-likelihood/non-finite-gradient AD
         pathologies -- the host driver raises on it (loud-error rule; no silent
         random-walk degradation).
+
+        ``DY`` is None unless ``want_dy``: the converged column's parameter tangents
+        (N, n_chem_tp, nz, ni), read off the same jvp lanes that produce the gradient
+        (zero extra compute), used by the warm_extrapolate mutation kernel to seed
+        each proposal's warm solve at a first-order prediction of its own answer.
+        With want_dy=False the compiled program is unchanged (None adds no outputs).
 
         mode="warm": each particle's chemistry re-converges by continuation from its
         carried column Y with incremental (lnZ - refs[0], c_o - refs[1]) scaling.
@@ -525,6 +532,7 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
         (not-actually-converged) cold solve instead of silently carrying it into L."""
         warm = (mode == "warm")
         assert not (diag and (warm or want_grad)), "diag is cold+no-grad only"
+        assert not (want_dy and not want_grad), "want_dy needs the jvp lanes (want_grad)"
         # convergence gate for the warm mutation grad: the warm solver itself is capped
         # at warm_count_max (a proposal that hasn't converged there is doomed -- reject
         # it instead of dragging the lockstep batch to the cold count_max)
@@ -558,9 +566,13 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
                     y, ac = _solve_ac(c, yw, rf)
                     acf = jax.lax.stop_gradient(jnp.asarray(ac, dtype))
                     return fwd.aux_from_y(y, c), y, acf
-                (aux_l, y_l, ac_l), (daux_l, _dy, _dac) = jax.vmap(
+                (aux_l, y_l, ac_l), (daux_l, dy_l, _dac) = jax.vmap(
                     lambda v: jax.jvp(_chain, (cc,), (v,)))(eye_c)
                 aux = jax.tree_util.tree_map(lambda x: x[0], aux_l)  # primal (lane 0)
+                if want_dy:
+                    # dy_l[k] = d(converged column)/d(theta_chem[k]) -- the tangents
+                    # relax through the same warm while_loop as the primal
+                    return aux, daux_l, y_l[0], ac_l[0].astype(jnp.int32), dy_l
                 return aux, daux_l, y_l[0], ac_l[0].astype(jnp.int32)
         elif diag:
             def _chem_one(cc, yw, rf):
@@ -591,8 +603,13 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
                 # architecture's PreMODIT tangents (the 390 GiB OOM), misattributed
                 # to photo temporaries. The RT VJP below is the real memory wall
                 # (18.4 GiB first lane, ~9.4 GiB per additional at nu_pts=5000).
-                AUX, DAUX, Ynew, ACC = _map_chunked(lambda a: _chem_one(*a),
-                                                    (C_, Y, refs), chem_chunk)
+                if want_dy:
+                    AUX, DAUX, Ynew, ACC, DY = _map_chunked(lambda a: _chem_one(*a),
+                                                            (C_, Y, refs), chem_chunk)
+                else:
+                    AUX, DAUX, Ynew, ACC = _map_chunked(lambda a: _chem_one(*a),
+                                                        (C_, Y, refs), chem_chunk)
+                    DY = None
                 vals, g_th, bads = _map_chunked(_rt_val_grad, (AUX, DAUX, Theta),
                                                 rt_vjp_chunk)
                 G = g_th * dTh                                       # chain to u-space
@@ -619,7 +636,12 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
             Ynew = jnp.where(ok[:, None, None], Ynew, y_baseline[None])
             refs_new = jnp.where(ok[:, None], C_[:, :2], jnp.zeros_like(refs))
             if want_grad:
-                return L, G, Ynew, refs_new, n_bad
+                if want_dy:
+                    # NaN hygiene only: a pinned/rejected proposal's tangents may be
+                    # garbage, and though MH can never accept it into the carried
+                    # state (-1e30 L), zeroed is strictly safer than untouched
+                    DY = jnp.where(ok[:, None, None, None], DY, jnp.zeros_like(DY))
+                return L, G, Ynew, refs_new, n_bad, DY
             if diag:
                 return L, Ynew, refs_new, worst_accept
             return L, Ynew, refs_new
@@ -648,10 +670,13 @@ def build_pipeline(cfg: C.Config) -> Pipeline:
         value_and_grad_naive=_value_and_grad_naive, value_and_grad_block=_value_and_grad_block,
         # staged batched evaluators (the SMC hot path)
         has_chem_state=True, chem_mode=chem_mode, y_baseline=y_baseline,
+        warm_extrapolate=bool(cfg.warm_extrapolate) and chem_mode == "warm",
         batch_eval_cold_vg=_make_batch_eval("cold", True),
         batch_eval_cold_l=_make_batch_eval("cold", False),
         batch_eval_cold_l_diag=_make_batch_eval("cold", False, diag=True),
-        batch_eval_move_vg=_make_batch_eval(chem_mode, True),
+        batch_eval_move_vg=_make_batch_eval(
+            chem_mode, True,
+            want_dy=bool(cfg.warm_extrapolate) and chem_mode == "warm"),
         batch_eval_move_l=_make_batch_eval(chem_mode, False),
         # observations injected by set_observations
         obs_depth_jax=None, obs_sigma_jax=None, obs_depth=None, obs_sigma=None, flux_true=None,
@@ -755,10 +780,12 @@ def _abs_scale_diag(particles: np.ndarray, cap: float) -> np.ndarray:
 
 
 def _get_batch_evals(pipe: Pipeline):
-    """(cold_vg, cold_l, move_vg, move_l) batched evaluators, each with the signature
-    eval(U, Y, refs) -> (L[, G], Y_new, refs_new). Real pipelines carry the staged
-    chemistry+RT evaluators; stub pipes (unit tests, no chemistry) get a stateless
-    adapter so the SMC/MALA core is exercised through the exact same code path."""
+    """(cold_vg, cold_l, move_vg, move_l) batched evaluators. Gradient evaluators
+    return (L, G, Y_new, refs_new, n_bad, DY) -- DY is None unless the pipeline was
+    built with warm_extrapolate -- and likelihood-only ones (L, Y_new, refs_new).
+    Real pipelines carry the staged chemistry+RT evaluators; stub pipes (unit tests,
+    no chemistry) get a stateless adapter so the SMC/MALA core is exercised through
+    the exact same code path."""
     if getattr(pipe, "has_chem_state", False):
         return (pipe.batch_eval_cold_vg, pipe.batch_eval_cold_l,
                 pipe.batch_eval_move_vg, pipe.batch_eval_move_l)
@@ -768,7 +795,7 @@ def _get_batch_evals(pipe: Pipeline):
         def eval_vg(U, Y, refs):
             L, G = jax.vmap(vg1)(U)
             bad = jnp.isfinite(L) & ~jnp.all(jnp.isfinite(G), axis=1)
-            return L, G, Y, refs, jnp.sum(bad.astype(jnp.int32))
+            return L, G, Y, refs, jnp.sum(bad.astype(jnp.int32)), None
 
         def eval_l(U, Y, refs):
             return jax.vmap(pipe.log_likelihood_u)(U), Y, refs
@@ -802,8 +829,9 @@ def _init_draw_count(pipe: Pipeline, n_target: int) -> int:
 
 
 def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
-    """Initialize the SMC particle state, returning (U_kept, L, G, Y, refs) for exactly
-    ``target_n`` healthy particles (default: all of U).
+    """Initialize the SMC particle state, returning (U_kept, L, G, Y, refs, DY) for
+    exactly ``target_n`` healthy particles (default: all of U). ``DY`` is the carried
+    column tangents for warm_extrapolate pipelines, else None.
 
     ``U`` is an OVERSAMPLED prior cloud (len(U) = ceil(target_n * init_oversample) for
     real pipelines; see _init_draw_count). The two phases:
@@ -920,7 +948,7 @@ def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
     t0 = time.perf_counter()
     logger.info("init 2/2: move-map gradient at the kept cloud (jvp lanes on short "
                 "re-converges from each survivor's own converged column)")
-    L, G, Y, refs, n_bad = pipe._init_mv_jit(U_keep, Y, refs)
+    L, G, Y, refs, n_bad, DY = pipe._init_mv_jit(U_keep, Y, refs)
     jax.block_until_ready(L)
     n_bad = int(jax.device_get(n_bad))
     if n_bad > 0:
@@ -933,14 +961,14 @@ def _init_state(pipe: Pipeline, U, target_n: Optional[int] = None):
     if not np.all(np.isfinite(np.asarray(jax.device_get(G)))):
         raise RuntimeError("non-finite gradient entries at initialization")
     logger.info(f"init 2/2 done in {time.perf_counter() - t0:.1f}s")
-    return U_keep, L, G, Y, refs
+    return U_keep, L, G, Y, refs, DY
 
 
 def _make_mutation(pipe: Pipeline, n_mcmc: int):
     """Build the jitted state-carrying mutation:
 
-        mutate(key, U, Y, refs, L, G, beta, step, scale)
-            -> (U, Y, refs, L, G, mean_acceptance, n_bad_grad)
+        mutate(key, U, Y, refs, L, G, DY, beta, step, scale)
+            -> (U, Y, refs, L, G, DY, mean_acceptance, n_bad_grad)
 
     runs `n_mcmc` preconditioned-MALA sweeps over the particle cloud. Every
     proposal's chemistry warm-starts from the particle's carried converged column Y
@@ -951,6 +979,16 @@ def _make_mutation(pipe: Pipeline, n_mcmc: int):
     proposal in a non-convergent corner is cut off and rejected there instead of
     dragging the whole lockstep batch to the cold count_max (the early-ladder
     wall-clock killer diagnosed on job 64745).
+
+    ``DY`` is None unless the pipeline was built with ``warm_extrapolate``; then it
+    carries each particle's converged-column tangents d y*/d theta_chem, and each
+    proposal's warm solve is seeded at the first-order prediction
+    Y + DY·(theta_new - theta_cur) instead of at Y itself (measured ~1.65x fewer
+    warm steps on MALA-sized moves). The seed's refs are set to the PROPOSAL's
+    (lnZ, c_o): the extrapolated column already carries the predicted composition
+    shift, so the solver's own refs-rescale must become a no-op (double-scaling
+    otherwise). Both seeds relax to the same certified steady state; the
+    extrapolation changes wall time, not the target.
 
     Each sweep emits a heartbeat log line (index, mean acceptance, rejected-proposal
     count, n_bad_grad) via jax.debug.callback, so a slow stage shows per-sweep
@@ -967,21 +1005,35 @@ def _make_mutation(pipe: Pipeline, n_mcmc: int):
     dtype = pipe.dtype
     log_prior_u = pipe.log_prior_u
     _, _, move_vg, _ = _get_batch_evals(pipe)
+    extrap = bool(getattr(pipe, "warm_extrapolate", False))
+    theta_from_u = pipe.theta_from_u
+    n_ct = int(getattr(pipe, "n_chem_tp", 0))
 
     def _heartbeat(s_idx, acc_mean, n_rej, n_bad, n_prop):
         logger.info(f"    sweep {int(s_idx) + 1}/{n_mcmc}: accept={float(acc_mean):.2f} "
                     f"rejected={int(n_rej)}/{int(n_prop)} n_bad_grad={int(n_bad)}")
 
-    def mutate(key, U, Y, refs, L, G, beta, step, scale):
+    def mutate(key, U, Y, refs, L, G, DY, beta, step, scale):
         def dlogprior(U_):
             return 1.0 - 2.0 * jax.nn.sigmoid(U_)
 
-        def sweep(k, s_idx, U, Y, refs, L, G):
+        def sweep(k, s_idx, U, Y, refs, L, G, DY):
             kp, ka = jax.random.split(k)
             noise = jax.random.normal(kp, U.shape, dtype=U.dtype)
             GT = dlogprior(U) + beta * G
             U_new = U + step * (scale * scale) * GT + jnp.sqrt(2.0 * step) * scale * noise
-            L_new, G_new, Y_new, refs_new, n_bad = move_vg(U_new, Y, refs)
+            if extrap:
+                # first-order warm-start extrapolation: seed the proposal's solve at
+                # the predicted converged column; refs = the PROPOSAL's (lnZ, c_o) so
+                # the solver's refs-rescale is a no-op (no double-scaling)
+                C_cur = jax.vmap(theta_from_u)(U)[:, :n_ct]
+                C_new = jax.vmap(theta_from_u)(U_new)[:, :n_ct]
+                Y_seed = jnp.maximum(
+                    Y + jnp.einsum("nkij,nk->nij", DY, C_new - C_cur), 0.0)
+                L_new, G_new, Y_new, refs_new, n_bad, DY_new = move_vg(
+                    U_new, Y_seed, C_new[:, :2])
+            else:
+                L_new, G_new, Y_new, refs_new, n_bad, DY_new = move_vg(U_new, Y, refs)
             GT_new = dlogprior(U_new) + beta * G_new
             # asymmetric MH correction for the preconditioned Langevin proposal
             df = (U_new - U - step * (scale * scale) * GT) / scale
@@ -998,24 +1050,26 @@ def _make_mutation(pipe: Pipeline, n_mcmc: int):
             refs = jnp.where(accept[:, None], refs_new, refs)
             L = jnp.where(accept, L_new, L)
             G = jnp.where(accept[:, None], G_new, G)
+            if extrap:
+                DY = jnp.where(accept[:, None, None, None], DY_new, DY)
             acc = jnp.minimum(jnp.exp(jnp.minimum(log_acc, 0.0)), 1.0)
             # per-sweep progress line (host-side, async): a count_max-gated slow sweep
             # is visible as it happens instead of after hours of silence
             n_rej = jnp.sum((L_new <= -1.0e29).astype(jnp.int32))
             jax.debug.callback(_heartbeat, s_idx, jnp.mean(acc), n_rej, n_bad,
                                jnp.asarray(U.shape[0], jnp.int32))
-            return U, Y, refs, L, G, acc, n_bad
+            return U, Y, refs, L, G, DY, acc, n_bad
 
         def body(carry, xs):
             k, s_idx = xs
-            U, Y, refs, L, G = carry
-            U, Y, refs, L, G, acc, n_bad = sweep(k, s_idx, U, Y, refs, L, G)
-            return (U, Y, refs, L, G), (jnp.mean(acc), n_bad)
+            U, Y, refs, L, G, DY = carry
+            U, Y, refs, L, G, DY, acc, n_bad = sweep(k, s_idx, U, Y, refs, L, G, DY)
+            return (U, Y, refs, L, G, DY), (jnp.mean(acc), n_bad)
 
         keys = jax.random.split(key, n_mcmc)
-        (U, Y, refs, L, G), (accs, n_bads) = jax.lax.scan(
-            body, (U, Y, refs, L, G), (keys, jnp.arange(n_mcmc)))
-        return U, Y, refs, L, G, jnp.mean(accs), jnp.sum(n_bads)
+        (U, Y, refs, L, G, DY), (accs, n_bads) = jax.lax.scan(
+            body, (U, Y, refs, L, G, DY), (keys, jnp.arange(n_mcmc)))
+        return U, Y, refs, L, G, DY, jnp.mean(accs), jnp.sum(n_bads)
 
     return jax.jit(mutate)
 
@@ -1042,14 +1096,14 @@ def tune_step_size(pipe: Pipeline, key) -> float:
     scale = jnp.ones((pipe.n_dim,), dtype=dtype)
     key, sub = jax.random.split(key)
     U = pipe.sample_prior_u(sub, _init_draw_count(pipe, n_p))
-    U, L, G, Y, refs = _init_state(pipe, U, target_n=n_p)
+    U, L, G, Y, refs, DY = _init_state(pipe, U, target_n=n_p)
     mutate = _make_mutation(pipe, int(cfg.mcmc_tune_steps))
     log_step = math.log(min(max(float(cfg.mala_step_size), cfg.mcmc_step_size_min), cfg.mcmc_step_size_max))
     target = float(cfg.mcmc_target_accept_mala)
     for it in range(int(cfg.mcmc_tune_iters)):
         key, sub = jax.random.split(key)
-        U, Y, refs, L, G, acc, n_bad = mutate(sub, U, Y, refs, L, G, beta,
-                                              jnp.asarray(math.exp(log_step), dtype), scale)
+        U, Y, refs, L, G, DY, acc, n_bad = mutate(sub, U, Y, refs, L, G, DY, beta,
+                                                  jnp.asarray(math.exp(log_step), dtype), scale)
         _check_mutation_health(n_bad, f"step-size tuning iteration {it}")
         acc_f = float(jax.device_get(acc))
         log_step += float(cfg.mcmc_tune_gain) * (acc_f - target)
@@ -1115,6 +1169,15 @@ def run_smc_loop(pipe: Pipeline, key, progress: bool = True,
             refs = jnp.asarray(ck["chem_refs"], dtype)
             L = jnp.asarray(ck["loglik"], dtype)
             G = jnp.asarray(ck["grad_u"], dtype)
+            if getattr(pipe, "warm_extrapolate", False):
+                if "y_tangents" not in ck.files:
+                    raise ValueError(
+                        "warm_extrapolate=True but the checkpoint carries no "
+                        "y_tangents (it was written with extrapolation off). Resume "
+                        "with warm_extrapolate=false, or start a fresh run.")
+                DY = jnp.asarray(ck["y_tangents"], dtype)
+            else:
+                DY = None
             state_loaded = True
         else:
             logger.warning("checkpoint predates the carried chemistry state; "
@@ -1126,7 +1189,7 @@ def run_smc_loop(pipe: Pipeline, key, progress: bool = True,
         # one batched cold two-stage solve per particle: the ONLY solve-from-baseline
         # work in the whole run (every mutation proposal warm-continues from here)
         t0 = time.perf_counter()
-        U, L, G, Y, refs = _init_state(pipe, U, target_n=N)
+        U, L, G, Y, refs, DY = _init_state(pipe, U, target_n=N)
         jax.block_until_ready(L)
         logger.info(f"Initialized particle state (cold likelihood + move-map gradient) "
                     f"in {time.perf_counter()-t0:.1f}s")
@@ -1169,16 +1232,18 @@ def run_smc_loop(pipe: Pipeline, key, progress: bool = True,
         key, sub = jax.random.split(key)
         idx = _systematic_resample_idx(sub, jnp.asarray(w_norm, dtype), N)
         U, Y, refs, L, G = U[idx], Y[idx], refs[idx], L[idx], G[idx]
+        if DY is not None:
+            DY = DY[idx]
         # (3.5) preconditioner from the freshly RESAMPLED cloud (absolute per-dim
         # width: the proposal tracks the tempered posterior as it narrows)
         if cfg.mcmc_stage_adapt:
             scale = _abs_scale_diag(np.asarray(jax.device_get(U)), cap=float(cfg.mcmc_scale_clip))
         # (4) mutate at the new temperature
         key, sub = jax.random.split(key)
-        U, Y, refs, L, G, acc, n_bad = mutate(sub, U, Y, refs, L, G,
-                                              jnp.asarray(beta_new, dtype),
-                                              jnp.asarray(math.exp(log_step), dtype),
-                                              jnp.asarray(scale, dtype))
+        U, Y, refs, L, G, DY, acc, n_bad = mutate(sub, U, Y, refs, L, G, DY,
+                                                  jnp.asarray(beta_new, dtype),
+                                                  jnp.asarray(math.exp(log_step), dtype),
+                                                  jnp.asarray(scale, dtype))
         jax.block_until_ready(U)
         _check_mutation_health(n_bad, f"SMC stage {i} (beta={beta_new:.3e})")
         acc_f = float(jax.device_get(acc))
@@ -1213,7 +1278,9 @@ def run_smc_loop(pipe: Pipeline, key, progress: bool = True,
                      y_state=np.asarray(jax.device_get(Y), np.float64),
                      chem_refs=np.asarray(jax.device_get(refs), np.float64),
                      loglik=np.asarray(jax.device_get(L), np.float64),
-                     grad_u=np.asarray(jax.device_get(G), np.float64))
+                     grad_u=np.asarray(jax.device_get(G), np.float64),
+                     **({"y_tangents": np.asarray(jax.device_get(DY), np.float64)}
+                        if DY is not None else {}))
             tmp.replace(checkpoint_path)
 
         if beta >= 1.0 - 1e-8:

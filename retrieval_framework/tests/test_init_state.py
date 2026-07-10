@@ -39,7 +39,7 @@ def _chem_like_pipe(count_max=100, oversample=1.6, y_shape=(4, 3)):
     def move_vg(U, Y, refs):
         L = -0.5 * jnp.sum(U ** 2, axis=1)
         G = -U
-        return L, G, Y, refs, jnp.int32(0)                       # survivors: no AD pathology
+        return L, G, Y, refs, jnp.int32(0), None                 # survivors: no AD pathology
 
     def _unused(*a, **k):                                        # never called on this path
         raise AssertionError("unexpected evaluator call")
@@ -78,7 +78,7 @@ def test_init_state_rejects_nonconverged_and_keeps_target_n():
     pipe = _chem_like_pipe(count_max=100)
     # 12 draws: first 4 exhausted (>=0), last 8 healthy (<0). Ask for 8.
     U = _U([+1, +1, +1, +1, -1, -2, -3, -4, -5, -6, -7, -8])
-    U_keep, L, G, Y, refs = P._init_state(pipe, U, target_n=8)
+    U_keep, L, G, Y, refs, DY = P._init_state(pipe, U, target_n=8)
 
     assert U_keep.shape[0] == 8 and L.shape[0] == 8 and G.shape[0] == 8
     assert np.all(np.isfinite(np.asarray(L)))
@@ -93,7 +93,7 @@ def test_init_state_culls_extra_survivors_to_exactly_target_n():
     pipe = _chem_like_pipe(count_max=100)
     # 10 healthy draws but only 6 requested -> keep the first 6, no rejection needed
     U = _U([-1, -2, -3, -4, -5, -6, -7, -8, -9, -10])
-    U_keep, L, G, Y, refs = P._init_state(pipe, U, target_n=6)
+    U_keep, L, G, Y, refs, DY = P._init_state(pipe, U, target_n=6)
     assert U_keep.shape[0] == 6
     assert np.allclose(np.asarray(U_keep)[:, 0], [-1, -2, -3, -4, -5, -6])
 
@@ -109,6 +109,6 @@ def test_init_state_raises_when_too_few_survivors():
 def test_init_state_all_healthy_default_target_is_len_u():
     pipe = _chem_like_pipe(count_max=100)
     U = _U([-1, -2, -3, -4])
-    U_keep, L, G, Y, refs = P._init_state(pipe, U)   # target_n=None -> len(U)
+    U_keep, L, G, Y, refs, DY = P._init_state(pipe, U)   # target_n=None -> len(U)
     assert U_keep.shape[0] == 4
     assert np.all(np.isfinite(np.asarray(L)))

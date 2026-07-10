@@ -164,7 +164,7 @@ def calibrate(cfg: C.Config, pipe, P, jax) -> Dict[str, float]:
     U = pipe.sample_prior_u(sub, P._init_draw_count(pipe, N))
 
     t0 = time.perf_counter()
-    U, L, G, Y, refs = P._init_state(pipe, U, target_n=N)
+    U, L, G, Y, refs, DY = P._init_state(pipe, U, target_n=N)
     jax.block_until_ready(L)
     t_init = time.perf_counter() - t0
     log.info(f"state init (cold likelihood + move-map gradient): {t_init:.1f}s "
@@ -175,14 +175,14 @@ def calibrate(cfg: C.Config, pipe, P, jax) -> Dict[str, float]:
     step = jnp.asarray(float(cfg.mala_step_size), pipe.dtype)
     scale = jnp.ones((pipe.n_dim,), pipe.dtype)
     t0 = time.perf_counter()
-    out = mutate(key, U, Y, refs, L, G, beta, step, scale)
+    out = mutate(key, U, Y, refs, L, G, DY, beta, step, scale)
     jax.block_until_ready(out[0]); t_mut_compile = time.perf_counter() - t0
-    P._check_mutation_health(out[6], "calibration mutation (compile pass)")
-    U2, Y2, refs2, L2, G2 = out[:5]
+    P._check_mutation_health(out[7], "calibration mutation (compile pass)")
+    U2, Y2, refs2, L2, G2, DY2 = out[:6]
     t0 = time.perf_counter()
-    out = mutate(key, U2, Y2, refs2, L2, G2, beta, step, scale)
+    out = mutate(key, U2, Y2, refs2, L2, G2, DY2, beta, step, scale)
     jax.block_until_ready(out[0]); t_mut = time.perf_counter() - t0
-    P._check_mutation_health(out[6], "calibration mutation (steady-state pass)")
+    P._check_mutation_health(out[7], "calibration mutation (steady-state pass)")
 
     per_stage = t_mut
     proj = {
@@ -192,7 +192,7 @@ def calibrate(cfg: C.Config, pipe, P, jax) -> Dict[str, float]:
         "smc_rt_chunk": int(cfg.smc_rt_chunk), "smc_rt_vjp_chunk": int(cfg.smc_rt_vjp_chunk),
         "t_state_init_s": t_init,
         "t_mutation_compile_s": t_mut_compile, "t_mutation_sweep_s": t_mut,
-        "mutation_accept_frac": float(jax.device_get(out[5])),
+        "mutation_accept_frac": float(jax.device_get(out[6])),
         "t_per_stage_s": per_stage,
         "projected_hours_15_stages": (t_init + t_mut_compile + 15 * per_stage) / 3600.0,
         "projected_hours_25_stages": (t_init + t_mut_compile + 25 * per_stage) / 3600.0,

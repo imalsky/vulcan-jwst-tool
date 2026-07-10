@@ -97,15 +97,30 @@ class Config:
     # stage. VALUE (measured, smoke chain 2026-07-09): a MALA-small warm move needs
     # ~780 accepted steps -- the conv_step=500 longdy certification window dominates the
     # warm floor, NOT count_min -- so an 800 cap would reject typical GOOD proposals;
-    # 1500 keeps ~2x margin while still cutting the gated worst case 3.3x vs 5000. (A
-    # tangent-extrapolated warm start converges the same move in ~470 steps -- once that
-    # lands in the mutation kernel this cap can drop to ~800.) Statistical effect:
+    # 1500 keeps ~2x margin while still cutting the gated worst case 3.3x vs 5000.
+    # (warm_extrapolate=True converges the same move in ~470 steps -- once A/B-validated
+    # on the GPU, this cap can drop to ~800 alongside it.) Statistical effect:
     # proposals converging in (warm_count_max, count_max] become extra MH rejections --
     # a valid kernel either way; watch the per-sweep heartbeat's rejected counts.
     # Cold/two-stage solves are NOT affected (they keep count_max). Must be <= count_max
     # (build_chem_model raises); a cap below the effective warm floor rejects every
     # proposal, which the init gradient pass catches loudly within minutes.
     warm_count_max: int = 1500
+    # Tangent-extrapolated warm starts (OPT-IN). Seed each MALA proposal's warm solve
+    # from Y + (dy/dtheta)·dtheta -- dy = the converged column's parameter tangents,
+    # which the gradient pass already computes per particle (and otherwise discards).
+    # The proposal then starts a first-order prediction away from its own answer.
+    # MEASURED (smoke chain 2026-07-09): the ~780-step MALA-small warm re-converge
+    # drops to ~470 steps (1.65x), same column to 9e-3 dex; once validated on a GH200
+    # SYNTH A/B, warm_count_max can drop toward ~800 for the second half of the win.
+    # First-order in the move: exactly right for MALA-sized steps, useless for large
+    # jumps (those hit warm_count_max either way). Requires smc_chem_mode="warm".
+    # The extrapolated column carries the predicted lnZ/C-O shift, so the solver's own
+    # refs-rescale is bypassed (refs are set to the proposal's values -- the validated
+    # no-double-scaling recipe). Costs ~14 MB of carried tangents at N=96 and adds a
+    # y_tangents field to the checkpoint; resuming an extrapolated run from a
+    # checkpoint without tangents raises (restart or resume with this off).
+    warm_extrapolate: bool = False
     # Max integrator step size (s). None -> VULCAN-master default (runtime*1e-5 = 1e17 s).
     # DIAGNOSED 2026-07-08: that master default is physically absurd for a photochemical
     # column (nothing evolves on >~1e12 s timescales) and is the ROOT of most of the
@@ -447,6 +462,10 @@ def validate_config(cfg: Config) -> None:
             "the warm mutation cap exists to reject doomed proposals EARLIER than the "
             "cold cap, never later (build_chem_model enforces the same against the "
             "vulcan_cfg default when count_max is inherited)")
+    if cfg.warm_extrapolate and str(cfg.smc_chem_mode).strip().lower() != "warm":
+        raise ValueError("warm_extrapolate=True requires smc_chem_mode='warm' -- the "
+                         "extrapolation seeds the warm continuation; there is nothing "
+                         "to seed on the cold map")
     if cfg.tp_model not in ("guillot", "powerlaw"):
         raise ValueError(f"unknown tp_model {cfg.tp_model!r}")
     # Planet identity must be declared explicitly by the case: without these the RT
@@ -540,7 +559,8 @@ def describe_config(cfg: Config, preset: str = "", specs: Optional[List[ParamSpe
         f"    N={cfg.smc_num_particles}   mcmc_steps={cfg.smc_num_mcmc_steps}   "
         f"max_stages={cfg.smc_max_steps}   target_ess_frac={cfg.smc_target_ess_frac:g}   "
         f"step={cfg.mala_step_size:g}",
-        f"    gradient_mode={cfg.gradient_mode}   chem_mode={cfg.smc_chem_mode}   "
+        f"    gradient_mode={cfg.gradient_mode}   chem_mode={cfg.smc_chem_mode}"
+        f"   warm_extrapolate={'on' if cfg.warm_extrapolate else 'off'}   "
         f"rt_chunk={cfg.smc_rt_chunk}   rt_vjp_chunk={cfg.smc_rt_vjp_chunk}   chem_chunk={cfg.smc_chem_chunk}",
         f"    walltime governor: {cfg.walltime_seconds / 3600.0:.1f} h"
         + ("  (no limit)" if cfg.walltime_seconds <= 0 else ""),

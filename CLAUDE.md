@@ -131,15 +131,23 @@ wired, suite 18/18):
   MEASURED (smoke chain, same day): a MALA-small warm move needs ~780 accepted steps —
   the **conv_step=500 longdy certification window dominates the warm floor**, not
   count_min — so the first-guess cap of 800 would have rejected typical GOOD proposals;
-  1500 gives ~2x margin and still cuts the gated worst case 3.3x vs 5000. A
-  tangent-extrapolated warm start (seed the proposal solve from `Y + dy·Δθ` using the
-  jvp tangents the gradient step already computes and currently discards) converged the
-  same move in ~470 steps with the same column to 9e-3 dex — wiring that into the
-  mutation carry would allow ~800 again (a further ~1.65x; not yet implemented).
+  1500 gives ~2x margin and still cuts the gated worst case 3.3x vs 5000.
   Proposals that would converge in (1500, 5000] become extra MH rejections — a valid
   kernel either way. Cold/two-stage solves keep `count_max` (init phase 1 and the
   two_stage_z stage-2 increment genuinely need it). `warm_count_max > count_max` raises
   (schema + build).
+- **`warm_extrapolate` (opt-in, WIRED 2026-07-10, default off).** Seeds each proposal's
+  warm solve at the first-order prediction `Y + (dy/dθ)·Δθ`, where dy/dθ = the converged
+  column's parameter tangents read off the SAME jvp lanes that produce the gradient
+  (zero extra compute; ~14 MB carried at N=96; `y_tangents` added to the checkpoint —
+  resuming an extrapolated run from a tangent-less checkpoint raises). The seed's refs
+  are set to the PROPOSAL's (lnZ, c_o) so the solver's refs-rescale is a no-op — the
+  no-double-scaling recipe; getting this wrong silently double-applies the composition
+  shift, which is why `tests/test_warm_extrap.py` pins seed-vs-plain likelihood parity
+  on the real smoke chain. Measured: ~780 → ~470 warm steps (1.65x) on a MALA-small
+  move. Flag off compiles today's exact kernel (trace-time gating). VALIDATION before
+  production use: one `SYNTH=1` A/B (same seed, flag on vs off — same posterior, faster
+  sweeps), then optionally `warm_count_max` → ~800 for the second half of the win.
 - **accept_count rides the jvp chain** (`chem_solve_warm_diag` IS the warm gradient
   solve now): it is part of the runner's primal carry, integer-valued (tangent-free;
   stop_gradient + cast inside `_chain`). The duplicate diag while_loop is gone — ~2× on
