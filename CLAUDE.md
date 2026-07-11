@@ -15,6 +15,17 @@
   machines (the pandeia preflight fails loudly). Do not replace it with a copy.
 - `forward._VERSION` is the cache-buster for model_cache spectra (v5 = 2026-07-11
   exact-elemental map); bump it whenever the physics changes.
+- `noise.noise_job`'s `worker_version` (3 as of the 2026-07-11 v6 estimator pass)
+  + the backend fingerprint (engine version, refdata VERSION hashes) bust the
+  noise_cache; bump worker_version whenever `pandeia_worker.py` output changes.
+- ONE measurement operator (`binning.py`, count-space/flux weights) bins noise,
+  model, and Jacobians — never reintroduce separate binning paths (that was the
+  2026-07-11 external audit's headline finding; history in `notes.md` v6).
+  Degenerate-wavelength pandeia pixels (G395H red-edge pileup) are excluded there.
+- Fisher inversion must stay rank-aware (`fisher._marg_sigmas`: unconditional
+  eigh + relative threshold; degenerate directions read `inf`) — no
+  `np.linalg.inv` on Fisher matrices.
+- Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX needed).
 - The forward model imports must keep the order config -> vulcan_chem -> exojax
   (guard-enforced in retrieval_framework.forward.vulcan_chem).
 - Heavy HPC/retrieval operational rules live in the sibling vulcan-retrieval repo's

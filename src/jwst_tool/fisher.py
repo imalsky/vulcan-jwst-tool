@@ -15,8 +15,13 @@ Nuisance handling (mirrors the zco_information campaign):
     marginalized. Offsets are what make multi-instrument combinations honest --
     within a single band an offset and lnR0 are nearly degenerate.
 
-A parameter with (numerically) no spectral response comes back as inf, shown as
-"unconstrained" by the GUI rather than a fake number.
+A parameter with (numerically) no spectral response, or with weight in a
+numerically null Fisher direction (a degeneracy), comes back as inf, shown as
+"unconstrained" by the GUI rather than a fake number. The inversion is ALWAYS
+rank-aware (eigendecomposition + relative threshold): np.linalg.inv on an
+ill-conditioned Fisher matrix returns misleading finite numbers without
+raising, so it is never used. Forecast sigmas are local Cramer-Rao lower
+bounds under the quoted noise model -- best cases, not posterior widths.
 """
 from __future__ import annotations
 
@@ -27,43 +32,66 @@ _LN10 = np.log(10.0)
 # report-unit conversion: sigma in ln-units -> display units
 _TO_DISPLAY = {"lnZ": 1.0 / _LN10, "lnKzz": 1.0 / _LN10}
 
+# Relative eigenvalue threshold: Fisher directions below REL_EIG_TOL x the
+# largest eigenvalue are treated as numerically unconstrained (null space).
+# eigh's noise floor is ~1e-16 x wmax; 1e-10 keeps 6 decades of margin while
+# still spanning any physically meaningful constraint ratio.
+REL_EIG_TOL = 1e-10
+# A reported parameter whose loading on any null eigenvector exceeds this is
+# flagged inf (it lives partly in an unconstrained direction).
+NULL_LOAD_TOL = 1e-6
 
-def _marg_sigmas(F: np.ndarray, n_report: int) -> np.ndarray:
-    """Marginalized sigmas for the first n_report parameters of F (inf if singular)."""
-    try:
-        cov = np.linalg.inv(F)
-        d = np.diag(cov)[:n_report]
-        return np.where(d > 0, np.sqrt(np.abs(d)), np.inf)
-    except np.linalg.LinAlgError:
-        # singular: eigen-decompose, invert the supported subspace, flag the rest
-        w, V = np.linalg.eigh(F)
-        wmax = float(np.max(np.abs(w))) if len(w) else 0.0
-        good = np.abs(w) > 1e-12 * max(wmax, 1e-300)
-        cov = (V[:, good] / w[good]) @ V[:, good].T
-        out = np.sqrt(np.abs(np.diag(cov)[:n_report]))
-        null = ~good
-        if null.any():
-            # any reported parameter with weight in the null space is unconstrained
-            bad = (np.abs(V[:, null]).max(axis=1)[:n_report] > 1e-6)
-            out[bad] = np.inf
-        return out
+
+def _marg_sigmas(F: np.ndarray, n_report: int,
+                 diag: dict | None = None) -> np.ndarray:
+    """Rank-aware marginalized sigmas for the first n_report parameters of F.
+
+    Unconditional eigendecomposition (F is symmetric PSD by construction) with
+    an explicit relative threshold; parameters loaded on null directions come
+    back inf. Pass a dict as ``diag`` to receive rank / dimension / condition
+    number / eigenvalues (the audit-required numerical-health fields).
+    """
+    F = np.asarray(F, float)
+    F = 0.5 * (F + F.T)
+    w, V = np.linalg.eigh(F)
+    wmax = float(w[-1]) if w.size else 0.0
+    good = w > REL_EIG_TOL * max(wmax, 1e-300)
+    if diag is not None:
+        diag.update(
+            fisher_dimension=int(F.shape[0]),
+            fisher_rank=int(good.sum()),
+            condition_number=(wmax / float(w[good].min()) if good.any()
+                              else float("inf")),
+            eigenvalues=w.copy(),
+            rel_eig_tol=REL_EIG_TOL,
+        )
+    if not good.any():
+        return np.full(n_report, np.inf)
+    cov_diag = ((V[:, good] ** 2) / w[good]).sum(axis=1)
+    out = np.sqrt(cov_diag[:n_report])
+    if (~good).any():
+        load = np.abs(V[:, ~good]).max(axis=1)[:n_report]
+        out[load > NULL_LOAD_TOL] = np.inf
+    return out
 
 
 def display_sigma(name: str, sigma: float) -> float:
     return sigma * _TO_DISPLAY.get(name, 1.0)
 
 
-def mode_forecast(result: dict, free_names: list[str]) -> dict:
+def mode_forecast(result: dict, free_names: list[str],
+                  diag: dict | None = None) -> dict:
     """Per-mode marginalized sigmas. result needs jac_bins (n_par, n_bins) whose rows
-    are [free..., lnR0] and sigma (n_bins,)."""
+    are [free..., lnR0] and sigma (n_bins,). ``diag``: see _marg_sigmas."""
     J = np.asarray(result["jac_bins"])
     s = np.asarray(result["sigma"])
     F = (J / s[None, :] ** 2) @ J.T
-    sig = _marg_sigmas(F, len(free_names))
+    sig = _marg_sigmas(F, len(free_names), diag=diag)
     return dict(zip(free_names, sig))
 
 
-def combined_forecast(results: list[dict], free_names: list[str]) -> dict:
+def combined_forecast(results: list[dict], free_names: list[str],
+                      diag: dict | None = None) -> dict:
     """All modes jointly: shared free params + shared lnR0 + one offset per mode."""
     n_f = len(free_names)
     n_modes = len(results)
@@ -78,7 +106,7 @@ def combined_forecast(results: list[dict], free_names: list[str]) -> dict:
         Jg[n_f] = J[n_f]                          # shared lnR0
         Jg[n_f + 1 + m] = 1.0                     # this mode's depth offset
         F += (Jg / s[None, :] ** 2) @ Jg.T
-    sig = _marg_sigmas(F, n_f)
+    sig = _marg_sigmas(F, n_f, diag=diag)
     return dict(zip(free_names, sig))
 
 

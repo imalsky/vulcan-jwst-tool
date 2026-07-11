@@ -36,7 +36,10 @@ st.title("JWST instrument selector")
 st.caption(
     "VULCAN-JAX photochemistry → ExoJAX transmission spectrum → Pandeia ETC noise. "
     "Pick a planet and a science goal, run the model locally, and see which "
-    "instrument mode achieves it best."
+    "instrument mode achieves it best. Uncertainties are an **ETC random-noise "
+    "lower bound** plus an editable systematic-floor scenario — not a full "
+    "time-series systematics forecast; treat mode rankings as more robust than "
+    "absolute ppm."
 )
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
@@ -475,9 +478,16 @@ def compute():
         elif etc[k].get("unusable") or not etc[k].get("wl"):
             unusable.append((k, etc[k].get("reason", "no usable pixels")))
         else:
-            results.append(detect.evaluate_mode(
-                k, etc[k], model, target_mol, r_bin, t_in_s, t_out_s,
-                n_transits, floors[k]))
+            try:
+                results.append(detect.evaluate_mode(
+                    k, etc[k], model, target_mol, r_bin, t_in_s, t_out_s,
+                    n_transits, floors[k]))
+            except Exception as e:
+                # one bad mode must not kill the whole run -- report it with
+                # its label + the actual reason, keep evaluating the rest
+                failed.append((k, f"{type(e).__name__}: {e}\n\n"
+                                  f"(binning/noise evaluation for {k}; the other "
+                                  "modes are unaffected)"))
     return dict(model=model, results=results, failed=failed, unusable=unusable,
                 fisher_names=list(fisher_params))
 
@@ -505,9 +515,11 @@ model, results = out["model"], out["results"]
 goal_r = meta.get("goal", "detect")
 
 for k, err in out["failed"]:
-    st.error(f"{ins.MODES[k]['label']}: Pandeia calculation failed — see details.")
-    with st.expander(f"{ins.MODES[k]['label']} traceback"):
-        st.code(err[-2500:])
+    first = str(err).strip().splitlines()[-1] if "Traceback" in str(err) else \
+        str(err).strip().splitlines()[0]
+    st.error(f"{ins.MODES[k]['label']}: failed — {first}")
+    with st.expander(f"{ins.MODES[k]['label']} details"):
+        st.code(str(err)[-2500:])
 for k, reason in out["unusable"]:
     st.warning(f"**{ins.MODES[k]['label']}: unusable on this star** — {reason}.")
 
@@ -720,16 +732,26 @@ for r in sorted(results, key=key_order):
     notes = []
     if r["saturated"]:
         notes.append(f"saturates (full-well {r['sat_frac']:.2f} at min groups)")
+    n_part = int(np.sum(np.asarray(r.get("n_pix_partial_sat", 0)) > 0))
+    if r.get("n_pix_full_sat_dropped"):
+        notes.append(f"{r['n_pix_full_sat_dropped']} fully saturated pixels excluded")
+    if r.get("n_pix_degenerate_dropped"):
+        notes.append(f"{r['n_pix_degenerate_dropped']} degenerate-wavelength "
+                     "pixels excluded")
+    if n_part:
+        notes.append(f"partial saturation in {n_part} bins")
     if r["warnings"]:
         notes.append("; ".join(list(r["warnings"])[:2]))
     row = {"mode": r["label"],
            "band (μm)": f"{r['wl'].min():.2f}–{r['wl'].max():.2f}"}
+    # NOTE: this column must stay all-string -- mixing int and str values makes
+    # streamlit's Arrow serialization fail (loud pyarrow tracebacks per render)
     if goal_r == "detect":
         row["σ_detect"] = round(r["sigma_detect"], 1)
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
-            row["transits → target"] = (_tt["n"] if _tt["reachable"] else
+            row["transits → target"] = (str(_tt["n"]) if _tt["reachable"] else
                                         f"never (floor caps at {_tt['sig_inf']:.1f}σ)")
         else:
             row["transits → target"] = "—"
@@ -742,7 +764,7 @@ for r in sorted(results, key=key_order):
             _tt = fisher_mod.transits_to_target(r, fisher_names, gp,
                                                 target / tsig,
                                                 detect.sigma_at_transits)
-            row["transits → target"] = (_tt["n"] if _tt["reachable"] else
+            row["transits → target"] = (str(_tt["n"]) if _tt["reachable"] else
                                         f"never (floor caps at ±{tsig * _tt['sig_inf']:.3g})")
         else:
             row["transits → target"] = "—"
@@ -762,7 +784,10 @@ if goal_r == "detect":
         "manufacture floor-limited significance). 'transits → target' averages "
         "down the photon term only — the floor does not integrate out, so it can "
         "honestly read 'never'. Groups are chosen to stay under the saturation "
-        "limit, PandExo-style."
+        "limit and verified against Pandeia's measured saturation. σ_detect is a "
+        "**fixed-model distinguishability** (opacity-removal upper bound): T, "
+        "clouds, and the other abundances are not re-fit, so a full retrieval "
+        "detection can only be weaker."
     )
 else:
     st.caption(
@@ -800,12 +825,20 @@ if fisher_names and "jac" in model:
         frows.append({"mode": r["label"],
                       **{f"±{n} at {tsig_f:g}σ [{forward.PARAM_UNITS[n]}]":
                          _cell(n, sig[n]) for n in fisher_names}})
+    fdiag = {}
     if len(usable_f) >= 2:
-        sig = fisher_mod.combined_forecast(usable_f, fisher_names)
+        sig = fisher_mod.combined_forecast(usable_f, fisher_names, diag=fdiag)
         frows.append({"mode": "ALL SELECTED (combined, non-saturated)",
                       **{f"±{n} at {tsig_f:g}σ [{forward.PARAM_UNITS[n]}]":
                          _cell(n, sig[n]) for n in fisher_names}})
     st.dataframe(frows, width="stretch", hide_index=True)
+    if fdiag:
+        rank, dim = fdiag["fisher_rank"], fdiag["fisher_dimension"]
+        st.caption(
+            f"Numerical health (combined): Fisher rank {rank}/{dim}, condition "
+            f"number {fdiag['condition_number']:.2g}."
+            + (" **Rank-deficient — degenerate directions are reported as "
+               "unconstrained, not as fake finite numbers.**" if rank < dim else ""))
     with st.expander("How to read this table"):
         st.markdown(
             f"- Each cell is the **expected ±uncertainty at {tsig_f:g}σ** "

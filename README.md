@@ -82,15 +82,26 @@ enforced loudly). All system parameters are editable in the GUI.
 - **Noise** (`pandeia_worker.py` in the `picaso_base` conda env — pandeia.engine
   3.0 matching the on-disk `pandeia_data-3.0rc3` refdata): per-native-pixel
   extracted flux + noise for a PHOENIX star normalized to the entered Ks mag
-  (at_lambda; 2MASS zeropoint), groups auto-chosen to stay under the saturation
-  limit (PandExo-style). Transit-depth error per bin:
-  `var = (noise/flux)² (1/n_in + 1/n_out) / n_transits`, inverse-variance
-  binned, then a **non-averaging** systematic floor in quadrature (defaults per
-  mode, editable; Greene+2016-ish, in-flight performance is often better).
+  (at_lambda; 2MASS zeropoint). Groups are chosen from the probe ramp AND
+  pandeia's own `sat_ngroups`, then **verified** against the measured
+  saturation fraction (stepping down if the linear full-well extrapolation
+  overshot); per-channel saturation curves flag/exclude affected pixels, and
+  degenerate-wavelength grid pixels (the 3.0rc3 G395H red-edge pileup) are
+  excluded. Per-pixel depth error:
+  `var = (noise/flux)² (1/n_in + 1/n_out) / n_transits`, combined per bin in
+  **count space** (flux-weighted — `binning.py`, the SAME operator that bins
+  the model and Jacobians, so the quoted variance belongs to the same
+  estimator as the forecast model point), then a **non-averaging** systematic
+  floor in quadrature (defaults per mode, editable; Greene+2016-ish, in-flight
+  performance is often better).
   Floors are quoted **per R=100 bin** and anchored there: finer bins scale the
   per-bin floor by √(R/100), so the bin slider cannot manufacture
   floor-limited significance. The photon and floor terms are returned
   separately, so multi-transit predictions average down only the photon term.
+  All of it is an **ETC random-noise lower bound** plus a floor scenario, not
+  a time-series systematics model (no 1/f residuals, visit trends, tilt
+  events, limb-darkening/detrending covariance, or stellar heterogeneity):
+  treat mode rankings as more robust than absolute ppm.
 - **Science goals** (two kinds):
   - *Detect a molecule*: `σ = √Δχ²` of (full − without-X) on each mode's
     bins with a free constant depth offset profiled out (a molecule's flat
@@ -106,9 +117,13 @@ enforced loudly). All system parameters are editable in the GUI.
   the full chain (the validated sensitivity pattern) + an RT-only lnR0 column.
   Per-mode rows marginalize lnR0; the combined row shares lnR0 and adds one
   absolute-depth offset nuisance per mode. Saturated modes are excluded from
-  BOTH the per-mode ranking and the combined row. Model bins are d(λ)-weighted (trapezoid) means,
-  matching the retrieval's exact binning-matrix convention. The GUI includes a
-  "how to read this" explainer (Cramér–Rao best case, no priors, dex units).
+  BOTH the per-mode ranking and the combined row. Jacobians are binned through
+  the same count-space operator as the model and noise (`binning.py`). The
+  inversion is **rank-aware** (unconditional eigendecomposition with a relative
+  eigenvalue threshold): degenerate directions come back *unconstrained*, never
+  as unstable finite numbers, and the GUI reports Fisher rank + condition
+  number. The GUI includes a "how to read this" explainer (Cramér–Rao best
+  case, no priors, dex units).
 - **Output extras**: T-P profile plot (with the [320, 2980] K opacity-window
   bounds), per-stage progress bar, reset-all button (nonce-keyed widgets).
   Default selection is 3 modes (SOSS, G395H, MIRI LRS); the ETC always
@@ -181,3 +196,24 @@ machine-specific defaults):
   elemental ratios exactly (H/He fixed), the column sums to P/(k_B T) per
   layer, and the chemistry's conserved atom totals match the requested gas.
 - No partial-saturation strategy (pandeia group optimization only).
+- Forecast tier: everything here is the **ETC lower-bound tier**. Not yet
+  implemented (roadmap, in priority order): full wavelength-covariance input
+  (beyond the diagonal + R-anchored floor), empirically calibrated per-mode
+  systematics scenarios from public JWST residuals, and a time-domain
+  injection-recovery tier (light-curve fits with limb-darkening/trend
+  nuisances) for publication-grade detection claims.
+- Pandeia backend is pinned to engine 3.0 + `pandeia_data-3.0rc3` (current
+  STScI release is 2026.2/JWST 5.1, which updates SOSS backgrounds, PSFs, and
+  BOTS multistripe timing). Upgrading requires downloading the matching
+  refdata; the engine + refdata versions are hashed into every noise cache
+  key, so a backend change invalidates caches automatically.
+
+## Tests
+
+`python -m pytest tests -q` (numpy-only, no pandeia/JAX needed): operator
+tests — constant-depth conservation, count-space estimator mean/variance vs
+Monte Carlo, model/noise same-estimator identity, operator linearity
+(Jacobian consistency), detector-gap containment, nested rebinning,
+degenerate-wavelength flagging — and rank-aware Fisher tests (duplicated
+and near-duplicated Jacobian rows must read unconstrained, Gaussian-prior
+posterior identity, well-conditioned analytic match).

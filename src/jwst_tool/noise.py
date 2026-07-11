@@ -2,15 +2,30 @@
 
 The worker gives, per instrument mode, the per-native-pixel extracted stellar
 flux and its 1-integration sigma. This module turns that into a transit-depth
-uncertainty per spectral bin, PandExo-style:
+uncertainty per spectral bin:
 
     depth = 1 - F_in/F_out
     var(depth)_pixel = (sigma_1int/flux)^2 * (1/n_int_in + 1/n_int_out) / n_transits
-    var(depth)_bin   = 1 / sum_pixels(1/var_pixel)          (inverse-variance)
-    sigma_bin        = sqrt(var_bin + floor^2)               (floor does NOT average down)
+    var(depth)_bin   = sum(w^2 var_pixel) / (sum w)^2,  w = flux   (count-space)
+    sigma_bin        = sqrt(var_bin + floor^2)           (floor does NOT average down)
 
-Results are cached by a hash of (star, modes, sat_limit) so the ETC runs once
-per star/instrument set.
+The count-space combination is the variance of the SAME estimator detect.py
+uses to bin the model (binning.build_operator) -- the sum-of-extracted-counts
+bin depth every real reduction produces. The old inverse-variance combination
+quoted the variance of a different (optimal-weights) estimator than the one
+the model was binned with; in the photon-dominated limit the two agree.
+
+What this is, and is not: an ETC RANDOM-NOISE LOWER BOUND under the selected
+extraction/detector configuration, plus an editable systematic-floor scenario.
+Pandeia's extracted noise includes photon (with the HgCdTe quantum-yield/Fano
+excess variance below ~2 um), background, dark, and correlated read noise +
+IPC -- it is NOT a time-series systematics model (1/f residuals, visit-long
+trends, pointing/tilt events, limb-darkening and detrending covariance,
+stellar heterogeneity). Real final uncertainties can only be equal or worse.
+
+Results are cached by a hash of (star, modes, sat_limit, engine + refdata
+versions) so the ETC runs once per star/instrument set and stale caches are
+invalidated when the Pandeia backend changes.
 """
 from __future__ import annotations
 
@@ -21,7 +36,44 @@ from pathlib import Path
 
 import numpy as np
 
+from . import binning
 from . import instruments as ins
+
+_BACKEND_FINGERPRINT = None
+
+
+def backend_fingerprint() -> dict:
+    """Pandeia backend identity baked into every cache key (queried once per
+    process): engine version from the picaso_base python, refdata version-file
+    contents. "unavailable" (still cache-key-stable) when the env is missing --
+    run_pandeia raises loudly on an actual run attempt."""
+    global _BACKEND_FINGERPRINT
+    if _BACKEND_FINGERPRINT is not None:
+        return _BACKEND_FINGERPRINT
+    engine = "unavailable"
+    py = Path(ins.PICASO_PYTHON)
+    if py.exists():
+        try:
+            r = subprocess.run(
+                [str(py), "-c",
+                 "import pandeia.engine; print(pandeia.engine.__version__)"],
+                capture_output=True, text=True, timeout=120)
+            if r.returncode == 0 and r.stdout.strip():
+                engine = r.stdout.strip().splitlines()[-1]
+        except Exception:
+            pass
+    ref = Path(ins.PANDEIA_REFDATA)
+    refver = []
+    for name in ("VERSION", "VERSION_PSF"):
+        f = ref / name
+        if f.exists():
+            refver.append(f"{name}:{hashlib.sha1(f.read_bytes()).hexdigest()[:12]}")
+    _BACKEND_FINGERPRINT = {
+        "engine_version": engine,
+        "refdata_name": ref.name,
+        "refdata_version_files": sorted(refver),
+    }
+    return _BACKEND_FINGERPRINT
 
 
 def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict:
@@ -35,10 +87,11 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         })
     return {
         "refdata": ins.PANDEIA_REFDATA, "cdbs": ins.PYSYN_CDBS,
+        "backend": backend_fingerprint(),
         "star": {k: float(star[k]) for k in ("teff", "log_g", "metallicity", "ks_mag")},
         "sat_limit": float(sat_limit),
         "modes": modes,
-        "worker_version": 2,   # cache-buster: bump when pandeia_worker output changes
+        "worker_version": 3,   # cache-buster: bump when pandeia_worker output changes
     }
 
 
@@ -102,43 +155,50 @@ def make_bins(wl_lo: float, wl_hi: float, R: float) -> np.ndarray:
 FLOOR_REF_R = 100.0
 
 
+def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
+                         n_transits: int) -> np.ndarray:
+    """Per-native-pixel transit-depth variance (box-depth approximation).
+
+    var = (sigma_1int/flux)^2 (1/n_in + 1/n_out) / n_transits, with the
+    integration counts from the mode's measured cycle time. Neglects
+    ingress/egress, limb darkening, and depth-detrending covariance -- the
+    fast lower-bound mode; a time-domain information calculation would need
+    the full light-curve derivative set.
+    """
+    flux = np.asarray(mode_result["flux"])
+    noise = np.asarray(mode_result["noise_1int"])
+    t_cycle = float(mode_result["t_cycle_s"])
+    n_in = max(1, int(t_in_s / t_cycle))
+    n_out = max(1, int(t_out_s / t_cycle))
+    return (noise / flux) ** 2 * (1.0 / n_in + 1.0 / n_out) / max(1, int(n_transits))
+
+
 def depth_error_bins(mode_result: dict, edges: np.ndarray,
                      t_in_s: float, t_out_s: float, n_transits: int,
-                     floor_ppm: float) -> dict:
+                     floor_ppm: float, op: dict | None = None) -> dict:
     """Per-bin transit-depth sigma from a worker mode result.
 
-    Returns dict(wl_center, sigma, n_pix, var_phot, floor, n_transits) with
-    empty-pixel bins dropped. ``var_phot`` is the photon/detector bin variance AT
-    the evaluated ``n_transits`` (it scales as 1/N); ``floor`` is the per-bin
+    ``op`` is the mode's count-space measurement operator (binning.build_operator);
+    pass the SAME operator used to bin the model so noise and model describe one
+    estimator. Built here from the pixel grid alone when omitted (noise-only use).
+
+    Returns dict(wl_center, sigma, n_pix, var_phot, floor, n_transits) over the
+    operator's kept bins. ``var_phot`` is the photon/detector bin variance AT the
+    evaluated ``n_transits`` (it scales as 1/N); ``floor`` is the per-bin
     R-anchored systematic (N-independent; see FLOOR_REF_R). sigma =
     sqrt(var_phot + floor^2). Returning the two components separately is what
     lets callers extrapolate to other transit counts CORRECTLY -- a plain
     1/sqrt(N) scaling of sigma is optimistic wherever the floor contributes.
     """
-    wl = np.asarray(mode_result["wl"])
-    flux = np.asarray(mode_result["flux"])
-    noise = np.asarray(mode_result["noise_1int"])
-    t_cycle = float(mode_result["t_cycle_s"])
-
-    n_in = max(1, int(t_in_s / t_cycle))
-    n_out = max(1, int(t_out_s / t_cycle))
-    var_pix = (noise / flux) ** 2 * (1.0 / n_in + 1.0 / n_out) / max(1, int(n_transits))
-
-    idx = np.digitize(wl, edges) - 1
-    nb = len(edges) - 1
-    inv_var = np.zeros(nb)
-    npx = np.zeros(nb, dtype=int)
-    for b in range(nb):
-        sel = idx == b
-        if sel.any():
-            inv_var[b] = np.sum(1.0 / var_pix[sel])
-            npx[b] = int(sel.sum())
-    keep = npx > 0
+    if op is None:
+        op = binning.build_operator(np.asarray(mode_result["wl"]),
+                                    np.asarray(mode_result["flux"]), edges)
+    var_pix = pixel_depth_variance(mode_result, t_in_s, t_out_s, n_transits)
+    var_phot = binning.bin_variance(op, var_pix)
     centers = 0.5 * (edges[:-1] + edges[1:])
-    var_phot = 1.0 / inv_var[keep]
-    r_bin = (centers / np.diff(edges))[keep]
+    r_bin = (centers / np.diff(edges))[op["keep"]]
     floor = (floor_ppm * 1e-6) * np.sqrt(np.maximum(r_bin, FLOOR_REF_R) / FLOOR_REF_R)
     sigma = np.sqrt(var_phot + floor ** 2)
-    return dict(wl_center=centers[keep], sigma=sigma, n_pix=npx[keep],
+    return dict(wl_center=op["wl_center"], sigma=sigma, n_pix=op["n_pix"],
                 var_phot=var_phot, floor=floor,
                 n_transits=int(max(1, int(n_transits))))
