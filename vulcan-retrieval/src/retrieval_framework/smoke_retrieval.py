@@ -33,13 +33,10 @@ from pathlib import Path
 
 import numpy as np
 
-if __package__ in (None, ""):                      # direct-file execution support
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from retrieval_framework import run_smc as R              # noqa: E402
-from retrieval_framework import pipeline as P             # noqa: E402
-import jax                      # noqa: E402
-import jax.numpy as jnp         # noqa: E402
+from retrieval_framework import run_smc as R
+from retrieval_framework import pipeline as P
+import jax
+import jax.numpy as jnp
 
 
 def main() -> int:

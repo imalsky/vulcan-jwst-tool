@@ -34,9 +34,6 @@ from pathlib import Path
 
 import numpy as np
 
-if __package__ in (None, ""):                      # direct-file execution support
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 # PASS gate on max|logL_cold - logL_warm| over the cloud. 0.1 log-units is far
 # inside a 1-sigma contour shift for a ~10-D posterior (whose logL spans ~n_dim/2
 # across the cloud); the convergence tolerance (yconv_cri=0.01) predicts ~1e-2.
@@ -163,7 +160,7 @@ def main() -> None:
                 f"max-over-bins ppm: p95={dppm_p95:.2f} max={dppm_max:.2f}")
 
     # ---- elemental-inventory comparison (column He/O/C/N/S totals per H) ----
-    import config as _shared_cfg
+    from retrieval_framework.forward import config as _shared_cfg
     compo = np.asarray(pipe.fwd.chem.compo_array, np.float64)
     cols = [_shared_cfg.ATOM_COLS[e] for e in ("H", "He", "O", "C", "N", "S")]
 

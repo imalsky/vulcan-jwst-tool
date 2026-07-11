@@ -25,13 +25,14 @@ from typing import Any
 
 import numpy as np
 
-import config                 # shared lib (vulcan_exojax_run/): constants (MOLECULES, ...)
-import vulcan_chem            # shared lib: sets env + jax x64; MUST precede exojax imports
+# import order is load-bearing: vulcan_chem (env + jax x64) before anything exojax
+from retrieval_framework.forward import config        # constants (MOLECULES, ...)
+from retrieval_framework.forward import vulcan_chem   # sets env + jax x64; MUST precede exojax imports
 import jax.numpy as jnp
 
 from retrieval_framework import tp_profile   # ExoJax Guillot / power-law T-P
-import exojax_rt              # shared lib: ExoJax ArtTransPure model
-import interp_map             # shared lib: differentiable log-P bridge
+from retrieval_framework.forward import exojax_rt     # ExoJax ArtTransPure model
+from retrieval_framework.forward import interp_map    # differentiable log-P bridge
 
 
 def build_retrieval_forward(cfg: Any) -> SimpleNamespace:

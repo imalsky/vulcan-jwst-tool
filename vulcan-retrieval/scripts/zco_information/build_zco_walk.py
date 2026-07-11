@@ -13,24 +13,24 @@ out the LINEAR nuisances actually in the design (lnR0 + inter-instrument offsets
 squares against their fiducial Jacobian columns. The nonlinear nuisances (lnKzz, T_int)
 are held at the fiducial (stated caveat). Cache -> data/zco_walk.npz for fig_zco_geometry.
 
-Run (base env, ~15-20 heavy forward runs): python build_zco_walk.py
+Run (base env, ~15-20 heavy forward runs, from the repo root):
+    python vulcan-retrieval/scripts/zco_information/build_zco_walk.py
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, vulcan_chem, ...)
-import config
-import vulcan_chem
+from retrieval_framework.forward import config
+# import order is load-bearing: vulcan_chem before exojax (sets env + jax x64)
+from retrieval_framework.forward import vulcan_chem
 import jax.numpy as jnp
-import exojax_rt
-import interp_map
+from retrieval_framework.forward import exojax_rt
+from retrieval_framework.forward import interp_map
 
-import zco_lib  # sibling in zco_information/
+import zco_lib  # sibling in zco_information/ (script dir is on sys.path)
 
 OUT = config.OUTPUTS / "zco_walk.npz"
 TIER = "P"                       # walk the fiducial (photochemistry-on) tier

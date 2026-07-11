@@ -12,7 +12,7 @@ that decides whether "air" is acceptable for a given precision target.
 The h2he build downloads into separate <db>_h2he cache dirs on first use
 (network required once). Run:
 
-    python validation/broadening_ab.py
+    python vulcan-retrieval/validation/broadening_ab.py
 
 Reported, not gated: the acceptable difference depends on the target precision.
 As a guide, differences below ~5 ppm are invisible under the CM24 error bars;
@@ -23,11 +23,8 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 BIN_R = 100.0
 BAND = (1900.0, 9900.0)
@@ -51,10 +48,11 @@ def bin_trapz(wl, y, edges):
 
 
 def main() -> int:
-    import config
-    import interp_map
-    import vulcan_chem
-    import exojax_rt
+    from retrieval_framework.forward import config
+    from retrieval_framework.forward import interp_map
+    # import order is load-bearing: vulcan_chem before exojax
+    from retrieval_framework.forward import vulcan_chem
+    from retrieval_framework.forward import exojax_rt
     import jax.numpy as jnp
 
     profile = dict(config.FULL)

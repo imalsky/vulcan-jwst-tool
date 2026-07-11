@@ -1,26 +1,22 @@
 """WASP-39b SMC retrieval case: everything planet-specific for this run, and ONLY
-that. The reusable machinery lives in ``vulcan_exojax_run/retrieval_framework/``.
+that. The reusable machinery lives in the ``vulcan-retrieval`` package
+(``retrieval_framework``).
 
 theta (gpu preset, 10-D): [lnZ, dln(C/O), lnKzz, Tirr, log10kappa, log10gamma,
 lnR0, log10kappa_cloud, cloud_alpha, offset_G395H].
 
-Run (from vulcan_exojax_run/, or via the PBS script in this directory):
+Run (from the repo root, or via the PBS script in this directory):
 
-    SMC_RETRIEVAL_PRESET=smoke python -m retrieval_framework.run_smc runs/w39b_smc_retrieval
-    SMC_RETRIEVAL_PRESET=gpu   python -m retrieval_framework.run_smc runs/w39b_smc_retrieval
+    SMC_RETRIEVAL_PRESET=smoke python -m retrieval_framework.run_smc vulcan-retrieval/runs/w39b_smc_retrieval
+    SMC_RETRIEVAL_PRESET=gpu   python -m retrieval_framework.run_smc vulcan-retrieval/runs/w39b_smc_retrieval
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
-HERE = Path(__file__).resolve().parent
-BUNDLE = HERE.parent.parent                     # vulcan_exojax_run/
-if str(BUNDLE) not in sys.path:
-    sys.path.insert(0, str(BUNDLE))
-
-from retrieval_framework.config_schema import Config      # noqa: E402  (light import, no jax)
+from retrieval_framework.config_schema import Config      # light import, no jax
+from retrieval_framework.forward import config as fwd_config  # pure constants + repo paths
 
 # ---------------------------------------------------------------------------
 # Planet + data identity (WASP-39b, Carter & May 2024 combined JWST spectrum)
@@ -48,7 +44,7 @@ _W39B = dict(
     dt_max=1.0e11,
     # Carter & May (2024) fixed-limb-darkening products (shared bundle data/):
     # NRS1/NRS2 share the G395H group (one offset); NIRISS O1+O2 share NIRISS.
-    obs_dir=BUNDLE / "data" / "cm24_wasp39b",
+    obs_dir=fwd_config.OUTPUTS / "cm24_wasp39b",
     obs_products={
         "PRISM":  ("PRISM_native.csv",),
         "NIRISS": ("NIRISS_O1_R100.csv", "NIRISS_O2_R100.csv"),

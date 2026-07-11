@@ -19,7 +19,7 @@ not) and |L(fwd) - L(carried)| consistent with validate_warm's gate. Any
 asymmetric pair is listed -- if they appear at production settings, either raise
 warm_count_max or run the final ladder stages with smc_chem_mode="cold".
 
-    SMC_RETRIEVAL_PRESET=gpu python validation/mala_reversibility.py runs/w39b_smc_retrieval --pairs 24
+    SMC_RETRIEVAL_PRESET=gpu python vulcan-retrieval/validation/mala_reversibility.py runs/w39b_smc_retrieval --pairs 24
 """
 from __future__ import annotations
 
@@ -28,8 +28,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> int:

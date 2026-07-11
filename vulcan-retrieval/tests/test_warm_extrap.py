@@ -25,7 +25,8 @@ from retrieval_framework import pipeline as P  # noqa: E402
 from retrieval_framework import config_schema as C  # noqa: E402
 from retrieval_framework import run_smc as R  # noqa: E402
 
-RUN_DIR = Path(P.__file__).resolve().parent.parent / "runs" / "w39b_smc_retrieval"
+# tests/ and runs/ are siblings inside the vulcan-retrieval package dir
+RUN_DIR = Path(__file__).resolve().parent.parent / "runs" / "w39b_smc_retrieval"
 
 
 def _smoke_cfg():

@@ -1,7 +1,7 @@
 """JWST instrument selector -- Streamlit GUI.
 
-    cd vulcan_exojax_run
-    streamlit run jwst_tool/app.py
+Launch via the console script ``jwst-tool`` (installed with vulcan-jwst-tool), or
+directly:  streamlit run vulcan-jwst-tool/src/jwst_tool/app.py  (from the repo root).
 
 Pipeline per run: VULCAN-JAX photochemistry -> ExoJax transmission spectrum
 (local subprocess, disk-cached; ~1.5-2 min at the default "fast" fidelity) ->
@@ -23,8 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
 
-TOOL_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(TOOL_DIR.parent))
+TOOL_DIR = Path(__file__).resolve().parent   # forward.py subprocess lives here
 
 from jwst_tool import detect, fisher as fisher_mod, forward, noise as noise_mod
 from jwst_tool import instruments as ins
@@ -415,7 +414,6 @@ def compute():
             pfile.write_text(json.dumps(forward.canonical_params(params)))
             proc = subprocess.Popen(
                 [sys.executable, str(TOOL_DIR / "forward.py"), str(pfile)],
-                cwd=str(TOOL_DIR.parent),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             box = st.empty()
             lines = []

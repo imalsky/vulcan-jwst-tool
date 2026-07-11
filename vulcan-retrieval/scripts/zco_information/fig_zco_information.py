@@ -14,14 +14,16 @@ Reads data/zco_jacobians.npz (build_zco_jacobians.py) + data/cm24_wasp39b/*.csv.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import numpy as np
 
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE))                            # zco_lib sibling in zco_information/
-sys.path.insert(0, str(_HERE.parent.parent / "jax_paper" / "scripts"))  # shared _common (apply_style)
-import zco_lib as Z
+from retrieval_framework.forward import config
+
+# shared _common (apply_style) lives in the sibling jax_paper repo
+if not (config.JP / "scripts" / "_common.py").is_file():
+    raise RuntimeError(f"jax_paper sibling not found at {config.JP} -- manuscript figure scripts require it (set VULCAN_PROJECT_ROOT)")
+sys.path.insert(0, str(config.JP / "scripts"))
+import zco_lib as Z  # sibling in zco_information/ (script dir is on sys.path)
 
 C_Z, C_CO = "#cc3311", "#2b6cb0"
 INST_COLOR = {"NIRISS": "#4c4c9d", "G395H": "#3a8a3a", "PRISM": "0.25", "NIRCam": "#b8860b"}

@@ -17,7 +17,7 @@ against atom_ini (the runner's own conservation metric, now anchored exactly).
 Run (GPU node or a patient workstation; ~minutes without --converge, chemistry-
 solve-bound with it):
 
-    python validation/elemental_audit.py --n 30 [--converge] [--mode elemental|masks]
+    python vulcan-retrieval/validation/elemental_audit.py --n 30 [--converge] [--mode elemental|masks]
 
 Exit code 0 = all gates pass (elemental mode); masks mode reports the documented
 leakage without failing (it exists to MEASURE the legacy knob's error).
@@ -26,11 +26,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # gates (elemental mode): the projection is exact up to the fixed-iteration
 # residual; see vulcan_chem._ELEMENTAL_REPAIR_ITERS
@@ -49,8 +46,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
 
-    import config
-    import vulcan_chem
+    from retrieval_framework.forward import config
+    from retrieval_framework.forward import vulcan_chem
 
     profile = dict(config.FULL)
     profile.update(nz=50, count_max=5000, dt_max=1.0e11,

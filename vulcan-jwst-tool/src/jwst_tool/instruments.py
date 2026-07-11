@@ -17,12 +17,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-TOOL_DIR = Path(__file__).resolve().parent
-BUNDLE_DIR = TOOL_DIR.parent                      # vulcan_exojax_run/
+# import-light shared config (os + pathlib only): resolves the bundle data root
+from retrieval_framework.forward import config as fwd_config
+
+TOOL_DIR = Path(__file__).resolve().parent        # pandeia_worker.py lives here
 # JWST_TOOL_DATA_DIR overrides the cache/CDBS root for non-editable installs
-# (default: the bundle's data/jwst_tool/, correct for the editable install).
+# (default: the bundle's data/jwst_tool/, via VULCAN_PROJECT_ROOT-aware config).
 DATA_DIR = Path(os.environ.get("JWST_TOOL_DATA_DIR",
-                               str(BUNDLE_DIR / "data" / "jwst_tool")))
+                               str(fwd_config.OUTPUTS / "jwst_tool")))
 MODEL_CACHE = DATA_DIR / "model_cache"
 NOISE_CACHE = DATA_DIR / "noise_cache"
 

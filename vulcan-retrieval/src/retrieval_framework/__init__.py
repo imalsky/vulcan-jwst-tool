@@ -25,18 +25,13 @@ Module map (the import chain is heavy-import-safe top to bottom):
     pipeline           u-space posterior, staged batched evaluators, SMC core, MALA kernel
     run_smc            case-directory driver (presets, overrides, outputs, PPC)
     plot_smc           post-run figures from the .npz bundles (numpy+matplotlib only)
+    forward/           the shared forward-model engine (config, vulcan_chem, exojax_rt,
+                       interp_map, sensitivity) -- import order is load-bearing there:
+                       forward.vulcan_chem before anything exojax (guard-enforced)
 
-The shared forward-model library (``config.py``, ``vulcan_chem.py``, ``exojax_rt.py``,
-``interp_map.py``) lives one directory up in ``vulcan_exojax_run/``; importing this
-package puts that directory on ``sys.path``.
+This ``__init__`` stays import-light (no jax): run_smc and config_schema must be
+importable without pulling the chemistry/RT stack.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# Make the shared forward-model library (config, vulcan_chem, exojax_rt, interp_map)
-# importable regardless of the caller's cwd.
-_BUNDLE_DIR = Path(__file__).resolve().parent.parent
-if str(_BUNDLE_DIR) not in sys.path:
-    sys.path.insert(0, str(_BUNDLE_DIR))
+from retrieval_framework._version import __version__  # noqa: F401

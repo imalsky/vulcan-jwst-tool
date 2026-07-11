@@ -34,17 +34,13 @@ import argparse
 import json
 import logging
 import math
-import sys
 import time
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-if __package__ in (None, ""):                      # direct-file execution support
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from retrieval_framework.run_smc import make_config  # noqa: E402  (the exact preset/override logic)
+from retrieval_framework.run_smc import make_config   # the exact preset/override logic
 
 
 def main() -> None:
@@ -104,7 +100,6 @@ def main() -> None:
 
     from retrieval_framework import pipeline as P
     import jax
-    import jax.numpy as jnp
 
     t0 = time.perf_counter()
     pipe = P.build_pipeline(cfg)

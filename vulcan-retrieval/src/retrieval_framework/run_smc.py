@@ -38,16 +38,12 @@ import importlib.util
 import json
 import logging
 import os
-import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
-
-if __package__ in (None, ""):                      # direct-file execution support
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from retrieval_framework import config_schema as C  # light import (no jax)
 

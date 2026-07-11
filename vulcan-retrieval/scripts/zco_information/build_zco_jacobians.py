@@ -7,7 +7,7 @@ compute, by forward-mode AD straight through VULCAN-JAX kinetics + ExoJax transm
     J_lnR0 = d(depth)/d(lnR0)   at that tier's converged profiles  (n_nu,)
 
 and cache everything (+ the baseline depth per tier) to data/zco_jacobians.npz for the
-pure-numpy Fisher figures (scripts/zco_lib.py + fig_zco_*.py).
+pure-numpy Fisher figures (zco_lib.py + fig_zco_*.py).
 
 The three tiers share ONE ExoJax opacity build (RT depends only on the molecule set +
 grid, not the chemistry); only the VULCAN-JAX chemistry config differs:
@@ -22,26 +22,25 @@ snap-back only bites at FINITE Z/CO steps; an infinitesimal AD perturbation stay
 the threshold -- see vulcan_chem._prep). The finite-step validity walk (fig 3) is built
 separately by build_zco_walk.py, which DOES turn reanchor on.
 
-Run (base env):
-    python build_zco_jacobians.py --smoke        # nz=40, CO-only, fast full-pipeline check
-    python build_zco_jacobians.py                # full nz=150 build (slow; ~1-2 h background)
-    python build_zco_jacobians.py --tier P       # (re)build one tier only, merge into cache
+Run (base env, from the repo root):
+    python vulcan-retrieval/scripts/zco_information/build_zco_jacobians.py --smoke        # nz=40, CO-only, fast full-pipeline check
+    python vulcan-retrieval/scripts/zco_information/build_zco_jacobians.py                # full nz=150 build (slow; ~1-2 h background)
+    python vulcan-retrieval/scripts/zco_information/build_zco_jacobians.py --tier P       # (re)build one tier only, merge into cache
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, vulcan_chem, ...)
-import config
-import vulcan_chem
+from retrieval_framework.forward import config
+# import order is load-bearing: vulcan_chem before exojax (sets env + jax x64)
+from retrieval_framework.forward import vulcan_chem
 import jax
 import jax.numpy as jnp
-import exojax_rt
-import interp_map
+from retrieval_framework.forward import exojax_rt
+from retrieval_framework.forward import interp_map
 
 OUT = config.OUTPUTS / "zco_jacobians.npz"
 

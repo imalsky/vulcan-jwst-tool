@@ -19,19 +19,18 @@ Interpreting the output
   error -- the Kzz tangent itself is validated to <0.1% on the *responding levels* in
   VULCAN-JAX's fig_kzz_jvp_validate.py, which this demo's knob replicates.
 
-Run:  (vulcan env)  python validate_wide_chem.py
+Run:  (vulcan env)  python vulcan-retrieval/validation/validate_wide_chem.py
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, vulcan_chem, ...)
-import config
-import vulcan_chem            # sets env + jax x64 before any jax import
+from retrieval_framework.forward import config
+# import order is load-bearing: vulcan_chem before exojax/jax (sets env + jax x64)
+from retrieval_framework.forward import vulcan_chem
 import jax
 import jax.numpy as jnp
 

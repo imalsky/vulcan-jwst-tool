@@ -19,21 +19,38 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-# VULCAN_PROJECT_ROOT env var makes the bundle portable to HPC checkouts (e.g.
-# /nobackup/$USER/VULCAN_Project on NAS); the default is the local tree.
-PROJECT_ROOT = Path(os.environ.get(
-    "VULCAN_PROJECT_ROOT", "/Users/imalsky/Desktop/Emulators/VULCAN_Project"))
+# VULCAN_PROJECT_ROOT = the directory CONTAINING the vulcan_exojax_run/ checkout
+# (and, for HPC runs + manuscript figures, its siblings VULCAN-JAX/ and jax_paper/).
+# The explicit env var wins; otherwise the repo root is inferred from this file's
+# location inside an editable checkout. A bare site-packages install cannot infer
+# it and must set the env var -- checked loudly below, no silent fallbacks.
+_env_root = os.environ.get("VULCAN_PROJECT_ROOT")
+if _env_root:
+    PROJECT_ROOT = Path(_env_root).expanduser()
+    REPO_DIR = PROJECT_ROOT / "vulcan_exojax_run"    # NAS clone dir name is load-bearing
+else:
+    # this file lives at <repo>/vulcan-retrieval/src/retrieval_framework/forward/config.py,
+    # so parents[4] is the repo root -- pinned to that tree layout.
+    REPO_DIR = Path(__file__).resolve().parents[4]
+    PROJECT_ROOT = REPO_DIR.parent
+if not (REPO_DIR / "data" / "cm24_wasp39b").is_dir():    # tracked marker, in every clone
+    raise RuntimeError(
+        f"vulcan_exojax_run data tree not found at {REPO_DIR}/data. Set VULCAN_PROJECT_ROOT "
+        "to the directory that contains the vulcan_exojax_run/ checkout (a site-packages "
+        "install cannot infer it). Large caches (data/opacity_cache, data/exojax_linelists) "
+        "are seeded separately -- see the repo README data policy.")
+
 JAXROOT = PROJECT_ROOT / "VULCAN-JAX"
 JP = PROJECT_ROOT / "jax_paper"  # for _common.apply_style (house figure style)
-DEMO_DIR = PROJECT_ROOT / "vulcan_exojax_run"                   # this bundle (moved out of jax_paper 2026-07-08)
-OUTPUTS = DEMO_DIR / "data"                                     # npz caches + observed spectra live with the bundle
+DEMO_DIR = REPO_DIR                                             # deprecated pre-0.6 alias
+OUTPUTS = REPO_DIR / "data"                                     # npz caches + observed spectra live with the repo
 FIGS = JP / "figures"                                           # manuscript figures stay in jax_paper/figures
-DEMO_DATABASE = DEMO_DIR / "data" / "exojax_linelists"          # HITRAN line lists (with the bundle)
+DEMO_DATABASE = OUTPUTS / "exojax_linelists"                    # HITRAN line lists
 
-# Offline opacity cache (CO ExoMol Li2015 + H2-H2/H2-He CIA), lives IN the bundle
-# (data/opacity_cache/) so the bundle has no dependency on any sibling project --
+# Offline opacity cache (CO ExoMol Li2015 + H2-H2/H2-He CIA), lives IN the repo
+# (data/opacity_cache/) so it has no dependency on any sibling project --
 # copied in 2026-07-07 from what was previously a reused emulator-demo/ cache.
-_CACHE = DEMO_DIR / "data" / "opacity_cache"
+_CACHE = OUTPUTS / "opacity_cache"
 CO_CACHED_DIR = _CACHE / "CO" / "12C-16O" / "Li2015"
 CIA_H2H2_FILE = _CACHE / "H2-H2_2011.cia"
 # H2-He CIA (He is ~16% by number at 10x solar; real continuum contribution).

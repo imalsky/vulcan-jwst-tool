@@ -16,9 +16,6 @@ import sys
 import time
 from pathlib import Path
 
-if __package__ in (None, ""):                      # direct-file execution support
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 import numpy as np
 
 from retrieval_framework import run_smc as R

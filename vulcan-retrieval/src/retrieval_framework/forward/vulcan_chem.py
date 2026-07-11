@@ -50,18 +50,26 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-import config
+from retrieval_framework.forward import config
 
-# --- env + path setup MUST happen before importing vulcan_jax ---------------
+# This module must own the first jax import: it fixes the VULCAN_JAX_* import-frozen
+# env vars and jax x64. If exojax got in first those knobs are already baked wrong.
+if "exojax" in sys.modules:
+    raise RuntimeError(
+        "retrieval_framework.forward.vulcan_chem must be imported BEFORE exojax: "
+        "it fixes jax x64 and the VULCAN_JAX_* import-frozen env vars. "
+        "Import order: forward.config, forward.vulcan_chem, then forward.exojax_rt.")
+
+# --- env setup MUST happen before importing vulcan_jax / jax ------------------
 os.environ["VULCAN_JAX_NETWORK"] = config.VULCAN_NETWORK
 os.environ["VULCAN_JAX_ATOM_LIST"] = config.VULCAN_ATOM_LIST
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.chdir(str(config.JAXROOT))
-sys.path.insert(0, str(config.JAXROOT / "src"))
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -155,6 +163,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
     for _k, _v in (profile.get("cfg_overrides") or {}).items():
         setattr(cfg, _k, _v)
 
+    import vulcan_jax
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, composition, rates_jax
     from vulcan_jax import atm_jax, atm_refresh as atm_refresh_mod
@@ -189,7 +198,7 @@ def build_chem_model(profile: dict, tp_eval=None, n_tp_params: int = 0) -> Simpl
 
     thermo_dir = resolve_data_path(cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
-        thermo_dir = config.JAXROOT / "src" / "vulcan_jax" / "thermo"
+        thermo_dir = Path(vulcan_jax.__file__).resolve().parent / "thermo"
     nasa9, _ = load_nasa9(network.species, thermo_dir)
     remove_list = getattr(cfg, "remove_list", None)
 

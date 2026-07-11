@@ -11,17 +11,15 @@ any exojax import, which is the required order.
 """
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, vulcan_chem, ...)
-import config                 # pure constants, no heavy imports
-import vulcan_chem            # sets env + jax x64; must import before exojax
+# import order is load-bearing: vulcan_chem (env + jax x64) before anything exojax
+from retrieval_framework.forward import config        # pure constants, no heavy imports
+from retrieval_framework.forward import vulcan_chem   # sets env + jax x64; must import before exojax
 import jax.numpy as jnp
 
-import exojax_rt
-import interp_map
+from retrieval_framework.forward import exojax_rt
+from retrieval_framework.forward import interp_map
 
 
 def build_forward(profile: dict) -> SimpleNamespace:

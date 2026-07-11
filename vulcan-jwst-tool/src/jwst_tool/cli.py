@@ -1,10 +1,9 @@
 """Console entry point: ``jwst-tool`` launches the Streamlit GUI.
 
-Equivalent to ``streamlit run jwst_tool/app.py`` from the bundle directory, but
-works from anywhere once the package is installed (editable install
-recommended). Preflight checks catch the two external requirements with
-actionable messages instead of a mid-run stack trace: the VULCAN-JAX project
-tree (``$VULCAN_PROJECT_ROOT``) and the Pandeia backend env
+Equivalent to ``streamlit run vulcan-jwst-tool/src/jwst_tool/app.py``, but works
+from anywhere once the package is installed. Preflight checks catch the two
+external requirements with actionable messages instead of a mid-run stack
+trace: an importable ``vulcan_jax`` package and the Pandeia backend env
 (``$JWST_TOOL_PANDEIA_PYTHON``).
 """
 from __future__ import annotations
@@ -20,15 +19,20 @@ def main() -> int:
         import streamlit  # noqa: F401
     except ImportError:
         print("jwst-tool: streamlit is not installed in this environment.\n"
-              "Install the GUI extra:  pip install -e '.[gui]'", file=sys.stderr)
+              "Install the GUI extra:  pip install 'vulcan-jwst-tool[gui]'  "
+              "(or, in a checkout:  pip install -e './vulcan-jwst-tool[gui]' --no-deps "
+              "plus pip install streamlit pandas)", file=sys.stderr)
         return 2
 
-    import config as shared_config          # resolves VULCAN_PROJECT_ROOT
-    jaxroot = Path(shared_config.JAXROOT)
-    if not (jaxroot / "src" / "vulcan_jax").exists():
-        print(f"jwst-tool: VULCAN-JAX checkout not found at {jaxroot}.\n"
-              "Set VULCAN_PROJECT_ROOT to the project directory that contains "
-              "the VULCAN-JAX/ and vulcan_exojax_run/ trees.", file=sys.stderr)
+    import importlib.util
+    if importlib.util.find_spec("vulcan_jax") is None:
+        print("jwst-tool: the vulcan_jax package is not installed in this "
+              "environment.\n"
+              "Install it from TestPyPI "
+              "(pip install -i https://test.pypi.org/simple/ vulcan-jax), or "
+              "from a checkout:\n"
+              "  pip install -e <PROJECT_ROOT>/VULCAN-JAX --no-deps",
+              file=sys.stderr)
         return 2
 
     from jwst_tool import instruments as ins
@@ -39,11 +43,9 @@ def main() -> int:
               "still starts, but every noise calculation will refuse to run.",
               file=sys.stderr)
 
-    app = Path(__file__).resolve().parent / "app.py"
-    # run from the bundle dir so the app's relative-path expectations hold
-    cwd = str(app.parent.parent)
+    app = Path(__file__).parent / "app.py"
     cmd = [sys.executable, "-m", "streamlit", "run", str(app)] + sys.argv[1:]
-    return subprocess.call(cmd, cwd=cwd, env=os.environ.copy())
+    return subprocess.call(cmd, env=os.environ.copy())
 
 
 if __name__ == "__main__":

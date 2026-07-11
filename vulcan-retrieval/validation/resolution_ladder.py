@@ -18,7 +18,7 @@ d(binned depth)/d lnZ via a warm-started jvp per rung).
 Run on the GPU node (primal RT only -- the vjp memory wall does not apply; the
 finest rung is still line-count-heavy):
 
-    python validation/resolution_ladder.py --ladder 1652 3304 6608 13216
+    python vulcan-retrieval/validation/resolution_ladder.py --ladder 1652 3304 6608 13216
 
 PASS gates (from the review): binned-depth change < 5 ppm between the top two
 rungs; Jacobian direction change < 1% where the depth response is significant.
@@ -28,11 +28,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 GATE_PPM = 5.0
 GATE_JAC_REL = 0.01
@@ -78,10 +75,11 @@ def main() -> int:
                     help="also compare d(binned)/dlnZ per rung (jvp; expensive)")
     args = ap.parse_args()
 
-    import config
-    import interp_map
-    import vulcan_chem
-    import exojax_rt
+    from retrieval_framework.forward import config
+    from retrieval_framework.forward import interp_map
+    # import order is load-bearing: vulcan_chem before exojax
+    from retrieval_framework.forward import vulcan_chem
+    from retrieval_framework.forward import exojax_rt
     import jax
     import jax.numpy as jnp
 

@@ -4,7 +4,8 @@ Two faces:
 
 * Imported by the GUI (light): ``params_key`` / ``cache_path`` / ``load_result``
   touch only the disk cache -- no JAX, no VULCAN, no ExoJax imports.
-* Run as a script (heavy):  ``python jwst_tool/forward.py params.json``
+* Run as a script (heavy):  ``python .../src/jwst_tool/forward.py params.json``
+  (equivalently ``python -m jwst_tool.forward params.json``)
   runs the live pipeline and writes the npz cache entry. Progress goes to
   stdout as "[fwd] ..." lines; machine-parsable "[fwd] PROG <frac> <label>"
   lines drive the GUI progress bar.
@@ -71,17 +72,14 @@ from pathlib import Path
 
 import numpy as np
 
-TOOL_DIR = Path(__file__).resolve().parent
-BUNDLE_DIR = TOOL_DIR.parent
+# import-light shared config (os + pathlib only, safe on the GUI's light path)
+from retrieval_framework.forward import config as fwd_config
+
 # keep in sync with instruments.DATA_DIR (env-overridable for non-editable installs)
 MODEL_CACHE = Path(os.environ.get(
-    "JWST_TOOL_DATA_DIR", str(BUNDLE_DIR / "data" / "jwst_tool"))) / "model_cache"
+    "JWST_TOOL_DATA_DIR", str(fwd_config.OUTPUTS / "jwst_tool"))) / "model_cache"
 
-try:
-    from . import planets            # imported as jwst_tool.forward (the GUI)
-except ImportError:                  # script mode: python jwst_tool/forward.py
-    sys.path.insert(0, str(TOOL_DIR))
-    import planets
+from jwst_tool import planets   # installed package: works as module AND as a script
 
 MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # Opt-in RT additions: the SNCHO network already solves these; adding one costs a
@@ -313,13 +311,13 @@ def _make_progress(cp: dict, log):
 
 
 def run_model(params: dict, log=print) -> Path:
-    sys.path.insert(0, str(BUNDLE_DIR))
-    import config                                    # noqa: E402
-    import vulcan_chem                               # noqa: E402  (env + x64 first)
-    import jax                                       # noqa: E402
-    import jax.numpy as jnp                          # noqa: E402
-    import exojax_rt                                 # noqa: E402
-    import interp_map                                # noqa: E402
+    # import order is load-bearing: vulcan_chem (env + x64) before jax/exojax
+    from retrieval_framework.forward import config
+    from retrieval_framework.forward import vulcan_chem
+    import jax
+    import jax.numpy as jnp
+    from retrieval_framework.forward import exojax_rt
+    from retrieval_framework.forward import interp_map
 
     cp = canonical_params(params)
     advance, finish = _make_progress(cp, log)

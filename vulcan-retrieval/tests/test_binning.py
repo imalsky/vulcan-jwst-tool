@@ -55,8 +55,9 @@ def test_binning_matrix_matches_trapezoid_reference():
 
 def test_binning_matrix_on_real_cm24_bins():
     """Same equivalence on the actual Carter & May NIRISS+G395H bins, loaded through
-    the framework's config-driven product loader (bundle data/cm24_wasp39b)."""
-    cm24 = Path(__file__).resolve().parent.parent.parent / "data" / "cm24_wasp39b"
+    the framework's config-driven product loader (repo data/cm24_wasp39b)."""
+    from retrieval_framework.forward import config as fwd_config
+    cm24 = fwd_config.OUTPUTS / "cm24_wasp39b"
     cfg = SimpleNamespace(
         obs_dir=cm24,
         obs_products={"NIRISS": ("NIRISS_O1_R100.csv", "NIRISS_O2_R100.csv"),

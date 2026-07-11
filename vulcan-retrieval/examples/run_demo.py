@@ -7,20 +7,19 @@ where every spectrum point is colored by d(transit_depth)/d(parameter): the colo
 regions are exactly the wavelengths that best constrain that parameter -- a quantitative
 observation-planning view.
 
-Run:  (vulcan env)  python run_demo.py
+Run:  (vulcan env)  python vulcan-retrieval/examples/run_demo.py
 First run downloads ExoMol/HITEMP line lists for H2O/CO2/CH4/SO2 (CO is cached).
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, ...)
-import config
-from forward import build_forward
+# import order is load-bearing: sensitivity (vulcan_chem) before any exojax/jax use
+from retrieval_framework.forward import config
+from retrieval_framework.forward.sensitivity import build_forward
 import jax
 import jax.numpy as jnp
 
@@ -67,6 +66,8 @@ def make_figure(wl_um, depth, J, molecules, out_png):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
+    if not (config.JP / "scripts" / "_common.py").is_file():
+        raise RuntimeError(f"jax_paper sibling not found at {config.JP} -- manuscript figure scripts require it (set VULCAN_PROJECT_ROOT)")
     sys.path.insert(0, str(config.JP / "scripts"))
     try:
         from _common import apply_style

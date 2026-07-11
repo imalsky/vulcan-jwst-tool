@@ -15,7 +15,7 @@ sub-microbar pressures. This script measures both effects on the binned depth:
 
 Run on the GPU node (two chemistry solves with --extend-chem):
 
-    python validation/top_pressure_ladder.py --extend-chem
+    python vulcan-retrieval/validation/top_pressure_ladder.py --extend-chem
 
 PASS gate: |Delta binned depth| < 5 ppm between the clamped production choice
 (top 1e-8) and the extended-chemistry run; the pure clamp ladder is reported for
@@ -26,11 +26,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 GATE_PPM = 5.0
 BIN_R = 100.0
@@ -77,10 +74,11 @@ def main() -> int:
     ap.add_argument("--extend-chem", action="store_true")
     args = ap.parse_args()
 
-    import config
-    import interp_map
-    import vulcan_chem
-    import exojax_rt
+    from retrieval_framework.forward import config
+    from retrieval_framework.forward import interp_map
+    # import order is load-bearing: vulcan_chem before exojax
+    from retrieval_framework.forward import vulcan_chem
+    from retrieval_framework.forward import exojax_rt
 
     base_profile = dict(config.FULL)
     base_profile.update(nz=50, count_max=5000, dt_max=1.0e11,

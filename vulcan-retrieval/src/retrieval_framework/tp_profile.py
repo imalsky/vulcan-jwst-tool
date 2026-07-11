@@ -40,7 +40,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import config as _pkg_config   # parent package: pure constants (T_OPA_MIN_K/MAX_K, GS_CGS)
+from retrieval_framework.forward import config as _pkg_config   # pure constants (T_OPA_MIN_K/MAX_K, GS_CGS)
 import jax.numpy as jnp
 
 # The premodit opacity table is baked for [T_OPA_MIN_K, T_OPA_MAX_K]; outside it the RT

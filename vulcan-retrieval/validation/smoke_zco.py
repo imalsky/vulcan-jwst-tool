@@ -10,19 +10,16 @@ Answers the three questions that decide the expensive build's design:
   (3) AD matches central finite differences at the fiducial (the derivative-verification
       the Fisher figure needs), on a scalar chemistry readout (SO2 column density).
 
-Run (base env, ~a few min at nz=40):  python smoke_zco.py
+Run (base env, ~a few min at nz=40):  python vulcan-retrieval/validation/smoke_zco.py
 """
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, vulcan_chem, ...)
-import config
-import vulcan_chem
+from retrieval_framework.forward import config
+from retrieval_framework.forward import vulcan_chem
 import jax
 import jax.numpy as jnp
 

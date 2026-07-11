@@ -1,7 +1,7 @@
 """Fisher / Laplace machinery for the WASP-39b metallicity + C/O information figures.
 
 Pure numpy. Reads (i) a cached per-tier Jacobian J = d(transit depth)/d(theta) built by
-``vulcan_exojax_run/zco_information/build_zco_jacobians.py`` (forward-mode AD through VULCAN-JAX kinetics ->
+``vulcan-retrieval/scripts/zco_information/build_zco_jacobians.py`` (forward-mode AD through VULCAN-JAX kinetics ->
 ExoJax transmission), and (ii) the real Carter & May (2024) combined WASP-39b JWST
 spectrum (Zenodo 10161743, Fixed_LimbDarkening products) for the per-bin error bars.
 
@@ -34,19 +34,16 @@ chemistry tier, which parameter combination is degenerate) are the robust conten
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import numpy as np
+
+from retrieval_framework.forward import config  # import-light (os+pathlib only); owns the root/env logic
 
 # np.trapz was renamed np.trapezoid in NumPy 2.0 (and trapz removed); support both.
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
-ROOT = Path(os.environ.get(   # VULCAN_PROJECT_ROOT makes the bundle HPC-portable
-    "VULCAN_PROJECT_ROOT", "/Users/imalsky/Desktop/Emulators/VULCAN_Project"))
-DATA = ROOT / "vulcan_exojax_run" / "data"   # run-bundle caches (zco_jacobians/zco_walk) + cm24 obs
-FIGS = ROOT / "jax_paper" / "figures"                       # manuscript figures stay in jax_paper/figures
-CM24 = DATA / "cm24_wasp39b"
+DATA = config.OUTPUTS         # run-bundle caches (zco_jacobians/zco_walk) + cm24 obs
+FIGS = config.FIGS            # manuscript figures stay in jax_paper/figures
+CM24 = config.OUTPUTS / "cm24_wasp39b"
 
 # Model wavelength reach (the ExoJax H2-H2 CIA short edge sits at 1 um; the demo band
 # tops out ~5.3 um). Observed bins outside this are dropped.

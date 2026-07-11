@@ -8,21 +8,18 @@ CO-only opacity (cached), coarse column (nz=40), loose convergence, photo on. Pr
      difference at the most-sensitive wavelength for lnZ and dT (the two knobs that
      exercise, respectively, the y0-direction path and the on-graph rates_jax T path).
 
-Run:  (vulcan env)  python smoke_test.py
+Run:  (vulcan env)  python vulcan-retrieval/validation/smoke_test.py
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-_PARENT = Path(__file__).resolve().parent.parent       # vulcan_exojax_run/
-sys.path.insert(0, str(_PARENT))                       # config, vulcan_chem, ...
-sys.path.insert(0, str(_PARENT / "sensitivity_demo"))  # forward.py
-import config
-from forward import build_forward
+# import order is load-bearing: sensitivity (vulcan_chem) before any exojax/jax use
+from retrieval_framework.forward import config
+from retrieval_framework.forward.sensitivity import build_forward
 import jax
 import jax.numpy as jnp
 

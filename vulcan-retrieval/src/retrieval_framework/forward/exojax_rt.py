@@ -24,7 +24,7 @@ import jax
 jax.config.update("jax_enable_x64", True)  # OpaPremodit refuses 32-bit; safe if already set
 import jax.numpy as jnp
 
-import config
+from retrieval_framework.forward import config
 
 from exojax.utils.grids import wavenumber_grid
 from exojax.database.api import MdbExomol, MdbHitran

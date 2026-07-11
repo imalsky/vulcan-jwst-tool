@@ -6,5 +6,11 @@ model locally, simulates each JWST instrument mode's transit-depth precision
 with the real STScI Pandeia ETC engine, and ranks the modes by detection
 significance.
 
-Entry point:  streamlit run jwst_tool/app.py   (from the vulcan_exojax_run dir)
+Lives in vulcan-jwst-tool/src/jwst_tool/ (dist: vulcan-jwst-tool); the shared
+forward-model modules come from the sibling vulcan-retrieval package
+(retrieval_framework.forward.*).
+
+Entry point: the console script ``jwst-tool``, or
+``streamlit run vulcan-jwst-tool/src/jwst_tool/app.py`` from the repo root.
 """
+from jwst_tool._version import __version__  # noqa: F401

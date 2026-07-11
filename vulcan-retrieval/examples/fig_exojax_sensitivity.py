@@ -19,21 +19,24 @@ Range/resolution match the WASP-39b NIRSpec PRISM spectrum of Tsai et al. (2023)
 at 1 um, so the window is 1.0-5.5 um (the <1 um region is featureless for these
 molecules anyway), binned to R=100.
 
-Input : vulcan_exojax_run/data/wide_sensitivity.npz  (written by sensitivity_demo/run_figs.py)
+Input : config.OUTPUTS/wide_sensitivity.npz  (written by vulcan-retrieval/examples/run_figs.py)
 Output: jax_paper/figures/exojax_sensitivity.png
 """
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import numpy as np
 
-_HERE = Path(__file__).resolve().parent               # sensitivity_demo/
-sys.path.insert(0, str(_HERE.parent.parent / "jax_paper" / "scripts"))  # shared _common lives in jax_paper/scripts
+from retrieval_framework.forward import config
+
+# shared _common lives in jax_paper/scripts (sibling repo)
+if not (config.JP / "scripts" / "_common.py").is_file():
+    raise RuntimeError(f"jax_paper sibling not found at {config.JP} -- manuscript figure scripts require it (set VULCAN_PROJECT_ROOT)")
+sys.path.insert(0, str(config.JP / "scripts"))
 from _common import FIGS, apply_style, require_input   # FIGS = jax_paper/figures (manuscript figures stay)
 
-DATA = _HERE.parent / "data"                           # run-bundle npz caches (vulcan_exojax_run/data)
+DATA = config.OUTPUTS                                  # run-bundle npz caches
 NPZ = DATA / "wide_sensitivity.npz"
 OUT = FIGS / "exojax_sensitivity.png"
 PARAM_COL = 0                                   # theta order is [lnZ, C/O, lnKzz, dT]
@@ -61,8 +64,8 @@ def bin_constant_R(wl_um, depth_ppm, sens_ppm, R, wl_lo, wl_hi):
 def main() -> int:
     require_input(
         NPZ,
-        "python vulcan_exojax_run/sensitivity_demo/run_figs.py  "
-        "(writes vulcan_exojax_run/data/wide_sensitivity.npz)",
+        "python vulcan-retrieval/examples/run_figs.py  "
+        "(writes wide_sensitivity.npz to config.OUTPUTS)",
     )
     apply_style()
     import matplotlib

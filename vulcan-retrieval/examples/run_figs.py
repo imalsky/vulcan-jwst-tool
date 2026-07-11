@@ -6,23 +6,22 @@ then each apply a CHEAP rt-jvp to the shared tangent. By the chain rule this is 
 to a full-forward jvp, so both modes cost ~one run's chemistry. Figures are berlin,
 importance-highlighted (dark = ignore, bright = look here), binned to R=100, in figs/.
 
-Run:  (vulcan env)  python run_figs.py     # first run downloads HITRAN over 1-15 um
+Run:  (vulcan env)  python vulcan-retrieval/examples/run_figs.py     # first run downloads HITRAN over 1-15 um
 """
 from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # vulcan_exojax_run/ (config, ...)
-import config
-import vulcan_chem                 # sets env + jax x64 before exojax
+from retrieval_framework.forward import config
+# import order is load-bearing: vulcan_chem before exojax (sets env + jax x64)
+from retrieval_framework.forward import vulcan_chem
 import jax
 import jax.numpy as jnp
-import exojax_rt
-import interp_map
+from retrieval_framework.forward import exojax_rt
+from retrieval_framework.forward import interp_map
 
 
 def bin_R(wl, vals, J, R):
@@ -48,6 +47,8 @@ def make_fig(wl_um, spec, J, kind, out_png, display_R):
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
+    if not (config.JP / "scripts" / "_common.py").is_file():
+        raise RuntimeError(f"jax_paper sibling not found at {config.JP} -- manuscript figure scripts require it (set VULCAN_PROJECT_ROOT)")
     sys.path.insert(0, str(config.JP / "scripts"))
     try:
         from _common import apply_style
