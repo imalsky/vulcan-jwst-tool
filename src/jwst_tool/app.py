@@ -32,6 +32,69 @@ from jwst_tool import planets
 st.set_page_config(page_title="JWST Instrument Selector",
                    layout="wide")
 
+
+# ---------------------------------------------------------------------------
+# One-time "how it works" gate (plain-language intro + acknowledge button)
+# ---------------------------------------------------------------------------
+def _intro_gate() -> None:
+    """Show a short plain-English explainer the first time the app loads this
+    session; the tool proper does not render until the user clicks through.
+    The acknowledgment survives the sidebar reset (see _reset_all)."""
+    if st.session_state.get("intro_ack"):
+        return
+    st.title("JWST instrument selector — how it works")
+    st.markdown(
+        """
+### The 10-second version
+
+You have a planet. You want to know **which JWST instrument mode gives you the
+best shot at your science goal**, and roughly **how many transits** it takes.
+This tool answers that — quickly, on your laptop.
+
+### What it actually does (in plain words)
+
+1. **Simulates the planet's atmosphere.** It runs a photochemistry model
+   (VULCAN-JAX) to work out what molecules are present at what altitude, given
+   your planet, temperature, metallicity, and so on.
+2. **Turns that into a spectrum.** It computes the transmission spectrum — the
+   fingerprint of dips in starlight the atmosphere would imprint as the planet
+   crosses its star (ExoJAX).
+3. **Asks "how noisy would JWST be?"** It runs STScI's official exposure-time
+   calculator (Pandeia — the same engine behind the JWST web ETC) to get the
+   real photon + detector noise for each instrument mode on *your* star.
+4. **Scores each mode.** For a **detection** goal it measures how strongly the
+   molecule's fingerprint stands out above the noise; for a **constraint** goal
+   it forecasts how tightly you'd pin down a number (metallicity, C/O, …). Then
+   it ranks the modes and tells you the transits needed.
+
+### What the numbers mean — and what they don't
+
+- **This is a planning tool, not a retrieval.** Trust the **ranking of modes**
+  far more than the exact ppm or "sigma" values.
+- The noise is a **best-case floor**: real photon + detector noise (nudged up
+  by a small, literature-based factor per mode), plus an editable "systematic
+  floor." Real observations have messy time-correlated noise this does **not**
+  fully model, so true error bars can only be **equal or worse**.
+- A molecule "detection sigma" here is a **best-case template match at one fixed
+  atmosphere** — a real retrieval that re-fits temperature, clouds, and other
+  gases will always give a **weaker** detection.
+- Defaults are **clear-sky**; clouds mute features, so turn them on to stress-test.
+
+Everything runs locally and is cached, so the first run of a new setup takes a
+couple of minutes and re-runs are instant.
+        """
+    )
+    st.info("This is a fast forecasting tool. Use it to compare instrument "
+            "modes and plan transits — not as a substitute for a full "
+            "retrieval or a real noise analysis.")
+    if st.button("I understand — open the tool", type="primary"):
+        st.session_state["intro_ack"] = True
+        st.rerun()
+    st.stop()
+
+
+_intro_gate()
+
 st.title("JWST instrument selector")
 st.caption(
     "VULCAN-JAX photochemistry → ExoJAX transmission spectrum → Pandeia ETC noise. "
@@ -61,8 +124,10 @@ _NONCE = st.session_state.setdefault("reset_nonce", 0)
 
 def _reset_all():
     n = st.session_state.get("reset_nonce", 0) + 1
-    st.session_state.clear()
-    st.session_state["reset_nonce"] = n
+    ack = st.session_state.get("intro_ack", False)   # a settings reset is not
+    st.session_state.clear()                          # a reason to re-show the
+    st.session_state["reset_nonce"] = n               # how-it-works intro
+    st.session_state["intro_ack"] = ack
 
 
 def K(name: str) -> str:
