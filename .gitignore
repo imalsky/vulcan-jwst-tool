@@ -5,33 +5,15 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-# Large opacity/line-list caches -- NOT tracked. ExoJax downloads HITRAN line lists
-# and CIA tables on first use (via the NAS proxy on HPC; see run_nas_w39b.pbs), and
-# the ExoMol CO cache regenerates the same way. Total ~360 MB that git should not carry.
-data/exojax_linelists/
-data/opacity_cache/
-
-# Run outputs (posteriors, checkpoints, logs, PBS job logs) -- regenerated per run
-vulcan-retrieval/runs/*/data/
-vulcan-retrieval/runs/*/logs/
-vulcan-retrieval/runs/*/plots/
-vulcan-retrieval/runs/*/*.o[0-9]*
-*.nsys-rep
-
-# Generated npz caches (sensitivity/zco jacobians/walk) -- scientifically versioned
-# by the code that writes them, regenerable, and easy to leave stale in git (the
-# tracked set was deleted as stale 2026-07-11); never re-track them.
-data/*.npz
+# Generated caches (model spectra + pandeia results) -- regenerated per run
+output/*
+!output/.gitkeep
 
 # Editor / OS noise
 .vscode/
 .idea/
 
-# Packaging build artifacts (pip install -e .)
+# Packaging build artifacts
 *.egg-info/
 build/
 dist/
-
-# jwst_tool runtime caches (model spectra + pandeia results) -- regenerated per run
-data/jwst_tool/model_cache/
-data/jwst_tool/noise_cache/
