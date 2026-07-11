@@ -179,6 +179,34 @@ machine-specific defaults):
 - "Transits → target" is floor-aware: the photon term scales 1/N,
   the R-anchored floor is fixed, and the solver reports **never** when the
   target exceeds the floor-limited ceiling.
+- Random noise is inflated by a **literature-calibrated per-mode factor**
+  (`noise_infl`, editable): G395H/G235H ×1.10 (COMPASS/Gordon+2025 NRS1 1.05×
+  / NRS2 1.12×), SOSS ×1.20 (Espinoza+2023), MIRI LRS ×1.15 (Bouwman+2023),
+  PRISM ×1.0 (photon-limited on the quiet ERS target), NIRCam ×1.05. This is
+  proportional noise, so it averages down with transits — unlike the floor.
+- **Detector-segment offsets** are marginalized: the two-detector NIRSpec
+  gratings (G395H, G235H) float independent **NRS1 and NRS2** depth steps in
+  both the detection score and every Fisher forecast, because a
+  detector-to-detector step of tens of ppm is universal in real G395H fits
+  (Moran+2023 78 ppm on GJ 486 b; Madhusudhan+2023 flipped a K2-18 b DMS
+  claim from 2.4σ to insignificant with NRS1/NRS2 offsets). Segments are
+  detected from wavelength gaps in the extracted pixel grid.
+- The molecule score is **σ_detect = a conditional matched-template S/N at the
+  specified atmospheric state**, not a retrieval detection: √Δχ² of
+  (full − opacity-removed) with the offset + per-segment steps profiled out.
+  **σ_detect (proj)** additionally profiles the temperature-structure and
+  lnR0 Jacobian directions (chemistry/clouds stay fixed — still conditional);
+  prefer it for narrow margins. A full retrieval refits everything, so its
+  detection can only be weaker.
+- Models are convolved to the instrument's **native R(λ)** (from the pandeia
+  dispersion refdata) before binning, where that matters: MIRI LRS (native
+  R≈40–160) and PRISM (R≈30–300) get a real first-order blur when the bins
+  approach the native resolving power; the high-R gratings (G395H native
+  R≈2700 ≫ the ~R1000 forward model) are automatically a no-op (sub-ppm
+  edge-effect regime). No full 2-D response matrix (documented below).
+- Bins report both edges and the **count-response-weighted effective
+  wavelength** (`wl_eff`), used for plotting — it matters near detector gaps
+  and steep throughput.
 - Fast fidelity matches High on the headline numbers (G395H SO2 3.6σ vs 3.8σ,
   Fisher σ(lnZ) 0.027 vs 0.029 dex) but mutes the weak mid-IR SO2 bands
   (MIRI LRS 0.9σ vs 1.9σ) — switch to High before quoting MIRI numbers.
@@ -196,12 +224,21 @@ machine-specific defaults):
   elemental ratios exactly (H/He fixed), the column sums to P/(k_B T) per
   layer, and the chemistry's conserved atom totals match the requested gas.
 - No partial-saturation strategy (pandeia group optimization only).
-- Forecast tier: everything here is the **ETC lower-bound tier**. Not yet
-  implemented (roadmap, in priority order): full wavelength-covariance input
-  (beyond the diagonal + R-anchored floor), empirically calibrated per-mode
-  systematics scenarios from public JWST residuals, and a time-domain
-  injection-recovery tier (light-curve fits with limb-darkening/trend
-  nuisances) for publication-grade detection claims.
+- Star normalization is **band-integrated 2MASS Ks** (vegamag, synphot
+  `2mass,ks` bandpass, local CALSPEC Vega) — the web-ETC convention. The old
+  monochromatic at_lambda shortcut mis-scaled the flux by 0.4–3.1% across
+  Teff 3200–6500 K (worst for hot stars, Brackett-γ wing) and fed that into
+  saturation/ngroup selection.
+- Forecast tier: everything here is the **ETC lower-bound tier** (diagonal
+  noise × per-mode inflation + R-anchored floor + offset/segment nuisances).
+  Not yet implemented (roadmap, in priority order): full wavelength-covariance
+  input (a GP/empirical covariance matrix — the modern best practice per
+  Holmberg & Madhusudhan 2023, Rotman+2025 — beyond the diagonal envelope
+  here), empirically calibrated per-mode systematics scenarios from public
+  JWST residuals, and a time-domain injection-recovery tier (light-curve fits
+  with limb-darkening/trend nuisances) for publication-grade detection claims.
+  The √(R/100) fine-binning growth of the floor is a conservative white-noise
+  envelope, not a measured covariance behavior.
 - Pandeia backend is pinned to engine 3.0 + `pandeia_data-3.0rc3` (current
   STScI release is 2026.2/JWST 5.1, which updates SOSS backgrounds, PSFs, and
   BOTS multistripe timing). Upgrading requires downloading the matching
@@ -214,6 +251,10 @@ machine-specific defaults):
 tests — constant-depth conservation, count-space estimator mean/variance vs
 Monte Carlo, model/noise same-estimator identity, operator linearity
 (Jacobian consistency), detector-gap containment, nested rebinning,
-degenerate-wavelength flagging — and rank-aware Fisher tests (duplicated
-and near-duplicated Jacobian rows must read unconstrained, Gaussian-prior
-posterior identity, well-conditioned analytic match).
+degenerate-wavelength flagging, detector-segment splitting, native-R LSF
+flux conservation + high-R no-op; detection-score tests — constant offset and
+per-segment step profile to zero, a real feature survives, sub-cycle windows
+raise, inflation scales variance; and rank-aware Fisher tests — duplicated
+and near-duplicated Jacobian rows read unconstrained, Gaussian-prior posterior
+identity, well-conditioned analytic match, segment-offset absorption, combined
+per-segment offset counting.

@@ -73,3 +73,48 @@ def test_mode_forecast_diag_passthrough():
     out = fisher.mode_forecast(result, ["p0"], diag=diag)
     assert set(out) == {"p0"} and np.isfinite(out["p0"])
     assert diag["fisher_dimension"] == 2 and diag["fisher_rank"] == 2
+
+
+def test_segment_offset_widens_forecast_and_absorbs_step():
+    """A parameter whose signal looks like a per-detector STEP must lose all
+    constraint once the segment offsets are floated (two segments -> two
+    offsets span the step)."""
+    nb = 40
+    seg = np.array([0] * 20 + [1] * 20)
+    # a science Jacobian row that is a pure detector step + lnR0 (flat)
+    step = (seg == 1).astype(float)
+    jac = np.stack([step, np.ones(nb)])            # [free=step-like, lnR0]
+    s = np.full(nb, 1e-4)
+    base = dict(jac_bins=jac, sigma=s)
+    # without segment info: the step-like parameter is well constrained
+    sig_no = fisher.mode_forecast(dict(base), ["p0"])["p0"]
+    assert np.isfinite(sig_no)
+    # with two segments: the offset step absorbs it -> unconstrained
+    sig_seg = fisher.mode_forecast(dict(base, seg=seg), ["p0"])["p0"]
+    assert np.isinf(sig_seg)
+
+
+def test_single_segment_forecast_unchanged():
+    """One detector segment adds no usable offset beyond lnR0, so the forecast
+    is identical to the no-seg call (regression guard)."""
+    rng = np.random.default_rng(3)
+    jac = rng.standard_normal((3, 30))             # 2 free + lnR0
+    s = np.full(30, 1e-4)
+    seg = np.zeros(30, int)
+    a = fisher.mode_forecast(dict(jac_bins=jac, sigma=s), ["p0", "p1"])
+    b = fisher.mode_forecast(dict(jac_bins=jac, sigma=s, seg=seg), ["p0", "p1"])
+    assert np.allclose([a["p0"], a["p1"]], [b["p0"], b["p1"]], rtol=1e-12)
+
+
+def test_combined_forecast_counts_offsets_per_segment():
+    """Combined Fisher must allocate one offset column per segment of every
+    mode (dimension check via the diag)."""
+    rng = np.random.default_rng(4)
+    r1 = dict(jac_bins=rng.standard_normal((2, 25)), sigma=np.full(25, 1e-4),
+              seg=np.array([0] * 12 + [1] * 13))   # 2 segments
+    r2 = dict(jac_bins=rng.standard_normal((2, 20)), sigma=np.full(20, 1e-4),
+              seg=np.zeros(20, int))               # 1 segment
+    diag = {}
+    fisher.combined_forecast([r1, r2], ["p0"], diag=diag)
+    # 1 free + lnR0 + (2 + 1) segment offsets = 5
+    assert diag["fisher_dimension"] == 1 + 1 + 3

@@ -8,12 +8,19 @@ sigma, the Fisher matrix is
 and the marginalized 1-sigma forecast on parameter i is sqrt((F^-1)_ii).
 
 Nuisance handling (mirrors the zco_information campaign):
-  * per mode: the free parameters + lnR0 (reference-radius) are jointly fit;
-    lnR0 is marginalized out of the report.
+  * per mode: the free parameters + lnR0 (reference-radius) + one constant
+    depth OFFSET per detector SEGMENT are jointly fit; the nuisances are
+    marginalized out of the report. A single-detector mode has one segment
+    (its offset is degenerate with lnR0 and drops out via the rank-aware
+    inversion); the two-detector NIRSpec gratings (G395H, G235H) get a
+    separate NRS1 and NRS2 offset, because a detector-to-detector step of
+    tens of ppm is universal in real fits (Moran+2023, Madhusudhan+2023) and
+    can otherwise masquerade as atmospheric structure.
   * combined (all selected modes): one SHARED lnR0 plus one constant depth
-    OFFSET per mode (absolute-calibration nuisance between visits), all
-    marginalized. Offsets are what make multi-instrument combinations honest --
-    within a single band an offset and lnR0 are nearly degenerate.
+    OFFSET per SEGMENT across all modes (absolute-calibration nuisance between
+    detectors/visits), all marginalized. Offsets are what make
+    multi-instrument combinations honest -- within a single band an offset and
+    lnR0 are nearly degenerate.
 
 A parameter with (numerically) no spectral response, or with weight in a
 numerically null Fisher direction (a degeneracy), comes back as inf, shown as
@@ -79,32 +86,60 @@ def display_sigma(name: str, sigma: float) -> float:
     return sigma * _TO_DISPLAY.get(name, 1.0)
 
 
+def _segment_offset_rows(result: dict) -> np.ndarray:
+    """One indicator row per detector segment beyond the first, from
+    result["seg"] (per-bin segment id from detect.evaluate_mode). Empty
+    (0, n_bins) for a single-segment mode. Row s is 1 on the bins of segment
+    s+1, 0 elsewhere -- the constant offset (or shared lnR0) already spans the
+    first segment, so only the STEPS relative to it are added here."""
+    nb = np.asarray(result["sigma"]).size
+    seg = np.asarray(result.get("seg", np.zeros(nb, int)), int)
+    n_seg = int(seg.max()) + 1 if seg.size else 1
+    return np.stack([(seg == s).astype(float) for s in range(1, n_seg)]) \
+        if n_seg > 1 else np.zeros((0, nb))
+
+
 def mode_forecast(result: dict, free_names: list[str],
                   diag: dict | None = None) -> dict:
     """Per-mode marginalized sigmas. result needs jac_bins (n_par, n_bins) whose rows
-    are [free..., lnR0] and sigma (n_bins,). ``diag``: see _marg_sigmas."""
+    are [free..., lnR0], sigma (n_bins,), and (optionally) seg (n_bins,) for the
+    per-segment offset nuisances. ``diag``: see _marg_sigmas."""
     J = np.asarray(result["jac_bins"])
     s = np.asarray(result["sigma"])
-    F = (J / s[None, :] ** 2) @ J.T
+    steps = _segment_offset_rows(result)          # (n_steps, n_bins)
+    Jn = np.vstack([J, steps]) if steps.size else J
+    F = (Jn / s[None, :] ** 2) @ Jn.T
     sig = _marg_sigmas(F, len(free_names), diag=diag)
     return dict(zip(free_names, sig))
 
 
 def combined_forecast(results: list[dict], free_names: list[str],
                       diag: dict | None = None) -> dict:
-    """All modes jointly: shared free params + shared lnR0 + one offset per mode."""
+    """All modes jointly: shared free params + shared lnR0 + one depth offset
+    per detector SEGMENT (NRS1/NRS2 counted separately for the two-detector
+    gratings), all marginalized."""
     n_f = len(free_names)
-    n_modes = len(results)
-    n_tot = n_f + 1 + n_modes                     # free + lnR0 + offsets
+    # count offset columns: one per segment of every mode
+    seg_counts = []
+    for r in results:
+        nb = np.asarray(r["sigma"]).size
+        seg = np.asarray(r.get("seg", np.zeros(nb, int)), int)
+        seg_counts.append(int(seg.max()) + 1 if seg.size else 1)
+    n_off = int(sum(seg_counts))
+    n_tot = n_f + 1 + n_off                        # free + lnR0 + segment offsets
     F = np.zeros((n_tot, n_tot))
-    for m, r in enumerate(results):
+    col = n_f + 1
+    for r, n_seg in zip(results, seg_counts):
         J = np.asarray(r["jac_bins"])             # rows: free..., lnR0
         s = np.asarray(r["sigma"])
         nb = J.shape[1]
+        seg = np.asarray(r.get("seg", np.zeros(nb, int)), int)
         Jg = np.zeros((n_tot, nb))
         Jg[:n_f] = J[:n_f]
         Jg[n_f] = J[n_f]                          # shared lnR0
-        Jg[n_f + 1 + m] = 1.0                     # this mode's depth offset
+        for s_id in range(n_seg):                 # this mode's per-segment offsets
+            Jg[col + s_id] = (seg == s_id).astype(float)
+        col += n_seg
         F += (Jg / s[None, :] ** 2) @ Jg.T
     sig = _marg_sigmas(F, n_f, diag=diag)
     return dict(zip(free_names, sig))
@@ -125,7 +160,8 @@ def transits_to_target(result: dict, free_names: list[str], gp: str,
     from . import detect as _detect  # local import: fisher stays numpy-only otherwise
 
     def _sig_with(sigma):
-        r2 = dict(result); r2["sigma"] = sigma
+        r2 = dict(result)
+        r2["sigma"] = sigma
         return display_sigma(gp, mode_forecast(r2, free_names)[gp])
 
     sig_inf = _sig_with(np.maximum(np.asarray(result["floor"]), 1e-30))

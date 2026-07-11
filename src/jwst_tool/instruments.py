@@ -11,6 +11,17 @@ here sit between the two and every floor is editable in the GUI. Floors are
 per-bin values AT R=100 (noise.FLOOR_REF_R): the noise model scales the per-bin
 floor as sqrt(R_bin/100) for finer bins so binning choices cannot manufacture
 floor-limited significance.
+
+Noise inflation (``noise_infl``): multiplicative factor on the Pandeia random
+sigma, calibrated to the post-launch achieved-vs-predicted literature --
+COMPASS G395H reanalysis (Gordon et al. 2025): measured errors average 1.05x
+PandExo on NRS1, 1.12x on NRS2 -> 1.10 for the NIRSpec gratings; PRISM was
+photon-limited on the quiet ERS target (Rustamkulov et al. 2023) -> 1.0;
+NIRISS forecasts conventionally inflated 1.2x (Espinoza et al. 2023, adopted
+by COMPASS); NIRCam showed minimal systematics (Ahrer et al. 2023) -> 1.05;
+MIRI LRS measured ~15-20% above random-noise simulations (Bouwman et al.
+2023) -> 1.15. Proportional noise: averages down with transits, unlike the
+floor. Editable in the GUI.
 """
 from __future__ import annotations
 
@@ -67,11 +78,12 @@ PANDEIA_REFDATA = os.environ.get(
 # RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
 
-# 2MASS Ks zeropoint (Cohen et al. 2003): 666.7 Jy at 2.159 um. Used to convert the
-# star's Ks magnitude to an absolute at_lambda normalization (avoids needing the
-# full CDBS comp/ tree for photsys normalization).
-KS_ZEROPOINT_JY = 666.7
-KS_LAMBDA_UM = 2.159
+# Star normalization is band-integrated 2MASS Ks (vegamag, synphot "2mass,ks"
+# bandpass) inside the worker -- the web-ETC convention. The retired shortcut
+# was a monochromatic at_lambda flux from the Cohen et al. 2003 zero point
+# (666.7 Jy at 2.159 um), which mis-scaled cool/warm stars by ~1-4% and fed
+# that error into saturation/ngroup selection. The minimal CDBS now carries
+# comp/nonhst/2mass_ks_001_syn.fits + calspec/alpha_lyr_stis_011.fits for it.
 
 # Fixed categorical color order (validated dataviz palette) -- one color per mode,
 # never re-assigned when the user's selection changes.
@@ -88,7 +100,7 @@ MODES = {
         config=dict(instrument=dict(disperser="prism", filter="clear"),
                     detector=dict(subarray="sub512")),
         wl_min=0.6, wl_max=5.25,
-        floor_ppm=20.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
     ),
     "nirspec_g395h": dict(
         label="NIRSpec G395H",
@@ -96,7 +108,7 @@ MODES = {
         config=dict(instrument=dict(disperser="g395h", filter="f290lp"),
                     detector=dict(subarray="sub2048")),
         wl_min=2.87, wl_max=5.18,
-        floor_ppm=15.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.1, ngroup_min=2, ngroup_max=90,
     ),
     "nirspec_g235h": dict(
         label="NIRSpec G235H",
@@ -104,7 +116,7 @@ MODES = {
         config=dict(instrument=dict(disperser="g235h", filter="f170lp"),
                     detector=dict(subarray="sub2048")),
         wl_min=1.66, wl_max=3.07,
-        floor_ppm=15.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.1, ngroup_min=2, ngroup_max=90,
     ),
     "niriss_soss": dict(
         label="NIRISS SOSS (ord 1)",
@@ -113,7 +125,7 @@ MODES = {
                     detector=dict(subarray="substrip256")),
         strategy=dict(order=1),
         wl_min=0.85, wl_max=2.8,
-        floor_ppm=20.0, ngroup_min=2, ngroup_max=30,
+        floor_ppm=20.0, noise_infl=1.2, ngroup_min=2, ngroup_max=30,
     ),
     "nircam_f322w2": dict(
         label="NIRCam F322W2",
@@ -121,7 +133,7 @@ MODES = {
         config=dict(instrument=dict(filter="f322w2", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=2.45, wl_max=3.95,
-        floor_ppm=25.0, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.05, ngroup_min=2, ngroup_max=180,
     ),
     "nircam_f444w": dict(
         label="NIRCam F444W",
@@ -129,14 +141,14 @@ MODES = {
         config=dict(instrument=dict(filter="f444w", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=3.9, wl_max=4.95,
-        floor_ppm=25.0, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.05, ngroup_min=2, ngroup_max=180,
     ),
     "miri_lrs": dict(
         label="MIRI LRS (slitless)",
         instrument="miri", mode="lrsslitless",
         config=dict(detector=dict(subarray="slitlessprism")),
         wl_min=5.0, wl_max=12.0,
-        floor_ppm=40.0, ngroup_min=5, ngroup_max=300,
+        floor_ppm=40.0, noise_infl=1.15, ngroup_min=5, ngroup_max=300,
     ),
 }
 

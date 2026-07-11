@@ -117,3 +117,87 @@ Deferred (audit P1/P2, documented in README "Known limits"): full wavelength
 covariance input, empirically calibrated per-mode systematics scenarios,
 time-domain injection-recovery tier, box-transit → light-curve-fit noise
 propagation, cloud/stellar-contamination marginalization in detectability.
+
+## v7: 2026-07-11 audit-response pass (P1 fixes + literature calibration)
+
+Second external audit (collaborator report + independent literature/source
+research: PandExo `jwst.py`, pandeia 2026.2 engine source, COMPASS/Gordon+2025,
+Holmberg & Madhusudhan 2023, Eureka!/POSEIDON source, Jakobsen QY technote).
+Model physics untouched (`forward._VERSION` stays 5); noise cache busted
+(`worker_version = 4`). Several audit P0/P1 items were verified already-correct
+and NOT changed; the rest were fixed.
+
+**Fixed:**
+- **Detector-segment offsets (audit: "one offset per mode is too coarse").**
+  `binning.segment_ids` splits the extracted grid at wavelength gaps
+  (SEGMENT_GAP_FACTOR × median spacing) → NRS1|NRS2 for G395H/G235H, one
+  segment for everything else. One depth-offset nuisance per segment is now
+  profiled in the detection score (`detect.detection_significance` rank-aware
+  offset+step projection) AND every Fisher forecast (`fisher.mode_forecast` /
+  `combined_forecast`). Justified by universal practice: Moran+2023 (78 ppm
+  NRS2 step on GJ 486 b), Madhusudhan+2023 (NRS1/NRS2 offsets flipped a K2-18 b
+  DMS claim from 2.4σ to insignificant).
+- **Native-R LSF convolution (audit: "no LSF, narrow features mis-assigned").**
+  `binning.smooth_to_native_r` blurs the model to the worker-exported
+  `r_native(λ)` (from the refdata dispersion files) before binning, on a
+  flux-conserving uniform ln-λ grid finer than the kernel. Auto-no-ops when the
+  kernel is unresolved by the model grid — so it is a no-op for the high-R
+  gratings (G395H native R≈2700 ≫ the ~R1000 forward model, sub-ppm edge
+  regime, matching the research verdict) and only bites on MIRI LRS (native
+  R≈40–160) and PRISM (R≈30–300), exactly where R_bin≈100 approaches native R.
+- **Literature-calibrated noise inflation (audit: "achieved ≠ predicted").**
+  Per-mode `noise_infl` multiplies the Pandeia σ: G395H/G235H ×1.10
+  (COMPASS/Gordon+2025: NRS1 1.05×, NRS2 1.12× vs PandExo), SOSS ×1.20
+  (Espinoza+2023), MIRI LRS ×1.15 (Bouwman+2023), PRISM ×1.0 (photon-limited,
+  Rustamkulov+2023), NIRCam ×1.05. Proportional noise, so it averages down with
+  transits (unlike the floor). Editable in the GUI; threaded through
+  `detect.evaluate_mode(noise_inflation=)`.
+- **σ_detect relabeled + nuisance-projected variant (audit: "template, not
+  detection").** σ_detect is now called a *conditional matched-template S/N at
+  the specified atmospheric state* in code, GUI, and README. New
+  `sigma_detect_proj` additionally profiles the T-P + lnR0 Jacobian directions
+  (chemistry/clouds fixed — still conditional), shown as a second column for
+  narrow margins.
+- **Band-integrated Ks normalization (audit: "monochromatic Ks is
+  color-biased").** The worker switched from at_lambda(2.159 µm, 666.7 Jy) to
+  synphot photsys `2mass,ks` vegamag with a LOCAL CALSPEC Vega
+  (`data/cdbs/calspec/alpha_lyr_stis_011.fits`) + the 2MASS Ks bandpass, so it
+  still runs offline (preflighted). MEASURED old/new flux ratio over 3–5 µm:
+  +0.9% (3200 K), +0.4% (4500 K), +1.4% (5500 K), +3.1% (6500 K) — worst for
+  hot stars (Brackett-γ wing), and it fed saturation/ngroup choices at full
+  amplitude.
+- **Loud sub-cycle window (audit: "max(1,…) silently invents an integration").**
+  `noise.pixel_depth_variance` RAISES when the in/out window is shorter than
+  one integration cycle, or n_transits < 1 — no silent single integration.
+- **Response-weighted effective wavelength.** `evaluate_mode` returns `wl_eff`
+  (count-weighted) alongside bin edges; the spectrum plot uses it (matters at
+  detector gaps / steep throughput).
+
+**Verified already-correct, NOT changed (avoids churn the audit expected):**
+- Umbrella-repo "old estimator" P0 is MOOT — `vulcan_exojax_run` was deleted in
+  the sibling-repo restructure; the standalone repo is the only copy.
+- Quantum-yield excess variance IS in Pandeia's `extracted_noise`
+  (engine `signal.py`: Ve = qy·(qy+fano)·Rp = (1+3p)·Rp, matches Jakobsen
+  Eq. 12/15; refdata conversion curves confirmed: NIRSpec→1.88, NIRISS→1.84).
+  No parity fix needed for these forecasts; PandExo instead *divides* flux by
+  QY, a different (mixed-units) convention.
+- Flux-weighted count-space binning is exactly what Eureka!/ExoTiC-JEDI measure
+  (verified in Eureka! `s4_genLC.py` — unweighted count mean); the deterministic
+  star-only weights dodge the bias of data-estimated inverse-variance weights.
+- Temperature IS freeable in Fisher (`fisher_params` ⊃ dT / T_iso / 4-param
+  Guillot). Clouds + stellar contamination remain the genuinely fixed
+  directions (documented).
+
+**8 new tests** (21 → 24, still numpy-only): segment splitting, bin-segment
+majority, native-R flux conservation + high-R no-op, constant/step offset
+profiling, real-feature survival, sub-cycle raise, inflation scaling, Fisher
+segment-offset absorption, combined per-segment offset counting.
+
+**Still deferred (audit P1/P2, README "Known limits"):** full wavelength
+covariance matrix (GP/empirical — the modern best practice per Holmberg &
+Madhusudhan 2023, Rotman+2025; the √(R/100) floor here is a conservative
+white-noise envelope, not measured covariance), empirical per-mode systematics
+scenarios, time-domain injection-recovery, 2-D Pandeia response matrix, cloud
+marginalization in the Fisher forecast. Pandeia 2026.2/JWST 5.1 upgrade
+(current 3.0rc3) still deferred — needs matching refdata + regression pass, and
+ETC 6.0/Cycle 6 lands ~2026-07-16 anyway.

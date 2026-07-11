@@ -37,9 +37,9 @@ st.caption(
     "VULCAN-JAX photochemistry → ExoJAX transmission spectrum → Pandeia ETC noise. "
     "Pick a planet and a science goal, run the model locally, and see which "
     "instrument mode achieves it best. Uncertainties are an **ETC random-noise "
-    "lower bound** plus an editable systematic-floor scenario — not a full "
-    "time-series systematics forecast; treat mode rankings as more robust than "
-    "absolute ppm."
+    "lower bound** (× a literature-calibrated per-mode inflation) plus an "
+    "editable systematic-floor scenario — not a full time-series systematics "
+    "forecast; treat mode rankings as more robust than absolute ppm."
 )
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
@@ -351,6 +351,15 @@ with st.sidebar:
                                      ins.MODES[k]["floor_ppm"], 5.0,
                                      key=K(f"floor_{k}"))
                   for k in mode_keys}
+        st.markdown("**Random-noise inflation (× Pandeia σ)**")
+        st.caption("Post-launch achieved-vs-predicted precision (COMPASS/"
+                   "Gordon+2025 G395H ≈1.05× NRS1 / 1.12× NRS2; Espinoza+2023 "
+                   "1.2× NIRISS; Bouwman+2023 ≈1.15× MIRI LRS). Proportional "
+                   "noise — it averages down with transits, unlike the floor.")
+        infl = {k: st.number_input(ins.MODES[k]["label"] + " ", 1.0, 3.0,
+                                   float(ins.MODES[k].get("noise_infl", 1.0)),
+                                   0.05, key=K(f"infl_{k}"))
+                for k in mode_keys}
 
     st.button("Reset all settings", on_click=_reset_all,
               help="Back to the defaults (also clears the current results).")
@@ -481,7 +490,7 @@ def compute():
             try:
                 results.append(detect.evaluate_mode(
                     k, etc[k], model, target_mol, r_bin, t_in_s, t_out_s,
-                    n_transits, floors[k]))
+                    n_transits, floors[k], noise_inflation=infl[k]))
             except Exception as e:
                 # one bad mode must not kill the whole run -- report it with
                 # its label + the actual reason, keep evaluating the rest
@@ -631,7 +640,10 @@ for r in results:
     if meta["show_noise"]:
         y = y + rng.normal(0.0, r["sigma"] * 1e6)
     label = r["label"] + (" (saturated!)" if r["saturated"] else "")
-    ax.errorbar(r["wl"], y, yerr=r["sigma"] * 1e6, fmt="o", ms=3.0, lw=1.0,
+    # plot at the response-weighted effective wavelength (matters near detector
+    # gaps / steep throughput); falls back to the bin center if absent
+    x = r.get("wl_eff", r["wl"])
+    ax.errorbar(x, y, yerr=r["sigma"] * 1e6, fmt="o", ms=3.0, lw=1.0,
                 color=c, ecolor=c, elinewidth=0.8, capsize=0, zorder=3, label=label)
 ax.set_xscale("log")
 ticks = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0]
@@ -746,8 +758,15 @@ for r in sorted(results, key=key_order):
            "band (μm)": f"{r['wl'].min():.2f}–{r['wl'].max():.2f}"}
     # NOTE: this column must stay all-string -- mixing int and str values makes
     # streamlit's Arrow serialization fail (loud pyarrow tracebacks per render)
+    if r.get("lsf_applied"):
+        notes.append("model blurred to native R (LSF)")
+    if r.get("n_segments", 1) > 1:
+        notes.append(f"{r['n_segments']} detector segments (offset per segment)")
     if goal_r == "detect":
         row["σ_detect"] = round(r["sigma_detect"], 1)
+        _proj = r.get("sigma_detect_proj", float("nan"))
+        if np.isfinite(_proj):
+            row["σ_detect (proj)"] = round(_proj, 1)
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
@@ -776,18 +795,20 @@ for r in sorted(results, key=key_order):
 st.dataframe(rows, width="stretch", hide_index=True)
 if goal_r == "detect":
     st.caption(
-        "σ_detect = √Δχ² of (full − without-molecule) over the mode's bins, with a "
-        "free constant depth offset profiled out (removing a molecule's flat "
-        "continuum no longer counts as signal). σ_bin combines Pandeia "
-        "photon+detector noise for in/out-of-transit integrations with the "
-        "systematic floor, anchored at R=100 bins (finer binning cannot "
-        "manufacture floor-limited significance). 'transits → target' averages "
-        "down the photon term only — the floor does not integrate out, so it can "
-        "honestly read 'never'. Groups are chosen to stay under the saturation "
-        "limit and verified against Pandeia's measured saturation. σ_detect is a "
-        "**fixed-model distinguishability** (opacity-removal upper bound): T, "
-        "clouds, and the other abundances are not re-fit, so a full retrieval "
-        "detection can only be weaker."
+        "**σ_detect is a conditional matched-template S/N at the specified "
+        "atmospheric state**, not a retrieval detection: √Δχ² of "
+        "(full − without-molecule) over the mode's bins, with a constant depth "
+        "offset — plus one step per detector segment (NRS1/NRS2) — profiled out. "
+        "**σ_detect (proj)** additionally projects out the temperature-structure "
+        "and reference-radius (lnR0) Jacobian directions (chemistry and clouds "
+        "stay fixed — still conditional); prefer it for narrow margins. σ_bin "
+        "combines Pandeia photon+detector noise (× the per-mode random-noise "
+        "inflation) for in/out-of-transit integrations with the systematic floor, "
+        "anchored at R=100 bins. 'transits → target' averages down the photon "
+        "term only — the floor does not integrate out, so it can honestly read "
+        "'never'. Groups are chosen and verified against Pandeia's measured "
+        "saturation. Because T, clouds, and the other abundances are not re-fit, "
+        "a full retrieval detection can only be weaker."
     )
 else:
     st.caption(
@@ -850,9 +871,13 @@ if fisher_names and "jac" in model:
             "differentiation through the full VULCAN-JAX chemistry + ExoJAX RT "
             "chain** (photochemistry on), not from finite-difference re-runs.\n"
             "- Each per-mode row also fits (and marginalizes over) a reference-"
-            "radius nuisance **lnR0**; the combined row shares lnR0 across modes "
-            "and adds one absolute-depth **offset per mode** — that's what keeps "
-            "multi-instrument combinations honest.\n"
+            "radius nuisance **lnR0** plus one absolute-depth **offset per "
+            "detector segment** — so the two-detector NIRSpec gratings (G395H, "
+            "G235H) float independent **NRS1 and NRS2** steps, as every real "
+            "G395H fit does (Moran+2023, Madhusudhan+2023). The combined row "
+            "shares lnR0 across modes and keeps one offset per segment across "
+            "all of them — that's what keeps multi-instrument combinations "
+            "honest.\n"
             "- **No priors** are applied: a parameter with no spectral response "
             "in a mode's band reads *unconstrained* rather than a fake number.\n"
             "- lnZ and lnKzz are reported in **dex** (factors of 10); dlnCO in "

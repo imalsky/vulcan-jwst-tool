@@ -91,7 +91,7 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         "star": {k: float(star[k]) for k in ("teff", "log_g", "metallicity", "ks_mag")},
         "sat_limit": float(sat_limit),
         "modes": modes,
-        "worker_version": 3,   # cache-buster: bump when pandeia_worker output changes
+        "worker_version": 4,   # cache-buster: bump when pandeia_worker output changes
     }
 
 
@@ -168,14 +168,26 @@ def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
     flux = np.asarray(mode_result["flux"])
     noise = np.asarray(mode_result["noise_1int"])
     t_cycle = float(mode_result["t_cycle_s"])
-    n_in = max(1, int(t_in_s / t_cycle))
-    n_out = max(1, int(t_out_s / t_cycle))
-    return (noise / flux) ** 2 * (1.0 / n_in + 1.0 / n_out) / max(1, int(n_transits))
+    # int() floors to whole integrations (conservative); a window shorter than
+    # one integration cycle yields NO usable integration -- say so, never
+    # silently pretend one fits (the old max(1, ...) did exactly that).
+    n_in = int(t_in_s / t_cycle)
+    n_out = int(t_out_s / t_cycle)
+    if n_in < 1 or n_out < 1:
+        raise ValueError(
+            f"observation window shorter than one integration cycle "
+            f"(t_cycle={t_cycle:.1f} s, in-transit {t_in_s:.1f} s -> {n_in} "
+            f"integrations, out-of-transit {t_out_s:.1f} s -> {n_out}): "
+            "this mode cannot produce a usable depth measurement as configured")
+    if int(n_transits) < 1:
+        raise ValueError(f"n_transits must be >= 1, got {n_transits!r}")
+    return (noise / flux) ** 2 * (1.0 / n_in + 1.0 / n_out) / int(n_transits)
 
 
 def depth_error_bins(mode_result: dict, edges: np.ndarray,
                      t_in_s: float, t_out_s: float, n_transits: int,
-                     floor_ppm: float, op: dict | None = None) -> dict:
+                     floor_ppm: float, op: dict | None = None,
+                     noise_inflation: float = 1.0) -> dict:
     """Per-bin transit-depth sigma from a worker mode result.
 
     ``op`` is the mode's count-space measurement operator (binning.build_operator);
@@ -189,12 +201,19 @@ def depth_error_bins(mode_result: dict, edges: np.ndarray,
     sqrt(var_phot + floor^2). Returning the two components separately is what
     lets callers extrapolate to other transit counts CORRECTLY -- a plain
     1/sqrt(N) scaling of sigma is optimistic wherever the floor contributes.
+
+    ``noise_inflation`` multiplies the random (Pandeia) sigma: the post-launch
+    calibration of achieved-vs-predicted precision (COMPASS/Gordon+2025: real
+    G395H errors ~5% above PandExo on NRS1, ~12% on NRS2; Espinoza+2023: 1.2x
+    for NIRISS-style forecasts; Bouwman+2023: ~15-20% for MIRI LRS). It is
+    PROPORTIONAL noise, so it averages down with transits like the photon
+    term -- unlike the floor.
     """
     if op is None:
         op = binning.build_operator(np.asarray(mode_result["wl"]),
                                     np.asarray(mode_result["flux"]), edges)
     var_pix = pixel_depth_variance(mode_result, t_in_s, t_out_s, n_transits)
-    var_phot = binning.bin_variance(op, var_pix)
+    var_phot = binning.bin_variance(op, var_pix) * float(noise_inflation) ** 2
     centers = 0.5 * (edges[:-1] + edges[1:])
     r_bin = (centers / np.diff(edges))[op["keep"]]
     floor = (floor_ppm * 1e-6) * np.sqrt(np.maximum(r_bin, FLOOR_REF_R) / FLOOR_REF_R)

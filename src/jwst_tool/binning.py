@@ -41,6 +41,14 @@ import numpy as np
 # smear the model across wavelengths the pixel never sees.
 GAP_CAP = 1.5
 
+# A gap between adjacent (usable) pixels larger than this factor times the
+# mode's median pixel spacing marks a DETECTOR-SEGMENT boundary (NIRSpec
+# G395H/G235H NRS1|NRS2: gap ~150x median). Real dispersion gradients (PRISM,
+# MIRI LRS) vary smoothly by factors of a few, far below this. Interior holes
+# carved by saturation masks can also split a segment -- that only ADDS a
+# nuisance offset (conservative), never removes one.
+SEGMENT_GAP_FACTOR = 20.0
+
 # Pixels whose local wavelength spacing is below this fraction of the mode's
 # median spacing sit on a DEGENERATE wavelength solution (e.g. pandeia_data
 # 3.0rc3 G395H piles ~700 samples within <1e-4 um at the NRS2 red edge, spacing
@@ -68,6 +76,104 @@ def degenerate_wl_mask(wl_pix: np.ndarray) -> np.ndarray:
     bad = np.zeros(wl_pix.size, bool)
     bad[order] = bad_sorted
     return bad
+
+
+def segment_ids(wl_pix: np.ndarray) -> np.ndarray:
+    """Detector-segment id (0, 1, ...) per pixel, in the INPUT pixel order.
+
+    Segments are contiguous wavelength runs separated by gaps larger than
+    SEGMENT_GAP_FACTOR x the median pixel spacing -- the NRS1/NRS2 split for
+    the two-detector NIRSpec gratings, one segment for every other mode. Each
+    segment gets its own calibration-offset nuisance in the detection score
+    and the Fisher forecasts (Moran+2023 / Madhusudhan+2023-style NRS1/NRS2
+    steps of tens of ppm are universal in real G395H fits)."""
+    wl_pix = np.asarray(wl_pix, float)
+    order = np.argsort(wl_pix)
+    if wl_pix.size < 2:
+        return np.zeros(wl_pix.size, int)
+    gaps = np.diff(wl_pix[order])
+    split = gaps > SEGMENT_GAP_FACTOR * np.median(gaps)
+    seg_sorted = np.concatenate([[0], np.cumsum(split)])
+    seg = np.empty(wl_pix.size, int)
+    seg[order] = seg_sorted
+    return seg
+
+
+def bin_segments(op: dict, seg_pix: np.ndarray) -> np.ndarray:
+    """Per-kept-bin segment id: the segment holding the bin's count weight.
+    Bins never straddle a segment gap in practice (gap >> bin width); if one
+    ever did, the count-majority segment is the honest assignment."""
+    seg = np.asarray(seg_pix)[op["pix_idx"]].astype(int)
+    n_bins = op["wl_center"].size
+    n_seg = int(seg.max()) + 1 if seg.size else 1
+    w = np.zeros((n_seg, n_bins))
+    np.add.at(w, (seg, op["pix_bin"]), op["pix_w"])
+    return np.argmax(w, axis=0)
+
+
+def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
+                       wl_r: np.ndarray, r_curve: np.ndarray,
+                       band_lo: float, band_hi: float) -> np.ndarray:
+    """Blur a native model with the instrument's Gaussian LSF of resolving
+    power R(lambda) over [band_lo, band_hi]; returns a full-length copy.
+
+    Needed where the final bins approach or beat the NATIVE resolving power
+    (MIRI LRS R~40-160 across 5-12 um, NIRSpec PRISM R~30-300, blue SOSS):
+    there the LSF redistributes the depth signal across bins to first order.
+    For high-R modes the kernel is unresolved by the model grid and this is a
+    no-op (returned unchanged) -- consistent with the sub-ppm edge-effect
+    estimate for e.g. G395H at R_bin=100.
+
+    Implementation: cell-average the piecewise-linear model onto a uniform
+    ln-lambda grid finer than the narrowest kernel (flux-conserving, no
+    aliasing of unresolved lines), convolve with the wavelength-dependent
+    Gaussian, and interpolate back onto the model points inside the band.
+    The working band extends 5 sigma beyond [band_lo, band_hi] so one-sided
+    kernels never touch the returned region.
+    """
+    wl = np.asarray(wl_model, float)
+    yv = np.asarray(y, float)
+    lnw = np.log(wl)
+    x_lo, x_hi = np.log(band_lo), np.log(band_hi)
+    in_band = (wl_r >= band_lo) & (wl_r <= band_hi)
+    r_band = np.asarray(r_curve, float)[in_band] if in_band.any() else np.asarray(r_curve, float)
+    r_min = max(5.0, float(np.min(r_band)))
+    r_max = max(r_min, float(np.max(r_band)))
+    s_max = 1.0 / (2.3548 * r_min)          # widest kernel sigma, in ln-lambda
+    s_min = 1.0 / (2.3548 * r_max)
+
+    sel = (lnw >= x_lo) & (lnw <= x_hi)
+    if not sel.any():
+        return yv.copy()
+    d_model = float(np.median(np.diff(lnw[sel]))) if sel.sum() > 2 else np.inf
+    if s_max < d_model:                     # kernel unresolved by the model grid
+        return yv.copy()
+
+    lo = max(float(lnw[0]), x_lo - 5.0 * s_max)
+    hi = min(float(lnw[-1]), x_hi + 5.0 * s_max)
+    dl = s_min / 6.0
+    n = int(np.ceil((hi - lo) / dl)) + 1
+    grid = lo + dl * np.arange(n)
+
+    # flux-conserving cell average of the piecewise-linear model in ln-lambda
+    icum = np.concatenate([[0.0], np.cumsum(0.5 * (yv[1:] + yv[:-1]) * np.diff(lnw))])
+    edges = np.concatenate([[grid[0] - 0.5 * dl], grid + 0.5 * dl])
+    edges = np.clip(edges, lnw[0], lnw[-1])
+    ic = np.interp(edges, lnw, icum)
+    widths = np.maximum(np.diff(edges), 1e-300)
+    yg = np.diff(ic) / widths
+
+    k = int(np.ceil(4.0 * s_max / dl))
+    pad = np.concatenate([np.full(k, yg[0]), yg, np.full(k, yg[-1])])
+    win = np.lib.stride_tricks.sliding_window_view(pad, 2 * k + 1)
+    sig = 1.0 / (2.3548 * np.maximum(np.interp(np.exp(grid), wl_r, r_curve), 5.0))
+    off = dl * (np.arange(2 * k + 1) - k)
+    w = np.exp(-0.5 * (off[None, :] / sig[:, None]) ** 2)
+    smoothed = (w * win).sum(axis=1) / w.sum(axis=1)
+
+    out = yv.copy()
+    out[sel] = np.interp(lnw[sel], grid, smoothed)
+    return out
 
 
 def _pixel_cells(wl_sorted: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

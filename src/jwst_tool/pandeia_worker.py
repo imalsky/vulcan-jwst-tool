@@ -14,9 +14,23 @@ job.json:
 result.json, per mode key:
     {"wl": [...um], "flux": [...e-/s], "noise_1int": [...e-/s, sigma for 1 integ],
      "n_part_sat": [...], "n_full_sat": [...],   per-pixel saturated-group counts
+     "r_native": [...] | null,      native resolving power R(lambda) on the wl
+                                    grid (refdata dispersion file; null when the
+                                    disperser has no such file -- host then skips
+                                    the LSF blur, safe for high-R modes only),
+     "r_native_source": "..",
      "t_cycle_s": .., "ngroup": .., "sat_frac": .., "sat_ngroups": ..,
      "saturated": bool, "engine_version": "..",
      "warnings": {...}}      -- or {"error": "..."} if that mode failed.
+
+Star normalization (worker_version >= 4): band-integrated synphot photsys
+normalization to the 2MASS Ks magnitude in vegamag ("2mass,ks" bandpass from
+the minimal CDBS comp/nonhst tree, Vega = local CALSPEC alpha_lyr) -- the same
+convention as the STScI web ETC. The old at_lambda shortcut (monochromatic
+666.7 Jy zero point AT 2.159 um) mis-scales the flux by ~1-4% depending on
+spectral type (CO bandhead for cool stars, Brackett-gamma wing for warm ones;
+Cohen 2003 isophotal calibration holds only for A0V shapes), which fed
+saturation/ngroup choices at full amplitude.
 
 Group selection: probe at ngroup_min, form two candidates -- the PandExo-style
 linear extrapolation of the brightest-pixel full-well fraction, and pandeia's
@@ -30,6 +44,7 @@ n_partial_saturated / n_full_saturated curves so the host can exclude or flag
 affected pixels instead of trusting one mode-wide boolean.
 """
 import copy
+import glob
 import json
 import math
 import os
@@ -50,12 +65,47 @@ def _make_calc(build_default_calc, m, star):
     calc["scene"][0]["spectrum"]["sed"] = {
         "sed_type": "phoenix", "teff": float(star["teff"]),
         "log_g": float(star["log_g"]), "metallicity": float(star["metallicity"])}
-    # Ks mag -> absolute flux at 2.159 um (2MASS zeropoint 666.7 Jy, Cohen 2003)
-    f_mjy = 666.7e3 * 10.0 ** (-0.4 * float(star["ks_mag"]))
+    # band-integrated 2MASS Ks normalization in vegamag (web-ETC convention);
+    # see module docstring for why the at_lambda shortcut was retired
     calc["scene"][0]["spectrum"]["normalization"] = {
-        "type": "at_lambda", "norm_wave": 2.159, "norm_waveunit": "um",
-        "norm_flux": f_mjy, "norm_fluxunit": "mjy"}
+        "type": "photsys", "bandpass": "2mass,ks",
+        "norm_flux": float(star["ks_mag"]), "norm_fluxunit": "vegamag"}
     return calc
+
+
+def _native_r(refdata, m, wl):
+    """Native resolving power R(lambda) interpolated onto the extracted grid,
+    from the mode's refdata dispersion file. Returns (list|None, source str).
+
+    Disperser token: config disperser where present; MIRI LRS is the p750l
+    prism; SOSS picks the order-specific file. Missing file -> (None, note):
+    the host then applies no LSF blur, which is only safe for high-R modes --
+    every low-R mode used here (PRISM, LRS, SOSS) has a dispersion file in
+    pandeia_data (verified for 3.0rc3).
+    """
+    disp = (m.get("config", {}).get("instrument", {}) or {}).get("disperser")
+    if m["instrument"] == "miri" and m["mode"] == "lrsslitless":
+        disp = "p750l"
+    if m["instrument"] == "niriss" and m["mode"] == "soss":
+        order = int((m.get("strategy") or {}).get("order", 1))
+        disp = f"gr700xd-ord{order}"
+    if not disp:
+        return None, "no disperser token for this mode"
+    pat = os.path.join(refdata, "jwst", m["instrument"], "dispersion",
+                       f"*{disp}*disp*.fits")
+    hits = sorted(glob.glob(pat))
+    if not hits:
+        return None, f"no dispersion file matching {pat}"
+    from astropy.io import fits
+    with fits.open(hits[0]) as h:
+        cols = {c.upper(): c for c in h[1].columns.names}
+        if "R" not in cols or "WAVELENGTH" not in cols:
+            return None, f"{os.path.basename(hits[0])} lacks WAVELENGTH/R columns"
+        w = np.asarray(h[1].data[cols["WAVELENGTH"]], float)
+        r = np.asarray(h[1].data[cols["R"]], float)
+    order_ix = np.argsort(w)
+    r_i = np.interp(np.asarray(wl, float), w[order_ix], r[order_ix])
+    return r_i.tolist(), os.path.basename(hits[0])
 
 
 def _run(perform_calculation, calc, ngroup):
@@ -77,7 +127,8 @@ def _sat_curve(rpt, key, n_pix):
     return np.zeros(n_pix)
 
 
-def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit):
+def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
+              refdata):
     calc = _make_calc(build_default_calc, m, star)
     ng_min, ng_max = int(m["ngroup_min"]), int(m["ngroup_max"])
 
@@ -133,6 +184,7 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit):
 
     n_part = _sat_curve(rpt, "n_partial_saturated", wl.shape[0])
     n_full = _sat_curve(rpt, "n_full_saturated", wl.shape[0])
+    r_native, r_src = _native_r(refdata, m, wl[good])
 
     import pandeia.engine
     return {
@@ -141,6 +193,8 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit):
         "noise_1int": noise[good].tolist(),
         "n_part_sat": n_part[good].tolist(),
         "n_full_sat": n_full[good].tolist(),
+        "r_native": r_native,
+        "r_native_source": r_src,
         "t_cycle_s": float(rpt["scalar"]["total_exposure_time"]),
         "ngroup": int(ng_best),
         "sat_frac": float(rpt["scalar"]["fraction_saturation"]),
@@ -167,6 +221,14 @@ def _preflight(job):
             problems.append(
                 f"PHOENIX grid missing or dangling symlink: {phx} "
                 f"-> {os.path.realpath(phx)} (the star SED cannot be built)")
+        for rel, why in (
+                (os.path.join("comp", "nonhst", "2mass_ks_001_syn.fits"),
+                 "the 2MASS Ks bandpass (photsys normalization)"),
+                (os.path.join("calspec", "alpha_lyr_stis_011.fits"),
+                 "the Vega spectrum (vegamag normalization)")):
+            if not os.path.isfile(os.path.join(cdbs, rel)):
+                problems.append(f"missing {rel} in PYSYN_CDBS -- {why}; fetch "
+                                "it from https://ssb.stsci.edu/trds/")
     if problems:
         raise RuntimeError(
             "pandeia worker preflight failed:\n  " + "\n  ".join(problems)
@@ -181,6 +243,11 @@ def main():
     os.environ["PYSYN_CDBS"] = job["cdbs"]
     import warnings as _w
     _w.filterwarnings("ignore")
+    # synphot's default vega_file is an ssb.stsci.edu URL: point it at the
+    # local CALSPEC copy so vegamag normalization works offline (preflighted)
+    import synphot
+    synphot.conf.vega_file = os.path.join(
+        job["cdbs"], "calspec", "alpha_lyr_stis_011.fits")
     from pandeia.engine.calc_utils import build_default_calc
     from pandeia.engine.perform_calculation import perform_calculation
 
@@ -190,7 +257,8 @@ def main():
         print(f"[pandeia] {key} ...", flush=True)
         try:
             out[key] = _one_mode(build_default_calc, perform_calculation,
-                                 m, job["star"], float(job.get("sat_limit", 0.8)))
+                                 m, job["star"], float(job.get("sat_limit", 0.8)),
+                                 job["refdata"])
             if out[key].get("unusable"):
                 print(f"[pandeia] {key}: UNUSABLE ({out[key]['reason']})", flush=True)
             else:

@@ -2,7 +2,6 @@
 constant-depth conservation, estimator/variance consistency (Monte Carlo),
 model-vs-noise same-estimator identity, Jacobian linearity, gap handling."""
 import numpy as np
-import pytest
 
 from jwst_tool import binning, noise as noise_mod
 
@@ -137,6 +136,52 @@ def test_rebinning_nested_vs_direct():
     np.add.at(num, fmap, wsum_f * d_f)
     np.add.at(den, fmap, wsum_f)
     assert np.allclose(num[den > 0] / den[den > 0], d_c, rtol=1e-12)
+
+
+def test_segment_ids_split_at_detector_gap_only():
+    """NRS1|NRS2-style gap makes two segments; a smooth grid makes one."""
+    wl = np.concatenate([np.linspace(2.87, 3.72, 300),   # NRS1
+                         np.linspace(3.82, 5.18, 400)])   # NRS2 (0.10 um gap)
+    seg = binning.segment_ids(wl)
+    assert seg[:300].tolist() == [0] * 300
+    assert seg[300:].tolist() == [1] * 400
+    # smooth single-detector grid -> one segment
+    assert binning.segment_ids(np.linspace(1.0, 5.0, 1000)).max() == 0
+    # order-independence: shuffle in, segment ids follow the pixels
+    rng = np.random.default_rng(7)
+    perm = rng.permutation(wl.size)
+    seg_p = binning.segment_ids(wl[perm])
+    assert np.array_equal(seg_p, seg[perm])
+
+
+def test_bin_segments_assigns_majority_segment():
+    wl = np.concatenate([np.linspace(2.87, 3.72, 300),
+                         np.linspace(3.82, 5.18, 400)])
+    flux = np.full(wl.size, 1e3)
+    edges = noise_mod.make_bins(2.9, 5.15, 100.0)
+    op = binning.build_operator(wl, flux, edges, wl_lo=2.8, wl_hi=5.2)
+    seg_pix = binning.segment_ids(wl)
+    seg_bin = binning.bin_segments(op, seg_pix)
+    # every kept bin is entirely in one detector, so bins are a monotonic
+    # block of 0s then 1s, both present
+    assert set(seg_bin.tolist()) == {0, 1}
+    assert np.all(np.diff(seg_bin) >= 0)
+
+
+def test_smooth_to_native_r_conserves_flux_and_noops_at_high_r():
+    wl = np.linspace(4.0, 12.0, 20000)
+    y = 0.01 + 1e-3 * np.sin(50 * wl)              # structured depth
+    # MIRI-like low native R -> blur changes the model, conserves the mean
+    r_lo = np.full(wl.size, 80.0)
+    y_lo = binning.smooth_to_native_r(wl, y, wl, r_lo, 5.0, 11.0)
+    assert not np.allclose(y_lo, y)                # something happened
+    band = (wl >= 5.5) & (wl <= 10.5)             # interior (no edge effects)
+    assert abs(np.trapezoid(y_lo[band], wl[band]) - np.trapezoid(y[band], wl[band])) \
+        < 1e-3 * abs(np.trapezoid(y[band], wl[band]))
+    # very high native R (>> model sampling) -> kernel unresolved -> exact no-op
+    r_hi = np.full(wl.size, 1e5)
+    y_hi = binning.smooth_to_native_r(wl, y, wl, r_hi, 5.0, 11.0)
+    assert np.array_equal(y_hi, y)
 
 
 def test_degenerate_wavelength_pixels_flagged():
