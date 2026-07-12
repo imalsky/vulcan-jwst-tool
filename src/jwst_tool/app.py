@@ -71,10 +71,12 @@ This tool answers that — quickly, on your laptop.
 
 - **This is a planning tool, not a retrieval.** Trust the **ranking of modes**
   far more than the exact ppm or "sigma" values.
-- The noise is a **best-case floor**: real photon + detector noise (nudged up
-  by a small, literature-based factor per mode), plus an editable "systematic
-  floor." Real observations have messy time-correlated noise this does **not**
-  fully model, so true error bars can only be **equal or worse**.
+- The noise is an **instrument-model forecast**: photon + detector noise from
+  the STScI Pandeia engine, with an optional PandExo-style minimum noise
+  floor. It does **not** model time-correlated systematics (visit trends,
+  1/f residuals, detrending covariance, stellar activity) — real reductions
+  can differ in either direction depending on extraction and analysis
+  choices, though unmodeled systematics commonly degrade precision.
 - A molecule "detection sigma" here is a **best-case template match at one fixed
   atmosphere** — a real retrieval that re-fits temperature, clouds, and other
   gases will always give a **weaker** detection.
@@ -99,11 +101,13 @@ st.title("JWST instrument selector")
 st.caption(
     "VULCAN-JAX photochemistry → ExoJAX transmission spectrum → Pandeia ETC noise. "
     "Pick a planet and a science goal, run the model locally, and see which "
-    "instrument mode achieves it best. Uncertainties are an **ETC random-noise "
-    "lower bound** (× a literature-calibrated per-mode inflation) plus an "
-    "editable systematic-floor scenario — not a full time-series systematics "
-    "forecast; treat mode rankings as more robust than absolute ppm."
+    "instrument mode achieves it best. Uncertainties are a **Pandeia "
+    "instrument-model forecast** with an optional PandExo-style minimum noise "
+    "floor — not a full time-series systematics forecast; treat mode rankings "
+    "as more robust than absolute ppm."
 )
+st.caption(f"⚠️ **{ins.BACKEND_STATUS}** — every result records the exact "
+           "engine + refdata versions in its provenance block.")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 
@@ -249,9 +253,11 @@ with st.sidebar:
         dco = st.slider("Δ ln(C/O) (carbon enrichment)", -0.5, 0.5, 0.0, 0.05,
                         key=K("dco"))
 
-    with st.expander("Physics"):
-        st.caption("Chemistry knobs flow through the validated cfg_overrides "
-                   "hook; defaults reproduce the Tsai et al. 2023 W39b setup.")
+    with st.expander("Chemistry (VULCAN-JAX)"):
+        st.caption("Photochemistry knobs, flowing through the validated "
+                   "cfg_overrides hook; defaults reproduce the Tsai et al. "
+                   "2023 W39b setup. Composition, T-P, and K_zz (also VULCAN "
+                   "inputs) live in the two sections above.")
         use_photo = st.checkbox(
             "Photochemistry (UV photolysis)", value=True, key=K("photo"),
             help="Off = thermochemistry + transport only (no SO2 story, no "
@@ -271,6 +277,8 @@ with st.sidebar:
             "Molecular diffusion", value=True, key=K("moldiff"),
             help="Species-dependent molecular diffusion competing with Kzz "
                  "(sets the homopause; matters high up).")
+
+    with st.expander("Spectrum & clouds (ExoJAX RT)"):
         extra_mols = st.multiselect(
             "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
             key=K("xmols"),
@@ -278,7 +286,6 @@ with st.sidebar:
                  "chemistry always solves them). C2H2/HCN matter at high C/O, "
                  "H2S at 3.8–4.6 µm, NH3 on cool (≲900 K) planets. First use "
                  "downloads the HITRAN lines (~10–15 s each per run).")
-        st.markdown("**Scattering & clouds (RT)**")
         use_rayleigh = st.checkbox(
             "H₂/He Rayleigh scattering", value=True, key=K("rayl"),
             help="Zero-free-parameter known physics; matters shortward of "
@@ -408,41 +415,90 @@ with st.sidebar:
                 "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
                 default=["lnZ", "dlnCO", "lnKzz"]) if (do_fisher and use_photo) else []
 
+    with st.expander("Noise model"):
+        st.markdown("**Minimum noise floor** (PandExo convention)")
+        st.caption("Applied as σ_final = max(σ_random, floor) on the final "
+                   "binned uncertainties: a hard minimum — never added in "
+                   "quadrature, never rescaled by the binning R, and never "
+                   "averaged below by adding transits.")
+        floor_mode = st.radio(
+            "Floor type", ["constant", "none", "file"], horizontal=True,
+            key=K("floormode"),
+            format_func={"constant": "Constant (ppm)", "none": "No floor",
+                         "file": "Wavelength table"}.get)
+        floor_table = None
+        if floor_mode == "constant":
+            floors = {k: st.number_input(ins.MODES[k]["label"], 0.0, 200.0,
+                                         ins.MODES[k]["floor_ppm"], 5.0,
+                                         key=K(f"floor_{k}"))
+                      for k in mode_keys}
+        elif floor_mode == "file":
+            up = st.file_uploader(
+                "Two columns: wavelength (µm), floor (ppm)",
+                type=["txt", "csv", "dat"], key=K("floorfile"),
+                help="Whitespace- or comma-separated. Linearly interpolated "
+                     "to the final bin wavelengths; endpoint values extend "
+                     "beyond the supplied range (PandExo behavior). Applied "
+                     "to every selected mode.")
+            if up is not None:
+                try:
+                    raw = up.getvalue().decode()
+                    delim = "," if "," in raw.splitlines()[0] else None
+                    floor_table = np.loadtxt(raw.splitlines(), delimiter=delim,
+                                             ndmin=2)
+                    noise_mod.resolve_floor(np.array([1.0]),
+                                            floor_table)  # validate loudly now
+                    st.caption(f"Loaded {floor_table.shape[0]} rows, "
+                               f"{floor_table[:, 0].min():g}–"
+                               f"{floor_table[:, 0].max():g} µm, "
+                               f"{floor_table[:, 1].min():g}–"
+                               f"{floor_table[:, 1].max():g} ppm.")
+                except Exception as e:
+                    st.error(f"Floor table rejected: {e}")
+                    floor_table = None
+            if floor_table is None:
+                st.warning("No valid floor table loaded — runs will use NO "
+                           "floor until one is provided.")
+        if floor_mode != "constant":
+            floors = {k: None for k in mode_keys}
+        if floor_mode == "file" and floor_table is not None:
+            floors = {k: floor_table for k in mode_keys}
+
+        st.markdown("**Empirical noise sensitivity factor** (× Pandeia σ, "
+                    "optional)")
+        st.caption("Default **1.0** = the Pandeia prediction as-is. Published "
+                   "achieved-vs-predicted ratios (COMPASS/Gordon+2025 G395H "
+                   "≈1.05–1.12×; Espinoza+2023 1.2× NIRISS; Bouwman+2023 "
+                   "≈1.15× MIRI LRS) are program-specific reference points "
+                   "for sensitivity studies, not a calibration. Proportional "
+                   "noise — averages down with transits, unlike the floor. "
+                   "Recorded in the result metadata.")
+        infl = {k: st.number_input(ins.MODES[k]["label"] + " ", 1.0, 3.0,
+                                   float(ins.MODES[k].get("noise_infl", 1.0)),
+                                   0.05, key=K(f"infl_{k}"))
+                for k in mode_keys}
+
+        st.markdown("**Experimental: correlated-floor scenarios**")
+        scenario = st.radio(
+            "Systematics scenario", list(noise_mod.SCENARIOS),
+            format_func=lambda s: noise_mod.SCENARIOS[s]["label"],
+            key=K("scenario"), label_visibility="collapsed")
+        st.caption("The default (**random**) is the exact diagonal, "
+                   "PandExo-style noise model and is what the headline "
+                   "numbers use. The correlated presets re-allocate the part "
+                   "of the variance the floor adds (the floor *excess*) into "
+                   "a spectrally smooth kernel at identical per-bin totals. "
+                   "They are stated assumptions — **not calibrated JWST "
+                   "systematics models** — for stress-testing how rankings "
+                   "move with correlation structure; conservative also "
+                   "profiles per-segment slopes.")
+
     with st.expander("Advanced"):
         sat_limit = st.slider("Saturation limit (full-well fraction)",
                               0.5, 0.95, 0.80, 0.05, key=K("sat"))
         show_noise = st.checkbox("Show simulated noise realization", value=False,
                                  key=K("shownoise"))
         seed = st.number_input("Realization seed", 0, 9999, 0, key=K("seed"))
-        st.markdown("**Systematic noise floors (ppm, per R=100 bin)**")
-        st.caption("Anchored at R=100: finer binning scales the per-bin floor "
-                   "by √(R/100) so slicing the band into more bins cannot "
-                   "manufacture floor-limited significance; coarser bins keep "
-                   "the full floor (systematics do not average down).")
-        floors = {k: st.number_input(ins.MODES[k]["label"], 0.0, 200.0,
-                                     ins.MODES[k]["floor_ppm"], 5.0,
-                                     key=K(f"floor_{k}"))
-                  for k in mode_keys}
-        st.markdown("**Random-noise inflation (× Pandeia σ)**")
-        st.caption("Post-launch achieved-vs-predicted precision (COMPASS/"
-                   "Gordon+2025 G395H ≈1.05× NRS1 / 1.12× NRS2; Espinoza+2023 "
-                   "1.2× NIRISS; Bouwman+2023 ≈1.15× MIRI LRS). Proportional "
-                   "noise — it averages down with transits, unlike the floor.")
-        infl = {k: st.number_input(ins.MODES[k]["label"] + " ", 1.0, 3.0,
-                                   float(ins.MODES[k].get("noise_infl", 1.0)),
-                                   0.05, key=K(f"infl_{k}"))
-                for k in mode_keys}
-        st.markdown("**Systematics scenario (floor correlation structure)**")
-        scenario = st.radio(
-            "Systematics scenario", list(noise_mod.SCENARIOS),
-            format_func=lambda s: noise_mod.SCENARIOS[s]["label"],
-            key=K("scenario"), label_visibility="collapsed")
-        st.caption("Re-allocates the floor budget between white and "
-                   "spectrally smooth (ln-λ squared-exponential kernel) parts "
-                   "— per-bin totals are identical in every scenario, so "
-                   "score differences are purely correlation structure. "
-                   "Conservative also profiles per-segment slopes. The "
-                   "results table shows σ_detect under all three.")
 
     st.button("Reset all settings", on_click=_reset_all,
               help="Back to the defaults (also clears the current results).")
@@ -595,7 +651,8 @@ if run_clicked:
             goal=goal, target=target_mol, goal_param=goal_param,
             target_prec=target_prec, target_sig=target_sig,
             n_transits=n_transits, show_noise=show_noise, seed=seed,
-            r_bin=r_bin, planet=planet_label, scenario=scenario)
+            r_bin=r_bin, planet=planet_label, scenario=scenario,
+            floor_mode=floor_mode)
 
 # ---------------------------------------------------------------------------
 # Render
@@ -624,9 +681,10 @@ if not results:
 if out.get("provenance"):
     _pv = out["provenance"]
     st.caption(
-        f"Noise backend: pandeia.engine {_pv['engine_version']} + "
-        f"{_pv['refdata_name']} (refdata {_pv['refdata_version']}), "
-        f"worker v{_pv['worker_version']} — recorded in every noise cache.")
+        f"**{ins.BACKEND_STATUS}.** Backend: pandeia.engine "
+        f"{_pv['engine_version']} + {_pv['refdata_name']} "
+        f"(refdata {_pv['refdata_version']}), worker v{_pv['worker_version']} "
+        "— recorded in every noise cache.")
 
 fisher_names = ([str(x) for x in model["jac_names"][:-1]]
                 if "jac_names" in model else [])
@@ -860,9 +918,12 @@ for r in sorted(results, key=key_order):
         _proj = r.get("sigma_detect_proj", float("nan"))
         if np.isfinite(_proj):
             row["σ_detect (proj)"] = round(_proj, 1)
-        for _sc, _v in r.get("sigma_detect_by_scenario", {}).items():
-            if _sc != r.get("scenario"):
-                row[f"σ ({_sc})"] = round(_v, 1)
+        # experimental correlated scenarios stay OUT of the headline table
+        # unless the user explicitly selected one
+        if meta.get("scenario", "random") != "random":
+            for _sc, _v in r.get("sigma_detect_by_scenario", {}).items():
+                if _sc != r.get("scenario"):
+                    row[f"σ ({_sc}, exp.)"] = round(_v, 1)
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
@@ -898,24 +959,27 @@ if goal_r == "detect":
         "**σ_detect (proj)** additionally projects out the temperature-structure "
         "and reference-radius (lnR0) Jacobian directions (chemistry and clouds "
         "stay fixed — still conditional); prefer it for narrow margins. σ_bin "
-        "combines Pandeia photon+detector noise (× the per-mode random-noise "
-        "inflation) for in/out-of-transit integrations with the systematic floor, "
-        "anchored at R=100 bins. 'transits → target' averages down the photon "
-        "term only — the floor does not integrate out, so it can honestly read "
-        "'never'. Groups are chosen and verified against Pandeia's measured "
-        "saturation. Because T, clouds, and the other abundances are not re-fit, "
-        "a full retrieval detection can only be weaker. σ_detect is scored under "
-        f"the selected **{meta.get('scenario', 'random')}** systematics scenario; "
-        "the σ (…) columns re-score it under the other scenarios (same per-bin "
-        "totals, different floor correlation structure) so assumption-driven "
-        "ranking changes are visible."
+        "is the Pandeia photon+detector noise for in/out-of-transit "
+        "integrations (× the optional sensitivity factor, default 1.0), with "
+        "the minimum floor applied as a hard maximum on the final bins "
+        "(PandExo convention). 'transits → target' averages down the random "
+        "term only — the floor is a lower bound at every N, so it can "
+        "honestly read 'never'. Groups are chosen and verified against "
+        "Pandeia's measured saturation. Because T, clouds, and the other "
+        "abundances are not re-fit, a full retrieval detection can only be "
+        "weaker."
+        + (f" σ_detect is scored under the **{meta.get('scenario')}** "
+           "correlated-floor scenario (EXPERIMENTAL — a stated assumption, "
+           "not a calibrated systematics model); the σ (…, exp.) columns "
+           "re-score it under the other scenarios at identical per-bin "
+           "totals." if meta.get("scenario", "random") != "random" else "")
     )
 else:
     st.caption(
         f"± per mode is the marginalized Fisher forecast scaled to {tsig:g}σ "
         "(see the table below); 'transits → target' re-solves the Fisher forecast "
-        "at each transit count with the photon term scaled 1/N and the R-anchored "
-        "systematic floor held fixed — floor-limited targets read 'never' instead "
+        "at each transit count with the random term scaled 1/N and the minimum "
+        "floor as a hard lower bound — floor-limited targets read 'never' instead "
         "of an optimistic 1/√N estimate. Saturated modes are excluded from all "
         "forecasts."
     )
