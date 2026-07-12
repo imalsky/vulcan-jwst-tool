@@ -113,9 +113,10 @@ def bin_segments(op: dict, seg_pix: np.ndarray) -> np.ndarray:
 
 def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
                        wl_r: np.ndarray, r_curve: np.ndarray,
-                       band_lo: float, band_hi: float) -> np.ndarray:
-    """Blur a native model with the instrument's Gaussian LSF of resolving
-    power R(lambda) over [band_lo, band_hi]; returns a full-length copy.
+                       band_lo: float, band_hi: float,
+                       weight: np.ndarray | None = None) -> np.ndarray:
+    """Blur a native transit-depth model to the instrument's Gaussian LSF of
+    resolving power R(lambda) over [band_lo, band_hi]; returns a full-length copy.
 
     Needed where the final bins approach or beat the NATIVE resolving power
     (MIRI LRS R~40-160 across 5-12 um, NIRSpec PRISM R~30-300, blue SOSS):
@@ -124,12 +125,30 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
     no-op (returned unchanged) -- consistent with the sub-ppm edge-effect
     estimate for e.g. G395H at R_bin=100.
 
-    Implementation: cell-average the piecewise-linear model onto a uniform
-    ln-lambda grid finer than the narrowest kernel (flux-conserving, no
-    aliasing of unresolved lines), convolve with the wavelength-dependent
-    Gaussian, and interpolate back onto the model points inside the band.
-    The working band extends 5 sigma beyond [band_lo, band_hi] so one-sided
-    kernels never touch the returned region.
+    STELLAR-FLUX WEIGHTING (``weight``, 2026-07-12 re-audit item 2). The
+    instrument does not measure the LSF-average of the transit depth. It
+    measures LSF-averaged in- and out-of-transit COUNTS and forms their ratio:
+    with stellar flux F and depth d,
+
+        d_obs = 1 - L[F (1 - d)] / L[F] = L[F d] / L[F],
+
+    i.e. the FLUX-WEIGHTED LSF mean of d, not the flat mean L[d]. The two
+    differ wherever F varies across a kernel (a stellar line, a throughput
+    gradient, the SOSS blue drop-off): the flat blur mislocated the depth
+    signal by tens of ppm near structured stellar spectra. Pass the stellar
+    flux at ``wl_model`` as ``weight`` to get the correct ratio; ``None`` (or a
+    constant weight) reduces exactly to the flat blur. F is only resolved to
+    the extracted pixel scale, so sub-pixel stellar lines cannot be recovered
+    here (a documented limitation); this corrects the pixel-resolved structure,
+    which is what the native-R blur redistributes. The operator stays LINEAR in
+    d for fixed F, so a Jacobian row blurs with the SAME weight as the depth.
+
+    Implementation: cell-average the piecewise-linear model (and the weight)
+    onto a uniform ln-lambda grid finer than the narrowest kernel (flux-
+    conserving, no aliasing of unresolved lines), convolve with the
+    wavelength-dependent Gaussian, and interpolate back onto the model points
+    inside the band. The working band extends 5 sigma beyond [band_lo, band_hi]
+    so one-sided kernels never touch the returned region.
     """
     wl = np.asarray(wl_model, float)
     yv = np.asarray(y, float)
@@ -165,12 +184,28 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
     widths = np.maximum(np.diff(edges), 1e-300)
     yg = np.diff(ic) / widths
 
+    # stellar-flux weight on the same grid (cell-averaged the same way), so the
+    # convolution forms L[F d]/L[F] rather than the flat L[d] (re-audit item 2).
+    # None/constant weight -> Fg constant -> exactly the flat blur. A tiny
+    # positive floor keeps an (unphysical) all-zero-flux window from dividing by
+    # zero -- it falls back to flat weighting there.
+    if weight is None:
+        Fg = np.ones_like(yg)
+    else:
+        wv = np.asarray(weight, float)
+        icf = _pl_antideriv(edges, lnw, wv, _pl_cumint(lnw, wv))
+        Fg = np.maximum(np.diff(icf) / widths, 0.0)
+        fmax = float(Fg.max()) if Fg.size else 0.0
+        Fg = np.maximum(Fg, 1e-12 * fmax) if fmax > 0.0 else np.ones_like(yg)
+
     k = int(np.ceil(4.0 * s_max / dl))
     pad = np.concatenate([np.full(k, yg[0]), yg, np.full(k, yg[-1])])
+    padF = np.concatenate([np.full(k, Fg[0]), Fg, np.full(k, Fg[-1])])
     win = np.lib.stride_tricks.sliding_window_view(pad, 2 * k + 1)
+    winF = np.lib.stride_tricks.sliding_window_view(padF, 2 * k + 1)
     sig = 1.0 / (2.3548 * np.maximum(np.interp(np.exp(grid), wl_r, r_curve), 5.0))
     off = dl * (np.arange(2 * k + 1) - k)
-    w = np.exp(-0.5 * (off[None, :] / sig[:, None]) ** 2)
+    w = np.exp(-0.5 * (off[None, :] / sig[:, None]) ** 2) * winF   # flux-weighted
     smoothed = (w * win).sum(axis=1) / w.sum(axis=1)
 
     out = yv.copy()

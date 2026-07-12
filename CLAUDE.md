@@ -63,6 +63,16 @@
   worker's `r_native` before binning; it auto-no-ops when the kernel is
   unresolved by the model grid (high-R gratings), so it only bites on MIRI
   LRS / PRISM. `r_native` comes from the refdata dispersion files.
+- **LSF is the FLUX-WEIGHTED count ratio, not a flat depth blur** (2026-07-12
+  maximal-audit item 2): the instrument forms `d_obs = 1 - L[F(1-d)]/L[F] =
+  L[F d]/L[F]`, the stellar-flux-weighted LSF mean of the depth. `detect`
+  passes the worker's per-pixel stellar flux (interpolated onto the model grid)
+  as `smooth_to_native_r(..., weight=)` for the depth, removed-molecule, AND
+  every Jacobian row (one weight → operator linear in d). NEVER revert to the
+  flat `L[d]` blur — it mislocated depth by ~120 ppm near a structured stellar
+  spectrum (F only pixel-resolved, so sub-pixel stellar lines are a documented
+  limit). `weight=None` reproduces the old flat blur exactly; pinned in
+  `test_binning.py` (ratio-reference + >10× closer than flat).
 - **Minimum noise floor (2026-07-12 external audit)**: exact PandExo
   semantics, `noise.resolve_floor` + `sigma = max(sigma_random, floor)` on
   the FINAL bins. Three modes: none / constant ppm / wavelength-vs-ppm table
@@ -93,7 +103,12 @@
   retrieval detection. `sigma_detect_proj` additionally profiles T-P + lnR0
   Jacobian directions. Keep the GUI/README wording honest.
 - `noise.pixel_depth_variance` RAISES on a sub-integration-cycle window or
-  n_transits < 1 (retired the silent `max(1, ...)`).
+  n_transits < 1 (retired the silent `max(1, ...)`). It uses the OUT-of-transit
+  flux/σ for BOTH in/out terms (symmetric shallow-transit approximation) — kept
+  model-INDEPENDENT so one operator bins noise and model; this is CONSERVATIVE
+  (excess ~d/2: +0.76% at d=1%, +8% at 10%). Exact separate in/out propagation
+  is a pending PandExo-parity gate, NOT a same-answer refactor (2026-07-12
+  maximal-audit item 3, docstring has the numbers).
 - Fisher inversion must stay rank-aware (`fisher._marg_sigmas`: unconditional
   eigh + relative threshold; degenerate directions read `inf`) — no
   `np.linalg.inv` on Fisher matrices.

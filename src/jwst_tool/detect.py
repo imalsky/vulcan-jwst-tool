@@ -286,16 +286,24 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
         r_nat = np.asarray(r_native, float)
         b_lo = max(float(wl_model.min()), lo * 0.97)
         b_hi = min(float(wl_model.max()), hi * 1.03)
+        # stellar flux on the model grid weights the LSF so it forms the
+        # observed count ratio L[F d]/L[F], not the flat depth blur L[d]
+        # (re-audit item 2); same weight for depth, removed-molecule, and each
+        # Jacobian row, so the blurred operator stays linear in the depth.
+        po = np.argsort(wl_pix)
+        flux_model = np.maximum(np.interp(wl_model, wl_pix[po], flux_pix[po]), 0.0)
         depth_sm = binning.smooth_to_native_r(wl_model, depth, wl_pix, r_nat,
-                                              b_lo, b_hi)
+                                              b_lo, b_hi, weight=flux_model)
         lsf_applied = bool(np.any(depth_sm != depth))
         depth = depth_sm
         if depth_wo is not None:
             depth_wo = binning.smooth_to_native_r(wl_model, depth_wo, wl_pix,
-                                                  r_nat, b_lo, b_hi)
+                                                  r_nat, b_lo, b_hi,
+                                                  weight=flux_model)
         if jac_rows is not None and lsf_applied:
             jac_rows = [binning.smooth_to_native_r(wl_model, row, wl_pix,
-                                                   r_nat, b_lo, b_hi)
+                                                   r_nat, b_lo, b_hi,
+                                                   weight=flux_model)
                         for row in jac_rows]
 
     edges = noise_mod.make_bins(lo, hi, R_bin)

@@ -279,6 +279,20 @@ def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
     ingress/egress, limb darkening, and depth-detrending covariance -- the
     fast lower-bound mode; a time-domain information calculation would need
     the full light-curve derivative set.
+
+    SYMMETRIC in/out approximation (2026-07-12 re-audit item 3): this uses the
+    OUT-of-transit extracted flux and sigma for BOTH the in- and out-of-transit
+    terms -- i.e. F_in ~ F_out and sigma_in ~ sigma_out. Exact box-transit
+    propagation of depth = 1 - F_in/F_out carries an F_in/F_out^2 = (1-d)/F_out
+    factor on the in-transit term and a (1-d) source-photon variance, so the
+    exact sigma is smaller by ~d/2 to first order in the transit depth d. This
+    approximation is therefore CONSERVATIVE (it never under-predicts the random
+    sigma from this effect) and the excess grows with depth: about +0.08% at
+    d=0.1%, +0.76% at 1%, +1.5% at 2%, +8% at 10%. It is kept deliberately
+    model-INDEPENDENT (the noise never sees the depth spectrum, so one
+    measurement operator bins noise and model consistently); exact separate
+    in/out flux/variance propagation is a pending PandExo-parity release gate
+    (see the module docstring and README), not a same-answer refactor.
     """
     flux = np.asarray(mode_result["flux"])
     noise = np.asarray(mode_result["noise_1int"])

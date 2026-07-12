@@ -227,6 +227,63 @@ def test_smooth_to_native_r_conserves_flux_and_noops_at_high_r():
     assert np.array_equal(y_hi, y)
 
 
+def test_smooth_flux_weight_none_equals_constant_weight():
+    """weight=None and a constant weight are the same operator (the flat blur):
+    L[F d]/L[F] = L[d] when F is constant (re-audit item 2)."""
+    wl = np.linspace(4.0, 12.0, 20000)
+    y = 0.01 + 1e-3 * np.sin(50 * wl)
+    r = np.full(wl.size, 80.0)
+    flat = binning.smooth_to_native_r(wl, y, wl, r, 5.0, 11.0)
+    ones = binning.smooth_to_native_r(wl, y, wl, r, 5.0, 11.0,
+                                      weight=np.full(wl.size, 3.7))
+    assert np.allclose(flat, ones, atol=0, rtol=1e-12)
+
+
+def test_smooth_flux_weight_preserves_constant_depth():
+    """A flat transit depth must survive the flux-weighted LSF unchanged for ANY
+    stellar-flux weight: L[F c]/L[F] = c. The flat blur also preserves it, but the
+    point is the ratio operator stays unbiased under a strong stellar gradient."""
+    wl = np.linspace(4.0, 12.0, 20000)
+    c = 0.0123
+    y = np.full(wl.size, c)
+    r = np.full(wl.size, 60.0)
+    F = 1.0 + 5.0 * (wl - wl[0]) / (wl[-1] - wl[0])       # 6x throughput gradient
+    F *= 1.0 + 0.4 * np.exp(-0.5 * ((wl - 8.0) / 0.05) ** 2)   # + a stellar line
+    out = binning.smooth_to_native_r(wl, y, wl, r, 5.0, 11.0, weight=F)
+    band = (wl >= 5.5) & (wl <= 10.5)
+    assert np.allclose(out[band], c, atol=1e-12)
+
+
+def test_smooth_flux_weight_matches_direct_ratio_reference():
+    """The flux-weighted native-R blur must equal an independent brute-force
+    evaluation of d_obs = L[F d]/L[F] on a dense grid, and must DIFFER from the
+    flat blur L[d] where the stellar flux has structure (the audit's failure)."""
+    wl = np.linspace(4.0, 12.0, 40000)
+    lnw = np.log(wl)
+    d = 0.01 + 3e-3 * np.exp(-0.5 * ((wl - 8.0) / 0.10) ** 2)   # planetary feature
+    F = 1.0 + 0.8 * np.exp(-0.5 * ((wl - 8.05) / 0.06) ** 2)    # nearby stellar line
+    R = 70.0
+    r = np.full(wl.size, R)
+    got = binning.smooth_to_native_r(wl, d, wl, r, 5.5, 10.5, weight=F)
+    flat = binning.smooth_to_native_r(wl, d, wl, r, 5.5, 10.5)
+
+    # independent reference: full Gaussian-in-ln(lambda) weighted means (the
+    # untruncated continuous ratio; the implementation truncates at 4 sigma on a
+    # uniform ln grid, so a ~5 ppm discretization residual is expected and OK)
+    s = 1.0 / (2.3548 * R)
+    band = (wl >= 6.5) & (wl <= 9.5)      # interior, away from working-band edges
+    idx = np.where(band)[0][::50]         # subsample for a cheap O(n_sub * n) loop
+    ref = np.empty(idx.size)
+    for j, i in enumerate(idx):
+        k = np.exp(-0.5 * ((lnw - lnw[i]) / s) ** 2)
+        ref[j] = np.sum(k * F * d) / np.sum(k * F)
+    err_weighted = np.max(np.abs(got[idx] - ref))
+    err_flat = np.max(np.abs(flat[idx] - ref))
+    assert err_weighted < 1e-5                     # tracks the true ratio (~5 ppm)
+    assert err_flat > 1e-4                          # flat blur is ~120 ppm biased
+    assert err_weighted < err_flat / 10.0           # flux weighting >10x closer
+
+
 def test_degenerate_wavelength_pixels_flagged():
     """A pileup of near-duplicate wavelengths (the pandeia_data-3.0rc3 G395H
     red-edge artifact) must be flagged; smooth dispersion gradients must not."""

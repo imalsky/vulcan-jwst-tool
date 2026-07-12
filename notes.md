@@ -353,3 +353,46 @@ machine-precision closure ×2, NIRCam/instrument group-cap + optimizer-clamp
 ×3, multi-dim Fisher null-space invariance + nuisance-basis rotation
 invariance ×2): `python -m pytest tests -q`, numpy-only, all green
 (76 passed, 1 slow test skipped by default).
+
+## v11: 2026-07-12 maximal cross-repo audit response (LSF flux ratio, in/out labeling)
+
+Response to the "maximally intensive scientific and numerical audit" spanning
+all three repos. Verified each of its five confirmed errors against the current
+code (not the report). Verdicts + actions:
+
+**ERROR 1 — stale vendored jwst_tool in `vulcan_exojax_run`: already resolved.**
+The umbrella repo is archived on GitHub and absent locally; `build/` is
+gitignored (0 tracked files). Nothing to run/diverge. No action.
+
+**ERROR 2 — LSF convolved the depth directly instead of the count ratio: FIXED.**
+The instrument measures LSF-averaged in/out COUNTS and ratios them:
+`d_obs = 1 - L[F(1-d)]/L[F] = L[F d]/L[F]` — the FLUX-WEIGHTED LSF mean of the
+depth, not the flat `L[d]`. `binning.smooth_to_native_r` gained a `weight`
+argument (stellar flux, cell-averaged onto the same ln-λ grid via the exact
+antiderivative); `detect.evaluate_mode` interpolates the worker's per-pixel
+stellar flux onto the model grid and passes it to the depth, removed-molecule,
+and every Jacobian-row blur (same weight → operator stays linear in d).
+`weight=None`/constant reduces exactly to the old flat blur. Measured on the
+audit's stellar-line + planetary-feature case: flux-weighting tracks the true
+ratio to ~5 ppm (grid/4σ-truncation residual) while the flat blur was ~120 ppm
+biased — the audit's failure, closed. F is only pixel-resolved, so sub-pixel
+stellar lines remain a documented limitation. Pinned by 3 new tests
+(none==constant, constant-depth preservation, ratio-reference match + >10×
+closer than flat).
+
+**ERROR 3 — box-transit variance uses one (out-of-transit) spectrum for both
+in/out terms: documented (audit's own P2 disposition).** `pixel_depth_variance`
+assumes F_in≈F_out, σ_in≈σ_out; exact propagation carries a (1-d) factor, so
+this is CONSERVATIVE (never under-predicts σ) with the excess growing with
+depth (~+0.08% at d=0.1%, +0.76% at 1%, +8% at 10%). Kept model-INDEPENDENT on
+purpose (one operator bins noise and model consistently — the 2026-07-11 P0
+fix); exact separate in/out propagation stays a pending PandExo-parity gate.
+Docstring now states the approximation and its bias magnitude explicitly.
+
+**ERRORs 4 & 5 live in the sibling vulcan-retrieval repo** (set_observations
+validation; box-prior evidence separating the physical T-P-window support from
+solver-dependent convergence attrition) — both fixed there the same day; see
+that repo's CLAUDE.md / notes.
+
+**Tests 76 → 79** (+3 flux-weighted-LSF): `python -m pytest tests -q`,
+numpy-only, all green (79 passed, 1 slow test skipped by default).
