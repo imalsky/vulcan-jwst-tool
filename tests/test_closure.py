@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-from jwst_tool import binning, detect, noise as noise_mod
+from jwst_tool import binning, noise as noise_mod
 
 
 def test_poisson_count_closure():
@@ -94,7 +94,9 @@ def test_jacobian_row_matches_finite_difference():
     steady-state uniqueness guarantees at this tolerance."""
     from jwst_tool import forward
 
-    quiet = lambda s: None
+    def quiet(_s):
+        return None
+
     base = dict(planet="wasp39b", quality="fast", tp_mode="baseline",
                 fisher_params=["dT"], use_photo=True)
     if forward.load_result(base) is None:
