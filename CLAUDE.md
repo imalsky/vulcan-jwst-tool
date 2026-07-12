@@ -52,9 +52,28 @@
   worker's `r_native` before binning; it auto-no-ops when the kernel is
   unresolved by the model grid (high-R gratings), so it only bites on MIRI
   LRS / PRISM. `r_native` comes from the refdata dispersion files.
-- **Noise inflation**: per-mode `noise_infl` (instruments.MODES, editable in
-  GUI) multiplies the Pandeia σ — literature-calibrated, proportional (averages
-  down with N). Passed through `detect.evaluate_mode(noise_inflation=...)`.
+- **Minimum noise floor (2026-07-12 external audit)**: exact PandExo
+  semantics, `noise.resolve_floor` + `sigma = max(sigma_random, floor)` on
+  the FINAL bins. Three modes: none / constant ppm / wavelength-vs-ppm table
+  (linear interp, constant edge extension; invalid tables raise). NEVER
+  quadrature, NEVER sqrt(R/100)-rescaled (the retired R-anchor), NEVER
+  averaged below by transits (`detect.sigma_at_transits` clamps at every N).
+  `depth_error_bins`/`evaluate_mode` take `floor_spec`, not `floor_ppm`.
+- **Noise sensitivity factor** (`noise_infl`): DEFAULT 1.0 for every mode --
+  the Pandeia prediction as-is. Literature achieved-vs-predicted ratios live
+  in `instruments.LITERATURE_NOISE_FACTORS` as reference points only; never
+  reintroduce them as defaults or call them a calibration. Passed through
+  `detect.evaluate_mode(noise_inflation=...)`, recorded in results.
+- **Scale invariance (2026-07-12 audit, both CONFIRMED bugs)**: Fisher rank
+  detection runs on the Jacobi-whitened (unit-diagonal) matrix
+  (`fisher._marg_sigmas`); nuisance profiling normalizes the normal matrix
+  to correlation form (`detect.detection_significance`). Never threshold raw
+  eigenvalues of a mixed-unit matrix -- both regressions are pinned in
+  `tests/test_floor_and_invariance.py` (24-decade rescaling sweeps).
+- **LEGACY backend label**: `instruments.BACKEND_STATUS` must stay on every
+  user-facing surface (GUI captions, README) while the Pandeia 3.0 pin
+  stands -- an internally consistent but obsolete calibration must not
+  present as current-ETC output.
 - **σ_detect labeling**: it is a *conditional matched-template S/N*, never a
   retrieval detection. `sigma_detect_proj` additionally profiles T-P + lnR0
   Jacobian directions. Keep the GUI/README wording honest.
@@ -63,13 +82,18 @@
 - Fisher inversion must stay rank-aware (`fisher._marg_sigmas`: unconditional
   eigh + relative threshold; degenerate directions read `inf`) — no
   `np.linalg.inv` on Fisher matrices.
-- **Noise scenarios** (2026-07-12): `noise.SCENARIOS` re-allocates the floor
-  budget between white and ln-λ-smooth (SE kernel) parts — `noise.build_cov`
-  returns None for "random" (exact diagonal fast path) or a PD covariance.
-  INVARIANT: diag(C) = var_phot + floor² in every scenario (scenarios change
-  correlation, never totals — tested). detect/fisher/transits-to-target all
-  consume the stored `cov`/`slope_rows`; "conservative" adds per-segment
-  slope nuisances. Kernel presets are stated assumptions, not measurements.
+- **Noise scenarios are EXPERIMENTAL** (2026-07-12 audit): `noise.SCENARIOS`
+  re-allocates the floor EXCESS (max(0, floor² − var_phot)) between white
+  and ln-λ-smooth (SE kernel) parts — `noise.build_cov` returns None for
+  "random" or when the floor binds nowhere (exact diagonal fast path), else
+  a PD covariance. INVARIANT: diag(C) = max(var_phot, floor²) = σ_final² in
+  every scenario (tested with atol=0 — the original allclose was vacuous at
+  ~1e-10 variances; always pass atol=0 when asserting on variances).
+  Excluded from headline results: default scenario "random"; the GUI shows
+  cross-scenario columns only when a correlated preset is selected, labeled
+  experimental. detect/fisher/transits-to-target consume the stored
+  `cov`/`slope_rows`; "conservative" adds per-segment slope nuisances.
+  Kernel presets are stated assumptions, never calibrated covariances.
 - Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX
   needed). One env-gated slow test (`JWST_TOOL_RUN_SLOW=1`) FD-closes a
   Jacobian row with 3 real forward runs — Isaac schedules it, never run it

@@ -253,3 +253,55 @@ ETC 6.0/Cycle 6 lands ~2026-07-16 anyway.
 
 **28 new tests** (24 → 52: 13 worker backend-identity, 12 scenario/covariance
 + slopes, 2 closure, 1 opt-in FD): suite still numpy-only by default.
+
+## v9: 2026-07-12 strict end-to-end audit response (floor semantics, scale invariance)
+
+Response to the same-day "final strict end-to-end scientific audit". Five
+confirmed items fixed; two deferred with explicit labeling.
+
+**Confirmed and fixed:**
+- **PandExo minimum-floor semantics** (audit item 2): the quadrature +
+  sqrt(R/100)-anchored floor is GONE. `noise.resolve_floor` implements
+  none / constant ppm / wavelength-vs-ppm table with linear interpolation and
+  constant edge extension; applied as `sigma_final = max(sigma_random, floor)`
+  on the final bins. Multi-transit paths clamp at every N
+  (`detect.sigma_at_transits`); invalid tables (negative, non-finite,
+  duplicate wavelengths, wrong shape) raise. `depth_error_bins` /
+  `evaluate_mode` now take `floor_spec` (None | ppm scalar | (n,2) table).
+- **Fisher rank unit-invariance** (item 4, CONFIRMED numerically: a pure
+  rescaling flipped rank 1→2): `_marg_sigmas` whitens to the unit-diagonal
+  correlation form before the eigen-threshold, transforms sigmas back, and
+  reports the whitened (scale-free) spectrum in the diagnostics.
+- **Nuisance-projection row-scale invariance** (item 5, CONFIRMED: x1e10 on
+  one row moved sigma_detect 10.30→10.79): `detection_significance`
+  normalizes the nuisance normal matrix to correlation form; score now
+  depends only on the nuisance span (both metric paths).
+- **Noise multipliers default 1.0** (item 7): literature ratios moved to
+  `instruments.LITERATURE_NOISE_FACTORS` (reference points, not defaults);
+  GUI relabels the knob "empirical noise sensitivity factor".
+- **Legacy backend labeling** (item 1): `instruments.BACKEND_STATUS` shown in
+  the GUI header + provenance caption + README; the 3.0/3.0rc3 pin decision
+  stands (provenance block + same-release gate unchanged, worker still v5).
+
+**Also done:** correlated scenarios re-based on the floor EXCESS
+(diag(C) = max(var_phot, floor²) = sigma_final², invariant now tested with
+atol=0 — the v8 assertion was vacuous at ~1e-10 variances) and marked
+EXPERIMENTAL / excluded from headline results; GUI grew a dedicated "Noise
+model" sidebar section (floor type, per-mode floors or table upload,
+sensitivity factors, experimental scenarios) and split "Physics" into
+"Chemistry (VULCAN-JAX)" vs "Spectrum & clouds (ExoJAX RT)"; "can only be
+equal or worse" wording replaced with the balanced either-direction phrasing;
+README rewritten (professional register, PandExo-compatible scope language,
+validation-status section with the pending gates).
+
+**Deferred with explicit labels (not silently):** PandExo parity suite
+(item 3) — random-noise path labeled "Pandeia-extracted-noise box-transit
+approximation" in noise.py + README until a mode-by-mode parity matrix
+against current PandExo passes; Pandeia engine upgrade (item 1 alternative
+branch) — stays pinned with the LEGACY label. Item 6 (warm/cold gate) was
+already a hard per-run gate in vulcan-retrieval (validate_warm, exits
+nonzero); no change needed.
+
+**Tests 52 → 70** (+18: floor semantics ×8, invariance sweeps ×4 incl.
+24-decade rescalings, zero-row/zero-response guards, updated scenario
+invariants): `python -m pytest tests -q`, numpy-only, all green.
