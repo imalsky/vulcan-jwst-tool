@@ -91,7 +91,10 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         "star": {k: float(star[k]) for k in ("teff", "log_g", "metallicity", "ks_mag")},
         "sat_limit": float(sat_limit),
         "modes": modes,
-        "worker_version": 4,   # cache-buster: bump when pandeia_worker output changes
+        # cache-buster: bump when pandeia_worker output changes.
+        # v5 = engine/refdata release-match gate + top-level "__provenance__"
+        # block (exact backend identity recorded in every result/cache file).
+        "worker_version": 5,
     }
 
 
@@ -153,6 +156,60 @@ def make_bins(wl_lo: float, wl_hi: float, R: float) -> np.ndarray:
 # Coarser-than-reference bins KEEP the full floor (no sqrt averaging-down --
 # conservative, systematics don't integrate out).
 FLOOR_REF_R = 100.0
+
+
+# --- correlated-noise scenarios ----------------------------------------------
+# The R-anchored floor is a SYSTEMATIC budget, and treating it as white
+# (bin-to-bin uncorrelated) is only one limiting assumption: real JWST
+# transit-spectroscopy residuals are spectrally smooth (wavelength-correlated
+# residuals are the generic finding of independent-pipeline comparisons, e.g.
+# Holmberg & Madhusudhan 2023). A scenario RE-ALLOCATES the floor budget
+# between a white part and a smooth part with a squared-exponential kernel in
+# ln(lambda):
+#
+#     C = diag(var_phot + f_white * floor^2)
+#         + (1 - f_white) * floor_i floor_j exp(-(ln wl_i - ln wl_j)^2 / 2 ell^2)
+#
+# PSD by construction (SE kernel Gram matrix, congruence-scaled by the per-bin
+# floor amplitudes; the photon diagonal is strictly positive). The per-bin
+# TOTAL variance is IDENTICAL in every scenario -- diag(C) = var_phot +
+# floor^2 always -- so ranking changes between scenarios are attributable to
+# correlation structure alone, never to a bigger error bar. f_white = 1
+# recovers the exact diagonal model (build_cov returns None: fast sigma path).
+#
+# ell is in ln-wavelength (0.05 ~ 5% wavelength scale; the G395H band spans
+# ~0.6). The presets are stated ASSUMPTIONS bracketing the correlation
+# structure, not measured covariances -- the honest tier language of the
+# README applies. "conservative" additionally profiles a per-detector-segment
+# SLOPE nuisance (real per-visit fits float linear trends), on top of the
+# per-segment offsets every scenario profiles.
+SCENARIOS = {
+    "random": dict(f_white=1.0, ell=None, slopes=False,
+                   label="random-only: white floor, offsets profiled"),
+    "moderate": dict(f_white=0.5, ell=0.05, slopes=False,
+                     label="moderate: half the floor smooth (5% wl scale)"),
+    "conservative": dict(f_white=0.2, ell=0.15, slopes=True,
+                         label="conservative: mostly-smooth floor (15% wl "
+                               "scale) + per-segment slopes profiled"),
+}
+
+
+def build_cov(wl_center: np.ndarray, var_phot: np.ndarray, floor: np.ndarray,
+              scenario: str) -> np.ndarray | None:
+    """Per-bin depth covariance under a named scenario (see SCENARIOS).
+
+    Returns None for a fully-white scenario so callers keep the exact
+    diagonal fast path; otherwise a positive-definite (n_bins, n_bins) matrix.
+    Unknown scenario names raise (KeyError) rather than defaulting.
+    """
+    sc = SCENARIOS[scenario]
+    if sc["f_white"] >= 1.0:
+        return None
+    lnl = np.log(np.asarray(wl_center, float))
+    a = np.asarray(floor, float)
+    d = (lnl[:, None] - lnl[None, :]) / float(sc["ell"])
+    K = (1.0 - sc["f_white"]) * (a[:, None] * a[None, :]) * np.exp(-0.5 * d ** 2)
+    return K + np.diag(np.asarray(var_phot, float) + sc["f_white"] * a ** 2)
 
 
 def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,

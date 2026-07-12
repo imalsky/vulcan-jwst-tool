@@ -20,14 +20,19 @@ atmospheric state: the nested-model chi-square distance between the full
 spectrum and the spectrum with one molecule's opacity removed, with the
 calibration nuisances profiled out --
 
-    chi2 = s^T W s - b^T A^{-1} b,   W = diag(1/sigma^2),
+    chi2 = s^T W s - b^T A^{-1} b,   W = diag(1/sigma^2)  or  C^{-1},
     b = U W s,  A = U W U^T,         s_b = d_full - d_without_X
 
-where the rows of U are one constant depth offset PLUS one step per extra
-detector segment (NRS1|NRS2 for the two-detector NIRSpec gratings: real
-G395H fits universally float such offsets, at the tens-of-ppm level --
-Moran+2023, Madhusudhan+2023). The offset/step profiling removes the part of
-the molecule's signature a real fit would reabsorb into the continuum or
+where W is the diagonal metric under the "random" noise scenario or the
+inverse of the full scenario covariance C (noise.build_cov: the floor budget
+re-allocated between white and ln-wavelength-smooth parts at identical
+per-bin totals), and the rows of U are one constant depth offset PLUS one
+step per extra detector segment (NRS1|NRS2 for the two-detector NIRSpec
+gratings: real G395H fits universally float such offsets, at the
+tens-of-ppm level -- Moran+2023, Madhusudhan+2023) PLUS, under a scenario
+that says so, one centered slope per segment (real per-visit fits float
+linear trends). The offset/step/slope profiling removes the part of the
+molecule's signature a real fit would reabsorb into the continuum or
 per-detector calibration. It is NOT a retrieval detection significance:
 temperature, clouds, and the other abundances are not re-fit, so it
 upper-bounds what a full retrieval would report. When a Fisher Jacobian is
@@ -67,28 +72,62 @@ def _segment_rows(seg: np.ndarray) -> list[np.ndarray]:
     return [(seg == s).astype(float) for s in range(1, int(seg.max()) + 1)]
 
 
+def _slope_rows(seg: np.ndarray, wl: np.ndarray) -> list[np.ndarray]:
+    """Per-segment linear-in-ln(lambda) rows (unit RMS, centered within the
+    segment so the offset rows keep spanning the constants): the slope
+    freedom real per-visit fits float. EVERY segment gets one, including the
+    first -- the constant offset spans segment means, not segment slopes."""
+    seg = np.asarray(seg, int)
+    lnl = np.log(np.asarray(wl, float))
+    rows = []
+    for s in range(int(seg.max()) + 1 if seg.size else 0):
+        m = seg == s
+        if m.sum() < 3:
+            continue
+        r = np.where(m, lnl - lnl[m].mean(), 0.0)
+        rms = float(np.sqrt(np.mean(r[m] ** 2)))
+        if rms > 0:
+            rows.append(r / rms)
+    return rows
+
+
 def detection_significance(signal: np.ndarray, sigma: np.ndarray,
                            nuisance: list[np.ndarray] | None = None,
-                           marginalize_offset: bool = True) -> float:
+                           marginalize_offset: bool = True,
+                           cov: np.ndarray | None = None) -> float:
     """sqrt(Delta chi^2) of a binned signal against noise, with linear
     nuisance directions profiled out (rank-aware).
 
     ``marginalize_offset=True`` (default) includes a constant depth offset;
-    ``nuisance`` adds arbitrary extra rows (detector-segment steps, binned
-    T-P/lnR0 Jacobian rows). Directions that are numerically null in the
-    weighted normal matrix are dropped rather than inverted.
+    ``nuisance`` adds arbitrary extra rows (detector-segment steps/slopes,
+    binned T-P/lnR0 Jacobian rows). Directions that are numerically null in
+    the weighted normal matrix are dropped rather than inverted.
+
+    ``cov`` (optional): full per-bin depth covariance (noise.build_cov, a
+    correlated scenario); when given it REPLACES ``sigma`` in the metric
+    (chi2 = s^T C^-1 s, A = U C^-1 U^T). With ``cov=None`` the metric is the
+    exact diagonal W = diag(1/sigma^2) fast path -- identical numbers to a
+    diagonal C.
     """
     signal = np.asarray(signal, float)
-    sigma = np.asarray(sigma, float)
-    w = 1.0 / sigma ** 2
-    chi2 = float(np.sum(w * signal ** 2))
     rows = ([np.ones_like(signal)] if marginalize_offset and signal.size > 1
             else [])
     rows += [np.asarray(r, float) for r in (nuisance or [])]
+    if cov is not None:
+        ci_s = np.linalg.solve(np.asarray(cov, float), signal)
+        chi2 = float(signal @ ci_s)
+        if rows:
+            U = np.stack(rows)
+            A = U @ np.linalg.solve(np.asarray(cov, float), U.T)
+            b = U @ ci_s
+    else:
+        w = 1.0 / np.asarray(sigma, float) ** 2
+        chi2 = float(np.sum(w * signal ** 2))
+        if rows:
+            U = np.stack(rows)
+            A = (U * w) @ U.T
+            b = (U * w) @ signal
     if rows:
-        U = np.stack(rows)
-        A = (U * w) @ U.T
-        b = (U * w) @ signal
         ew, ev = np.linalg.eigh(0.5 * (A + A.T))
         good = ew > 1e-12 * max(float(ew[-1]), 1e-300)
         if good.any():
@@ -109,40 +148,80 @@ def sigma_at_transits(result: dict, n_transits: int) -> np.ndarray:
                    + np.asarray(result["floor"]) ** 2)
 
 
+def cov_at_transits(result: dict, n_transits: int,
+                    floor_only: bool = False) -> np.ndarray | None:
+    """The evaluated mode's scenario covariance re-scaled to ``n_transits``
+    (photon diagonal scales 1/N, the floor kernel does not); None under the
+    diagonal random scenario. ``floor_only=True`` gives the infinite-transit
+    limit (photon term zero, floors clipped away from exact zero)."""
+    scen = result.get("scenario", "random")
+    floor = np.asarray(result["floor"])
+    if floor_only:
+        return noise_mod.build_cov(result["wl"], np.zeros_like(floor),
+                                   np.maximum(floor, 1e-30), scen)
+    n0 = int(result["n_transits_eval"])
+    var = np.asarray(result["var_phot"]) * (n0 / float(max(1, int(n_transits))))
+    return noise_mod.build_cov(result["wl"], var, floor, scen)
+
+
+def _result_nuisance(result: dict) -> list[np.ndarray]:
+    """The evaluated mode's profiled calibration rows: per-segment offset
+    steps always, plus per-segment slopes when its scenario says so."""
+    rows = _segment_rows(result["seg"]) if "seg" in result else []
+    slope = result.get("slope_rows")
+    if slope is not None and np.asarray(slope).size:
+        rows += list(np.asarray(slope, float))
+    return rows
+
+
 def transits_to_target(result: dict, target_sig: float) -> dict:
     """Smallest transit count reaching ``target_sig`` for the detect goal.
 
     Returns dict(n=int|None, reachable=bool, sig_inf=float): ``sig_inf`` is the
     floor-limited ceiling (infinite transits); ``n`` is None when the target
     exceeds it (no number of transits reaches the target -- say so instead of
-    quoting an optimistic 1/sqrt(N) number). Segment offsets stay profiled.
+    quoting an optimistic 1/sqrt(N) number). The mode's scenario (covariance +
+    segment offsets/slopes) stays in force at every transit count.
     """
     if result.get("depth_wo") is None:
         return dict(n=None, reachable=False, sig_inf=float("nan"))
     signal = np.asarray(result["depth"]) - np.asarray(result["depth_wo"])
-    steps = _segment_rows(result["seg"]) if "seg" in result else []
+    nuis = _result_nuisance(result)
     floor = np.asarray(result["floor"])
     sig_inf = detection_significance(signal, np.maximum(floor, 1e-30),
-                                     nuisance=steps)
+                                     nuisance=nuis,
+                                     cov=cov_at_transits(result, 1,
+                                                         floor_only=True))
     if target_sig > sig_inf:
         return dict(n=None, reachable=False, sig_inf=sig_inf)
     for n in range(1, N_TRANSITS_CAP + 1):
         if detection_significance(signal, sigma_at_transits(result, n),
-                                  nuisance=steps) >= target_sig:
+                                  nuisance=nuis,
+                                  cov=cov_at_transits(result, n)) >= target_sig:
             return dict(n=n, reachable=True, sig_inf=sig_inf)
     return dict(n=None, reachable=False, sig_inf=sig_inf)
 
 
 def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
                   R_bin: float, t_in_s: float, t_out_s: float, n_transits: int,
-                  floor_ppm: float, noise_inflation: float = 1.0) -> dict:
-    """One instrument mode -> binned model, sigmas, and detection significance.
+                  floor_ppm: float, noise_inflation: float = 1.0,
+                  scenario: str = "random") -> dict:
+    """One instrument mode -> binned model, sigmas, conditional template S/N.
 
     Bins cover the intersection of the mode's science band, the model's coverage,
     and the pixels pandeia actually returned. Model, Jacobians, and noise are all
     binned through ONE count-space operator (module docstring). ``target_mol=None``
     (the parameter-constraint science goal) skips the molecule-removed comparison:
     ``sigma_detect`` comes back NaN and ``depth_wo`` None.
+
+    ``scenario`` names a noise.SCENARIOS entry: it sets the floor's correlation
+    structure (noise.build_cov) and whether per-segment slopes join the
+    profiled nuisances, for the headline sigma_detect/sigma_detect_proj and
+    everything downstream (Fisher, transits-to-target read the stored
+    ``cov``/``slope_rows``). ``sigma_detect_by_scenario`` reports the score
+    under EVERY scenario so mode rankings can be compared across assumptions
+    -- per-bin total variance is scenario-invariant by construction, so those
+    differences are purely correlation structure.
     """
     m = ins.MODES[mode_key]
     wl_model = model["wl_um"]
@@ -213,6 +292,13 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     seg = binning.bin_segments(op, seg_full)
     steps = _segment_rows(seg)
 
+    # the selected noise scenario: floor correlation structure + whether
+    # per-segment slopes are profiled (unknown names raise via SCENARIOS)
+    sc = noise_mod.SCENARIOS[scenario]
+    slopes = _slope_rows(seg, nz["wl_center"]) if sc["slopes"] else []
+    cov = noise_mod.build_cov(nz["wl_center"], nz["var_phot"], nz["floor"],
+                              scenario)
+
     d_full_b = binning.bin_model(op, wl_model, depth)
     jac_bins = None
     jac_names = ([str(x) for x in model["jac_names"]]
@@ -220,18 +306,29 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     if jac_rows is not None:
         jac_bins = np.stack([binning.bin_model(op, wl_model, row)
                              for row in jac_rows])
+    sigma_detect_by_scenario = {}
     if depth_wo is not None:
         d_wo_b = binning.bin_model(op, wl_model, depth_wo)
         s_b = d_full_b - d_wo_b
-        sigma_detect = detection_significance(s_b, nz["sigma"], nuisance=steps)
+        # the same template scored under EVERY scenario (cheap: <=few-hundred
+        # bins) so the GUI can show how rankings move with the assumptions
+        for name, sc_i in noise_mod.SCENARIOS.items():
+            nuis_i = steps + (_slope_rows(seg, nz["wl_center"])
+                              if sc_i["slopes"] else [])
+            cov_i = (cov if name == scenario else
+                     noise_mod.build_cov(nz["wl_center"], nz["var_phot"],
+                                         nz["floor"], name))
+            sigma_detect_by_scenario[name] = detection_significance(
+                s_b, nz["sigma"], nuisance=nuis_i, cov=cov_i)
+        sigma_detect = sigma_detect_by_scenario[scenario]
         # nuisance-projected variant: also profile the T-P + lnR0 Jacobian
         # directions (chemistry/clouds stay fixed -- still conditional)
         sigma_detect_proj = float("nan")
         if jac_bins is not None and jac_names:
-            nuis = steps + [jac_bins[i] for i, n in enumerate(jac_names)
-                            if n in _NUISANCE_JAC]
+            nuis = steps + slopes + [jac_bins[i] for i, n in enumerate(jac_names)
+                                     if n in _NUISANCE_JAC]
             sigma_detect_proj = detection_significance(s_b, nz["sigma"],
-                                                       nuisance=nuis)
+                                                       nuisance=nuis, cov=cov)
     else:
         d_wo_b, sigma_detect, sigma_detect_proj = None, float("nan"), float("nan")
 
@@ -247,6 +344,10 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
         var_phot=nz["var_phot"], floor=nz["floor"],
         noise_infl=float(noise_inflation), lsf_applied=lsf_applied,
         n_transits_eval=int(nz["n_transits"]),
+        scenario=scenario, cov=cov,
+        slope_rows=(np.stack(slopes) if slopes
+                    else np.zeros((0, nz["sigma"].size))),
+        sigma_detect_by_scenario=sigma_detect_by_scenario,
         sigma_detect=sigma_detect, sigma_detect_proj=sigma_detect_proj,
         median_sigma_ppm=float(np.median(nz["sigma"]) * 1e6),
         n_bins=int(nz["wl_center"].size),
