@@ -23,10 +23,11 @@ calibration nuisances profiled out --
     chi2 = s^T W s - b^T A^{-1} b,   W = diag(1/sigma^2)  or  C^{-1},
     b = U W s,  A = U W U^T,         s_b = d_full - d_without_X
 
-where W is the diagonal metric under the "random" noise scenario or the
-inverse of the full scenario covariance C (noise.build_cov: the floor budget
-re-allocated between white and ln-wavelength-smooth parts at identical
-per-bin totals), and the rows of U are one constant depth offset PLUS one
+where W is the diagonal metric under the "random" noise scenario (the
+default; the correlated scenarios are experimental) or the inverse of the
+full scenario covariance C (noise.build_cov: the floor EXCESS re-allocated
+between white and ln-wavelength-smooth parts at identical per-bin totals),
+and the rows of U are one constant depth offset PLUS one
 step per extra detector segment (NRS1|NRS2 for the two-detector NIRSpec
 gratings: real G395H fits universally float such offsets, at the
 tens-of-ppm level -- Moran+2023, Madhusudhan+2023) PLUS, under a scenario
@@ -40,9 +41,10 @@ available, ``sigma_detect_proj`` additionally projects the template against
 the T-P and lnR0 derivative directions (still conditional -- chemistry and
 clouds stay fixed) and is the number to prefer for narrow margins.
 
-Multi-transit extrapolation uses the noise-model components (photon term
-scales as 1/N, the R-anchored floor does not), so "transits to target"
-saturates honestly instead of promising 1/sqrt(N) forever.
+Multi-transit extrapolation uses the noise-model components (the random term
+scales as 1/N; the minimum floor is a hard lower bound at every N), so
+"transits to target" saturates honestly instead of promising 1/sqrt(N)
+forever.
 """
 from __future__ import annotations
 
@@ -100,8 +102,15 @@ def detection_significance(signal: np.ndarray, sigma: np.ndarray,
 
     ``marginalize_offset=True`` (default) includes a constant depth offset;
     ``nuisance`` adds arbitrary extra rows (detector-segment steps/slopes,
-    binned T-P/lnR0 Jacobian rows). Directions that are numerically null in
-    the weighted normal matrix are dropped rather than inverted.
+    binned T-P/lnR0 Jacobian rows). The result depends only on the SPAN of
+    the nuisance rows, never on their amplitudes: the normal matrix is
+    Jacobi-normalized (unit diagonal, correlation form) before the
+    rank-revealing eigen-threshold, so rescaling a row by any nonzero factor
+    leaves the score unchanged (2026-07-12 external audit: the raw-eigenvalue
+    threshold silently dropped down-scaled rows -- confirmed and fixed).
+    Directions that are numerically null in the normalized matrix are
+    dropped rather than inverted; rows with zero norm in the metric are
+    excluded outright.
 
     ``cov`` (optional): full per-bin depth covariance (noise.build_cov, a
     correlated scenario); when given it REPLACES ``sigma`` in the metric
@@ -128,11 +137,18 @@ def detection_significance(signal: np.ndarray, sigma: np.ndarray,
             A = (U * w) @ U.T
             b = (U * w) @ signal
     if rows:
-        ew, ev = np.linalg.eigh(0.5 * (A + A.T))
-        good = ew > 1e-12 * max(float(ew[-1]), 1e-300)
-        if good.any():
-            proj = ev[:, good].T @ b
-            chi2 -= float(np.sum(proj ** 2 / ew[good]))
+        # normalize to correlation form so the rank decision depends on the
+        # nuisance SPAN, not on row amplitudes/units
+        d = np.sqrt(np.clip(np.diag(A), 0.0, None))
+        keep = d > 0.0
+        if keep.any():
+            An = A[np.ix_(keep, keep)] / np.outer(d[keep], d[keep])
+            bn = b[keep] / d[keep]
+            ew, ev = np.linalg.eigh(0.5 * (An + An.T))
+            good = ew > 1e-12 * max(float(ew[-1]), 1e-300)
+            if good.any():
+                proj = ev[:, good].T @ bn
+                chi2 -= float(np.sum(proj ** 2 / ew[good]))
     return float(np.sqrt(max(chi2, 0.0)))
 
 
@@ -140,20 +156,23 @@ def sigma_at_transits(result: dict, n_transits: int) -> np.ndarray:
     """Per-bin depth sigma of an evaluated mode re-scaled to ``n_transits``.
 
     Photon/detector variance (inflation included) scales as 1/N from the
-    evaluated count; the R-anchored floor is N-independent.
+    evaluated count; the minimum floor is a hard lower bound at every N
+    (PandExo semantics): sigma_N = max(sigma_random_N, floor).
     """
     n0 = int(result["n_transits_eval"])
     scale = n0 / float(max(1, int(n_transits)))
-    return np.sqrt(np.asarray(result["var_phot"]) * scale
-                   + np.asarray(result["floor"]) ** 2)
+    return np.maximum(np.sqrt(np.asarray(result["var_phot"]) * scale),
+                      np.asarray(result["floor"]))
 
 
 def cov_at_transits(result: dict, n_transits: int,
                     floor_only: bool = False) -> np.ndarray | None:
     """The evaluated mode's scenario covariance re-scaled to ``n_transits``
-    (photon diagonal scales 1/N, the floor kernel does not); None under the
-    diagonal random scenario. ``floor_only=True`` gives the infinite-transit
-    limit (photon term zero, floors clipped away from exact zero)."""
+    (the random diagonal scales 1/N; build_cov re-derives the floor EXCESS at
+    that diagonal, so diag(C) = max(var_N, floor^2) at every N); None under
+    the diagonal random scenario. ``floor_only=True`` gives the
+    infinite-transit limit (random term zero, floors clipped away from exact
+    zero)."""
     scen = result.get("scenario", "random")
     floor = np.asarray(result["floor"])
     if floor_only:
@@ -204,7 +223,7 @@ def transits_to_target(result: dict, target_sig: float) -> dict:
 
 def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
                   R_bin: float, t_in_s: float, t_out_s: float, n_transits: int,
-                  floor_ppm: float, noise_inflation: float = 1.0,
+                  floor_spec, noise_inflation: float = 1.0,
                   scenario: str = "random") -> dict:
     """One instrument mode -> binned model, sigmas, conditional template S/N.
 
@@ -214,14 +233,16 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     (the parameter-constraint science goal) skips the molecule-removed comparison:
     ``sigma_detect`` comes back NaN and ``depth_wo`` None.
 
-    ``scenario`` names a noise.SCENARIOS entry: it sets the floor's correlation
-    structure (noise.build_cov) and whether per-segment slopes join the
-    profiled nuisances, for the headline sigma_detect/sigma_detect_proj and
-    everything downstream (Fisher, transits-to-target read the stored
-    ``cov``/``slope_rows``). ``sigma_detect_by_scenario`` reports the score
-    under EVERY scenario so mode rankings can be compared across assumptions
-    -- per-bin total variance is scenario-invariant by construction, so those
-    differences are purely correlation structure.
+    ``scenario`` names a noise.SCENARIOS entry ("random" is the default and
+    the headline configuration; the correlated presets are EXPERIMENTAL): it
+    sets the floor excess's correlation structure (noise.build_cov) and
+    whether per-segment slopes join the profiled nuisances, for
+    sigma_detect/sigma_detect_proj and everything downstream (Fisher,
+    transits-to-target read the stored ``cov``/``slope_rows``).
+    ``sigma_detect_by_scenario`` reports the score under EVERY scenario so
+    mode rankings can be compared across assumptions -- per-bin total
+    variance is scenario-invariant by construction, so those differences are
+    purely correlation structure.
     """
     m = ins.MODES[mode_key]
     wl_model = model["wl_um"]
@@ -282,7 +303,7 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
                                 wl_lo=float(wl_model.min()),
                                 wl_hi=float(wl_model.max()), valid=usable)
     nz = noise_mod.depth_error_bins(mode_result, edges, t_in_s, t_out_s,
-                                    n_transits, floor_ppm, op=op,
+                                    n_transits, floor_spec, op=op,
                                     noise_inflation=noise_inflation)
 
     # detector segments (NRS1|NRS2 for the two-detector gratings) -> one

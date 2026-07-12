@@ -34,7 +34,7 @@ def test_poisson_count_closure():
     op = binning.build_operator(wl, flux, edges, wl_lo=2.9, wl_hi=4.1)
     nz = noise_mod.depth_error_bins(mode_result, edges,
                                     t_in_s=n_in * t_int, t_out_s=n_out * t_int,
-                                    n_transits=1, floor_ppm=0.0, op=op)
+                                    n_transits=1, floor_spec=None, op=op)
 
     depth_true = 0.012 * (1.0 + 0.2 * np.sin(6.0 * wl))
     lam_in = flux * t_int * n_in * (1.0 - depth_true)
@@ -75,7 +75,7 @@ def test_matched_filter_amplitude_variance_closure():
     a_hat = (y @ ci_u) / info
     assert np.var(a_hat) == pytest.approx(1.0 / info, rel=0.1)
     # the DIAGONAL metric under-quotes the amplitude variance on this noise:
-    w = 1.0 / (var_phot + floor ** 2)
+    w = 1.0 / np.maximum(var_phot, floor ** 2)
     a_diag = (y @ (w * u)) / float(u @ (w * u))
     assert np.var(a_diag) > 2.0 * (1.0 / float(u @ (w * u)))
 

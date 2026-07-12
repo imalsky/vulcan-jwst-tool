@@ -7,7 +7,7 @@ uncertainty per spectral bin:
     depth = 1 - F_in/F_out
     var(depth)_pixel = (sigma_1int/flux)^2 * (1/n_int_in + 1/n_int_out) / n_transits
     var(depth)_bin   = sum(w^2 var_pixel) / (sum w)^2,  w = flux   (count-space)
-    sigma_bin        = sqrt(var_bin + floor^2)           (floor does NOT average down)
+    sigma_bin        = max(sqrt(var_bin), floor)         (PandExo floor convention)
 
 The count-space combination is the variance of the SAME estimator detect.py
 uses to bin the model (binning.build_operator) -- the sum-of-extracted-counts
@@ -15,13 +15,24 @@ bin depth every real reduction produces. The old inverse-variance combination
 quoted the variance of a different (optimal-weights) estimator than the one
 the model was binned with; in the photon-dominated limit the two agree.
 
-What this is, and is not: an ETC RANDOM-NOISE LOWER BOUND under the selected
-extraction/detector configuration, plus an editable systematic-floor scenario.
-Pandeia's extracted noise includes photon (with the HgCdTe quantum-yield/Fano
-excess variance below ~2 um), background, dark, and correlated read noise +
-IPC -- it is NOT a time-series systematics model (1/f residuals, visit-long
-trends, pointing/tilt events, limb-darkening and detrending covariance,
-stellar heterogeneity). Real final uncertainties can only be equal or worse.
+The minimum floor follows PandExo semantics exactly (resolve_floor): a HARD
+MINIMUM on the final binned uncertainty -- none, a constant ppm value, or a
+user-supplied wavelength-vs-ppm model evaluated on the final bin wavelengths
+with constant edge extension. It is NOT added in quadrature, NOT scaled with
+the requested resolving power, and does NOT average down when transits are
+added (the random term does; the floor caps it from below).
+
+What this is, and is not: a Pandeia-extracted-noise BOX-TRANSIT APPROXIMATION
+under the selected extraction/detector configuration -- an instrument-model
+planning forecast, not verified PandExo-equivalent output (a per-mode parity
+suite against current PandExo is a pending release gate; see README). Pandeia's
+extracted noise includes photon (with the HgCdTe quantum-yield/Fano excess
+variance below ~2 um), background, dark, and correlated read noise + IPC -- it
+is NOT a time-series systematics model (1/f residuals, visit-long trends,
+pointing/tilt events, limb-darkening and detrending covariance, stellar
+heterogeneity). Real reductions can differ in either direction depending on
+extraction and analysis choices, though unmodeled systematics commonly degrade
+precision.
 
 Results are cached by a hash of (star, modes, sat_limit, engine + refdata
 versions) so the ETC runs once per star/instrument set and stale caches are
@@ -146,51 +157,93 @@ def make_bins(wl_lo: float, wl_hi: float, R: float) -> np.ndarray:
     return np.geomspace(wl_lo, wl_hi, n + 1)
 
 
-# The quoted per-mode systematic floors (instruments.MODES / Greene+2016-style
-# numbers) are per-bin values AT R=100 bins. A real systematic is spectrally
-# correlated, so it cannot be made to shrink by slicing the band into more bins:
-# treating a fixed per-bin floor as white noise inflated a floor-dominated
-# detection significance by ~sqrt(R_bin/100) when the bin slider moved 100->200.
-# Anchoring here keeps the floor-limited information content of the band
-# R-independent: per-bin floor = floor_ppm * sqrt(R_bin/R_REF) for finer bins.
-# Coarser-than-reference bins KEEP the full floor (no sqrt averaging-down --
-# conservative, systematics don't integrate out).
-FLOOR_REF_R = 100.0
+def resolve_floor(wl_um: np.ndarray, floor_spec) -> np.ndarray:
+    """PandExo-compatible minimum-floor evaluation on the FINAL bin wavelengths.
+
+    ``floor_spec`` is one of:
+      * None            -- no minimum floor (zeros),
+      * a scalar        -- constant minimum uncertainty in ppm for every bin,
+      * an (n, 2) array -- columns wavelength (micron), floor (ppm); linearly
+        interpolated to ``wl_um`` with the endpoint values continued outside
+        the supplied range (PandExo's constant edge extension). Rows are
+        sorted by wavelength internally; duplicate wavelengths raise.
+
+    Returns the per-bin floor as a FRACTIONAL depth (ppm * 1e-6). All values
+    must be finite and nonnegative -- anything else raises (loudly, per the
+    repo rule), never silently sanitized. The result is applied downstream as
+    sigma_final = max(sigma_random, floor): a hard minimum, never a quadrature
+    term, and never rescaled by the binning R.
+    """
+    wl = np.asarray(wl_um, float)
+    if floor_spec is None:
+        return np.zeros(wl.size)
+    spec = np.asarray(floor_spec, float)
+    if spec.ndim == 0:
+        val = float(spec)
+        if not np.isfinite(val) or val < 0.0:
+            raise ValueError(f"constant noise floor must be a finite value "
+                             f">= 0 ppm, got {val!r}")
+        return np.full(wl.size, val * 1e-6)
+    if spec.ndim != 2 or spec.shape[1] != 2 or spec.shape[0] < 2:
+        raise ValueError(
+            "wavelength-dependent noise floor must be an (n>=2, 2) array of "
+            f"[wavelength_um, floor_ppm] rows, got shape {spec.shape}")
+    if not np.all(np.isfinite(spec)):
+        raise ValueError("noise-floor table contains non-finite values")
+    order = np.argsort(spec[:, 0], kind="stable")
+    w, f = spec[order, 0], spec[order, 1]
+    if np.any(f < 0.0):
+        raise ValueError("noise-floor table contains negative floor values")
+    if np.any(np.diff(w) == 0.0):
+        raise ValueError("noise-floor table contains duplicate wavelengths -- "
+                         "resolve them explicitly before passing the table")
+    return np.interp(wl, w, f, left=f[0], right=f[-1]) * 1e-6
 
 
-# --- correlated-noise scenarios ----------------------------------------------
-# The R-anchored floor is a SYSTEMATIC budget, and treating it as white
-# (bin-to-bin uncorrelated) is only one limiting assumption: real JWST
-# transit-spectroscopy residuals are spectrally smooth (wavelength-correlated
-# residuals are the generic finding of independent-pipeline comparisons, e.g.
-# Holmberg & Madhusudhan 2023). A scenario RE-ALLOCATES the floor budget
-# between a white part and a smooth part with a squared-exponential kernel in
-# ln(lambda):
+# --- correlated-noise scenarios (EXPERIMENTAL) --------------------------------
+# The floor is a hard minimum: wherever it binds, it lifts the per-bin variance
+# from var_phot to floor^2. That LIFT -- the floor EXCESS,
 #
-#     C = diag(var_phot + f_white * floor^2)
-#         + (1 - f_white) * floor_i floor_j exp(-(ln wl_i - ln wl_j)^2 / 2 ell^2)
+#     excess^2 = max(0, floor^2 - var_phot)
+#
+# -- is a systematic budget, and treating it as white (bin-to-bin
+# uncorrelated) is only one limiting assumption: real JWST transit-spectroscopy
+# residuals are spectrally smooth (the generic finding of independent-pipeline
+# comparisons, e.g. Holmberg & Madhusudhan 2023). A scenario RE-ALLOCATES the
+# excess between a white part and a smooth part with a squared-exponential
+# kernel in ln(lambda):
+#
+#     C = diag(var_phot + f_white * excess^2)
+#         + (1 - f_white) * excess_i excess_j exp(-(ln wl_i - ln wl_j)^2 / 2 ell^2)
 #
 # PSD by construction (SE kernel Gram matrix, congruence-scaled by the per-bin
-# floor amplitudes; the photon diagonal is strictly positive). The per-bin
+# excess amplitudes; the photon diagonal is strictly positive). The per-bin
 # TOTAL variance is IDENTICAL in every scenario -- diag(C) = var_phot +
-# floor^2 always -- so ranking changes between scenarios are attributable to
-# correlation structure alone, never to a bigger error bar. f_white = 1
-# recovers the exact diagonal model (build_cov returns None: fast sigma path).
+# excess^2 = max(var_phot, floor^2) = sigma_final^2 always -- so ranking
+# changes between scenarios are attributable to correlation structure alone,
+# never to a bigger error bar. Photon-dominated bins (floor not binding) carry
+# no correlated part. f_white = 1 recovers the exact diagonal model
+# (build_cov returns None: fast sigma path).
 #
-# ell is in ln-wavelength (0.05 ~ 5% wavelength scale; the G395H band spans
-# ~0.6). The presets are stated ASSUMPTIONS bracketing the correlation
-# structure, not measured covariances -- the honest tier language of the
-# README applies. "conservative" additionally profiles a per-detector-segment
-# SLOPE nuisance (real per-visit fits float linear trends), on top of the
-# per-segment offsets every scenario profiles.
+# These presets are EXPERIMENTAL stated ASSUMPTIONS bracketing the correlation
+# structure, not measured or calibrated JWST covariances. They are excluded
+# from headline results: the default scenario is "random" (exact diagonal,
+# PandExo-style), and the GUI/README label the tier accordingly. ell is in
+# ln-wavelength (0.05 ~ 5% wavelength scale; the G395H band spans ~0.6).
+# "conservative" additionally profiles a per-detector-segment SLOPE nuisance
+# (real per-visit fits float linear trends), on top of the per-segment
+# offsets every scenario profiles.
 SCENARIOS = {
     "random": dict(f_white=1.0, ell=None, slopes=False,
-                   label="random-only: white floor, offsets profiled"),
+                   label="random-only: diagonal noise, offsets profiled "
+                         "(default)"),
     "moderate": dict(f_white=0.5, ell=0.05, slopes=False,
-                     label="moderate: half the floor smooth (5% wl scale)"),
+                     label="moderate: half the floor excess smooth "
+                           "(5% wl scale) [experimental]"),
     "conservative": dict(f_white=0.2, ell=0.15, slopes=True,
-                         label="conservative: mostly-smooth floor (15% wl "
-                               "scale) + per-segment slopes profiled"),
+                         label="conservative: mostly-smooth floor excess "
+                               "(15% wl scale) + per-segment slopes "
+                               "[experimental]"),
 }
 
 
@@ -198,18 +251,23 @@ def build_cov(wl_center: np.ndarray, var_phot: np.ndarray, floor: np.ndarray,
               scenario: str) -> np.ndarray | None:
     """Per-bin depth covariance under a named scenario (see SCENARIOS).
 
-    Returns None for a fully-white scenario so callers keep the exact
-    diagonal fast path; otherwise a positive-definite (n_bins, n_bins) matrix.
-    Unknown scenario names raise (KeyError) rather than defaulting.
+    ``floor`` is the resolved per-bin minimum floor (fractional depth); the
+    correlated budget is the floor EXCESS over the random variance, so
+    diag(C) always equals max(var_phot, floor^2) -- the same total the
+    diagonal path quotes. Returns None for a fully-white scenario OR when the
+    floor binds nowhere (no excess to correlate), so callers keep the exact
+    diagonal fast path; otherwise a positive-definite (n_bins, n_bins)
+    matrix. Unknown scenario names raise (KeyError) rather than defaulting.
     """
     sc = SCENARIOS[scenario]
-    if sc["f_white"] >= 1.0:
+    var = np.asarray(var_phot, float)
+    a = np.sqrt(np.maximum(np.asarray(floor, float) ** 2 - var, 0.0))
+    if sc["f_white"] >= 1.0 or not np.any(a > 0.0):
         return None
     lnl = np.log(np.asarray(wl_center, float))
-    a = np.asarray(floor, float)
     d = (lnl[:, None] - lnl[None, :]) / float(sc["ell"])
     K = (1.0 - sc["f_white"]) * (a[:, None] * a[None, :]) * np.exp(-0.5 * d ** 2)
-    return K + np.diag(np.asarray(var_phot, float) + sc["f_white"] * a ** 2)
+    return K + np.diag(var + sc["f_white"] * a ** 2)
 
 
 def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
@@ -243,7 +301,7 @@ def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
 
 def depth_error_bins(mode_result: dict, edges: np.ndarray,
                      t_in_s: float, t_out_s: float, n_transits: int,
-                     floor_ppm: float, op: dict | None = None,
+                     floor_spec, op: dict | None = None,
                      noise_inflation: float = 1.0) -> dict:
     """Per-bin transit-depth sigma from a worker mode result.
 
@@ -251,30 +309,35 @@ def depth_error_bins(mode_result: dict, edges: np.ndarray,
     pass the SAME operator used to bin the model so noise and model describe one
     estimator. Built here from the pixel grid alone when omitted (noise-only use).
 
-    Returns dict(wl_center, sigma, n_pix, var_phot, floor, n_transits) over the
-    operator's kept bins. ``var_phot`` is the photon/detector bin variance AT the
-    evaluated ``n_transits`` (it scales as 1/N); ``floor`` is the per-bin
-    R-anchored systematic (N-independent; see FLOOR_REF_R). sigma =
-    sqrt(var_phot + floor^2). Returning the two components separately is what
-    lets callers extrapolate to other transit counts CORRECTLY -- a plain
-    1/sqrt(N) scaling of sigma is optimistic wherever the floor contributes.
+    ``floor_spec`` is the PandExo-style minimum floor (resolve_floor: None,
+    constant ppm, or a wavelength-vs-ppm table). Order of operations matches
+    PandExo: (1) random variance for the requested observation, (2) binned in
+    count space, (3) transits combined, (4) the floor evaluated on the final
+    bin wavelengths, (5) sigma = max(sigma_random, floor).
 
-    ``noise_inflation`` multiplies the random (Pandeia) sigma: the post-launch
-    calibration of achieved-vs-predicted precision (COMPASS/Gordon+2025: real
-    G395H errors ~5% above PandExo on NRS1, ~12% on NRS2; Espinoza+2023: 1.2x
-    for NIRISS-style forecasts; Bouwman+2023: ~15-20% for MIRI LRS). It is
-    PROPORTIONAL noise, so it averages down with transits like the photon
-    term -- unlike the floor.
+    Returns dict(wl_center, sigma, n_pix, var_phot, floor, n_transits) over
+    the operator's kept bins. ``var_phot`` is the random (photon/detector) bin
+    variance AT the evaluated ``n_transits`` (it scales as 1/N, inflation
+    included); ``floor`` is the resolved per-bin minimum (N-independent).
+    Returning the two components separately is what lets callers extrapolate
+    to other transit counts CORRECTLY -- sigma approaches the floor from
+    above as N grows, never below it.
+
+    ``noise_inflation`` is an OPTIONAL empirical sensitivity factor on the
+    random (Pandeia) sigma, default 1.0 -- the Pandeia prediction as-is.
+    Published achieved-vs-predicted ratios (COMPASS/Gordon+2025, Espinoza+2023,
+    Bouwman+2023; see instruments.LITERATURE_NOISE_FACTORS) are
+    program-specific, NOT a transferable calibration, so nothing is applied by
+    default. Proportional noise: it averages down with transits, unlike the
+    floor.
     """
     if op is None:
         op = binning.build_operator(np.asarray(mode_result["wl"]),
                                     np.asarray(mode_result["flux"]), edges)
     var_pix = pixel_depth_variance(mode_result, t_in_s, t_out_s, n_transits)
     var_phot = binning.bin_variance(op, var_pix) * float(noise_inflation) ** 2
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    r_bin = (centers / np.diff(edges))[op["keep"]]
-    floor = (floor_ppm * 1e-6) * np.sqrt(np.maximum(r_bin, FLOOR_REF_R) / FLOOR_REF_R)
-    sigma = np.sqrt(var_phot + floor ** 2)
+    floor = resolve_floor(op["wl_center"], floor_spec)
+    sigma = np.maximum(np.sqrt(var_phot), floor)
     return dict(wl_center=op["wl_center"], sigma=sigma, n_pix=op["n_pix"],
                 var_phot=var_phot, floor=floor,
                 n_transits=int(max(1, int(n_transits))))

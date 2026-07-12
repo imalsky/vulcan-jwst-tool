@@ -25,10 +25,13 @@ Nuisance handling (mirrors the zco_information campaign):
 A parameter with (numerically) no spectral response, or with weight in a
 numerically null Fisher direction (a degeneracy), comes back as inf, shown as
 "unconstrained" by the GUI rather than a fake number. The inversion is ALWAYS
-rank-aware (eigendecomposition + relative threshold): np.linalg.inv on an
-ill-conditioned Fisher matrix returns misleading finite numbers without
-raising, so it is never used. Forecast sigmas are local Cramer-Rao lower
-bounds under the quoted noise model -- best cases, not posterior widths.
+rank-aware AND unit-invariant: rank detection happens on the Jacobi-whitened
+(unit-diagonal) Fisher matrix, so redefining a parameter's units cannot flip
+a constraint between finite and "unconstrained" (see _marg_sigmas).
+np.linalg.inv on an ill-conditioned Fisher matrix returns misleading finite
+numbers without raising, so it is never used. Forecast sigmas are local
+Cramer-Rao lower bounds under the quoted noise model -- best cases, not
+posterior widths.
 """
 from __future__ import annotations
 
@@ -39,13 +42,18 @@ _LN10 = np.log(10.0)
 # report-unit conversion: sigma in ln-units -> display units
 _TO_DISPLAY = {"lnZ": 1.0 / _LN10, "lnKzz": 1.0 / _LN10}
 
-# Relative eigenvalue threshold: Fisher directions below REL_EIG_TOL x the
-# largest eigenvalue are treated as numerically unconstrained (null space).
-# eigh's noise floor is ~1e-16 x wmax; 1e-10 keeps 6 decades of margin while
-# still spanning any physically meaningful constraint ratio.
+# Relative eigenvalue threshold, applied to the WHITENED (unit-diagonal,
+# correlation-form) Fisher matrix: directions below REL_EIG_TOL x the largest
+# whitened eigenvalue are treated as numerically unconstrained (null space).
+# Whitening first is what makes the rank decision invariant under a change of
+# parameter units -- thresholding the raw mixed-unit matrix flipped exactly
+# finite constraints to "unconstrained" (or back) under a pure K-vs-kK style
+# rescaling (2026-07-12 external audit, confirmed). eigh's noise floor is
+# ~1e-16 x wmax; 1e-10 keeps 6 decades of margin.
 REL_EIG_TOL = 1e-10
-# A reported parameter whose loading on any null eigenvector exceeds this is
-# flagged inf (it lives partly in an unconstrained direction).
+# A reported parameter whose loading on any null eigenvector (whitened
+# coordinates) exceeds this is flagged inf (it lives partly in an
+# unconstrained direction).
 NULL_LOAD_TOL = 1e-6
 
 
@@ -53,19 +61,35 @@ def _marg_sigmas(F: np.ndarray, n_report: int,
                  diag: dict | None = None) -> np.ndarray:
     """Rank-aware marginalized sigmas for the first n_report parameters of F.
 
-    Unconditional eigendecomposition (F is symmetric PSD by construction) with
-    an explicit relative threshold; parameters loaded on null directions come
-    back inf. Pass a dict as ``diag`` to receive rank / dimension / condition
-    number / eigenvalues (the audit-required numerical-health fields).
+    The Fisher matrix mixes parameters with unrelated units (K, ln-units,
+    fractional depths), so rank detection happens in Jacobi-whitened
+    coordinates: q_i = theta_i * sqrt(F_ii), giving a unit-diagonal
+    (correlation-form) matrix whose eigen-spectrum is invariant under
+    per-parameter rescaling. Sigmas are transformed back to physical units
+    afterwards; a full-rank matrix reproduces inv(F) exactly. Parameters with
+    F_ii == 0 (no response at all) and parameters loaded on null directions
+    come back inf. Pass a dict as ``diag`` to receive rank / dimension /
+    condition number / eigenvalues (the whitened spectrum -- scale-free).
     """
     F = np.asarray(F, float)
     F = 0.5 * (F + F.T)
-    w, V = np.linalg.eigh(F)
+    n = F.shape[0]
+    out = np.full(n_report, np.inf)
+    d = np.sqrt(np.clip(np.diag(F), 0.0, None))
+    nz = d > 0.0
+    if not nz.any():
+        if diag is not None:
+            diag.update(fisher_dimension=n, fisher_rank=0,
+                        condition_number=float("inf"),
+                        eigenvalues=np.zeros(0), rel_eig_tol=REL_EIG_TOL)
+        return out
+    Fw = F[np.ix_(nz, nz)] / np.outer(d[nz], d[nz])
+    w, V = np.linalg.eigh(0.5 * (Fw + Fw.T))
     wmax = float(w[-1]) if w.size else 0.0
     good = w > REL_EIG_TOL * max(wmax, 1e-300)
     if diag is not None:
         diag.update(
-            fisher_dimension=int(F.shape[0]),
+            fisher_dimension=n,
             fisher_rank=int(good.sum()),
             condition_number=(wmax / float(w[good].min()) if good.any()
                               else float("inf")),
@@ -73,12 +97,15 @@ def _marg_sigmas(F: np.ndarray, n_report: int,
             rel_eig_tol=REL_EIG_TOL,
         )
     if not good.any():
-        return np.full(n_report, np.inf)
-    cov_diag = ((V[:, good] ** 2) / w[good]).sum(axis=1)
-    out = np.sqrt(cov_diag[:n_report])
+        return out
+    cov_w = ((V[:, good] ** 2) / w[good]).sum(axis=1)
+    sig_nz = np.sqrt(cov_w) / d[nz]
     if (~good).any():
-        load = np.abs(V[:, ~good]).max(axis=1)[:n_report]
-        out[load > NULL_LOAD_TOL] = np.inf
+        load = np.abs(V[:, ~good]).max(axis=1)
+        sig_nz[load > NULL_LOAD_TOL] = np.inf
+    full = np.full(n, np.inf)
+    full[nz] = sig_nz
+    out[:] = full[:n_report]
     return out
 
 
@@ -173,12 +200,12 @@ def transits_to_target(result: dict, free_names: list[str], gp: str,
     """Smallest transit count at which the marginalized (display-unit) forecast on
     ``gp`` reaches ``target_display`` -- with the systematic floor respected.
 
-    ``sigma_at_transits(result, n) -> per-bin sigma`` comes from detect.py (photon
-    variance scales 1/N, R-anchored floor does not). Returns
-    dict(n=int|None, reachable=bool, sig_inf=float): ``sig_inf`` is the
-    floor-limited best case (display units); ``n`` is None when the target beats
-    it -- no transit count reaches the target, which the old 1/sqrt(N)
-    extrapolation could never say.
+    ``sigma_at_transits(result, n) -> per-bin sigma`` comes from detect.py
+    (random variance scales 1/N; the minimum floor is a hard lower bound at
+    every N). Returns dict(n=int|None, reachable=bool, sig_inf=float):
+    ``sig_inf`` is the floor-limited best case (display units); ``n`` is None
+    when the target beats it -- no transit count reaches the target, which
+    the old 1/sqrt(N) extrapolation could never say.
     """
     from . import detect as _detect  # local import: fisher stays numpy-only otherwise
 

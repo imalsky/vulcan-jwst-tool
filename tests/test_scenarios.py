@@ -32,14 +32,20 @@ def test_unknown_scenario_raises():
 @pytest.mark.parametrize("scenario", ["moderate", "conservative"])
 def test_cov_psd_and_scenario_invariant_totals(scenario):
     """C must be positive definite, and its DIAGONAL must equal the diagonal
-    scenario's variance exactly: scenarios re-allocate the floor budget, they
-    never change the per-bin total error bar."""
+    scenario's variance exactly -- max(var_phot, floor^2) = sigma_final^2
+    under the PandExo floor convention: scenarios re-allocate the floor
+    EXCESS, they never change the per-bin total error bar. (atol=0: the
+    original version of this test used np.allclose's default atol, which is
+    vacuous on ~1e-10 variances.)"""
     wl, var_phot, floor = _grid(seed=3)
     C = noise_mod.build_cov(wl, var_phot, floor, scenario)
     assert C.shape == (wl.size, wl.size)
-    assert np.allclose(C, C.T)
+    assert np.allclose(C, C.T, atol=0)
     assert np.linalg.eigvalsh(C).min() > 0
-    assert np.allclose(np.diag(C), var_phot + floor ** 2, rtol=1e-12)
+    assert np.allclose(np.diag(C), np.maximum(var_phot, floor ** 2),
+                       rtol=1e-12, atol=0)
+    assert not np.allclose(np.diag(C), var_phot + floor ** 2,
+                           rtol=1e-3, atol=0)   # quadrature is GONE
 
 
 # --- detection_significance with cov -----------------------------------------
@@ -64,7 +70,7 @@ def test_smooth_signal_penalized_by_correlated_floor():
     wl, _vp, _fl = _grid(n=80, seed=5)
     var_phot = np.full(wl.size, 1e-11)
     floor = np.full(wl.size, 2e-5)
-    sigma = np.sqrt(var_phot + floor ** 2)
+    sigma = np.maximum(np.sqrt(var_phot), floor)
     C = noise_mod.build_cov(wl, var_phot, floor, "conservative")
     smooth = 6e-5 * np.sin(np.pi * (wl - wl.min()) / (wl.max() - wl.min()))
     narrow = 6e-5 * np.exp(-0.5 * ((wl - 4.0) / 0.02) ** 2)
@@ -141,7 +147,7 @@ def test_fisher_correlated_floor_inflates_smooth_parameter():
     wl, _vp, _fl = _grid(n=50, seed=7)
     var_phot = np.full(wl.size, 1e-11)
     floor = np.full(wl.size, 2e-5)
-    sigma = np.sqrt(var_phot + floor ** 2)
+    sigma = np.maximum(np.sqrt(var_phot), floor)
     C = noise_mod.build_cov(wl, var_phot, floor, "conservative")
     smooth_row = 1e-4 * np.sin(np.pi * (wl - wl.min()) / (wl.max() - wl.min()))
     lnr0_row = np.full(wl.size, -2e-4)
@@ -175,7 +181,7 @@ def test_combined_forecast_accepts_mixed_scenarios():
     (diagonal + covariance blocks, with and without slope rows)."""
     rng = np.random.default_rng(4)
     wl1, vp1, fl1 = _grid(n=25, seed=8)
-    sigma1 = np.sqrt(vp1 + fl1 ** 2)
+    sigma1 = np.maximum(np.sqrt(vp1), fl1)
     C1 = noise_mod.build_cov(wl1, vp1, fl1, "moderate")
     J1 = rng.normal(size=(3, 25)) * 1e-4
     r1 = _fake_result(J1, sigma1, cov=C1)

@@ -4,24 +4,23 @@ Each mode entry carries the Pandeia configuration used by ``pandeia_worker.py``
 (running inside the ``picaso_base`` conda env: pandeia.engine 3.0 +
 pandeia_data-3.0rc3) plus display metadata and a default systematic noise floor.
 
-Noise floors: pre-flight planning convention (Greene et al. 2016 assumed
-20/30/50 ppm for NIRISS/NIRCam/MIRI); in-flight results are often better
-(e.g. Schlawin et al. 2021 find ~<10 ppm for NIRCam grism), so the defaults
-here sit between the two and every floor is editable in the GUI. Floors are
-per-bin values AT R=100 (noise.FLOOR_REF_R): the noise model scales the per-bin
-floor as sqrt(R_bin/100) for finer bins so binning choices cannot manufacture
-floor-limited significance.
+Noise floors (``floor_ppm``): default CONSTANT minimum-uncertainty values per
+mode, applied with PandExo semantics (sigma_final = max(sigma_random, floor)
+on the final bins -- noise.resolve_floor; never quadrature, never rescaled by
+the binning R). The values are the pre-flight planning convention (Greene et
+al. 2016 assumed 20/30/50 ppm for NIRISS/NIRCam/MIRI); in-flight results are
+often better (e.g. Schlawin et al. 2021 find ~<10 ppm for NIRCam grism), so
+the defaults sit between the two. Every floor is editable in the GUI,
+including "none" and a wavelength-dependent table.
 
-Noise inflation (``noise_infl``): multiplicative factor on the Pandeia random
-sigma, calibrated to the post-launch achieved-vs-predicted literature --
-COMPASS G395H reanalysis (Gordon et al. 2025): measured errors average 1.05x
-PandExo on NRS1, 1.12x on NRS2 -> 1.10 for the NIRSpec gratings; PRISM was
-photon-limited on the quiet ERS target (Rustamkulov et al. 2023) -> 1.0;
-NIRISS forecasts conventionally inflated 1.2x (Espinoza et al. 2023, adopted
-by COMPASS); NIRCam showed minimal systematics (Ahrer et al. 2023) -> 1.05;
-MIRI LRS measured ~15-20% above random-noise simulations (Bouwman et al.
-2023) -> 1.15. Proportional noise: averages down with transits, unlike the
-floor. Editable in the GUI.
+Noise sensitivity factor (``noise_infl``): OPTIONAL multiplicative factor on
+the Pandeia random sigma. DEFAULT 1.0 FOR EVERY MODE -- the baseline forecast
+is the Pandeia prediction as-is. Published achieved-vs-predicted ratios
+(LITERATURE_NOISE_FACTORS below) depend on target brightness, groups,
+wavelength, detector, extraction, and pipeline; they are reference points for
+sensitivity studies, NOT a transferable calibration, and are never applied by
+default (2026-07-12 external audit). Proportional noise: averages down with
+transits, unlike the floor. Editable in the GUI.
 """
 from __future__ import annotations
 
@@ -78,6 +77,12 @@ NOISE_CACHE = OUTPUT_DIR / "noise_cache"
 # G395H degenerate-pixel counter (n_pix_degenerate_dropped) — the 3.0rc3
 # red-edge grid artifact's fix status in newer refdata is unverified. Caches
 # self-invalidate on upgrade (engine+refdata are in every cache key).
+# Every user-facing surface (GUI caption, README) must carry this label until
+# the backend is upgraded and re-validated -- an internally consistent but
+# obsolete calibration must not present itself as current-ETC output.
+BACKEND_STATUS = ("LEGACY Pandeia 3.0 / pandeia_data-3.0rc3 forecast "
+                  "(pinned 2026-07-12; current STScI ETC releases are newer)")
+
 PICASO_PYTHON = os.environ.get(
     "JWST_TOOL_PANDEIA_PYTHON",
     "/opt/homebrew/Caskroom/miniforge/base/envs/picaso_base/bin/python")
@@ -118,7 +123,7 @@ MODES = {
         config=dict(instrument=dict(disperser="g395h", filter="f290lp"),
                     detector=dict(subarray="sub2048")),
         wl_min=2.87, wl_max=5.18,
-        floor_ppm=15.0, noise_infl=1.1, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
     ),
     "nirspec_g235h": dict(
         label="NIRSpec G235H",
@@ -126,7 +131,7 @@ MODES = {
         config=dict(instrument=dict(disperser="g235h", filter="f170lp"),
                     detector=dict(subarray="sub2048")),
         wl_min=1.66, wl_max=3.07,
-        floor_ppm=15.0, noise_infl=1.1, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
     ),
     "niriss_soss": dict(
         label="NIRISS SOSS (ord 1)",
@@ -135,7 +140,7 @@ MODES = {
                     detector=dict(subarray="substrip256")),
         strategy=dict(order=1),
         wl_min=0.85, wl_max=2.8,
-        floor_ppm=20.0, noise_infl=1.2, ngroup_min=2, ngroup_max=30,
+        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2, ngroup_max=30,
     ),
     "nircam_f322w2": dict(
         label="NIRCam F322W2",
@@ -143,7 +148,7 @@ MODES = {
         config=dict(instrument=dict(filter="f322w2", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=2.45, wl_max=3.95,
-        floor_ppm=25.0, noise_infl=1.05, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=180,
     ),
     "nircam_f444w": dict(
         label="NIRCam F444W",
@@ -151,15 +156,33 @@ MODES = {
         config=dict(instrument=dict(filter="f444w", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=3.9, wl_max=4.95,
-        floor_ppm=25.0, noise_infl=1.05, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=180,
     ),
     "miri_lrs": dict(
         label="MIRI LRS (slitless)",
         instrument="miri", mode="lrsslitless",
         config=dict(detector=dict(subarray="slitlessprism")),
         wl_min=5.0, wl_max=12.0,
-        floor_ppm=40.0, noise_infl=1.15, ngroup_min=5, ngroup_max=300,
+        floor_ppm=40.0, noise_infl=1.0, ngroup_min=5, ngroup_max=300,
     ),
+}
+
+# Literature achieved-vs-predicted noise ratios: REFERENCE POINTS for
+# user-driven sensitivity studies, never applied by default (see module
+# docstring). COMPASS G395H reanalysis (Gordon et al. 2025): measured errors
+# average 1.05x PandExo on NRS1, 1.12x on NRS2; NIRISS forecasts
+# conventionally inflated 1.2x (Espinoza et al. 2023, adopted by COMPASS);
+# NIRCam showed minimal systematics (Ahrer et al. 2023); MIRI LRS measured
+# ~15-20% above random-noise simulations (Bouwman et al. 2023); PRISM was
+# photon-limited on the quiet ERS target (Rustamkulov et al. 2023).
+LITERATURE_NOISE_FACTORS = {
+    "nirspec_prism": 1.0,
+    "nirspec_g395h": 1.10,
+    "nirspec_g235h": 1.10,
+    "niriss_soss": 1.20,
+    "nircam_f322w2": 1.05,
+    "nircam_f444w": 1.05,
+    "miri_lrs": 1.15,
 }
 
 MODE_COLOR = {key: _COLORS[i % len(_COLORS)] for i, key in enumerate(MODES)}
