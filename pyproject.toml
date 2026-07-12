@@ -10,14 +10,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vulcan-jwst-tool"
 dynamic = ["version"]
-description = "JWST instrument selector: VULCAN-JAX chemistry -> ExoJAX transmission spectra -> Pandeia ETC noise; detection significance + Fisher forecasts (Streamlit GUI + programmatic API)"
+description = "JWST instrument selector: VULCAN-JAX chemistry -> ExoJAX transmission spectra -> Pandeia ETC noise; conditional template S/N + Fisher forecasts (Streamlit GUI + programmatic API)"
 readme = "README.md"
-requires-python = ">=3.11"
+# 3.10 floor matches the sibling packages (vulcan-jax, vulcan-retrieval): the code
+# is 3.10-clean and the deliberately-separate Pandeia env carries no constraint here.
+requires-python = ">=3.10"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 authors = [{ name = "Isaac Malsky" }]
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Intended Audience :: Science/Research",
@@ -30,8 +33,14 @@ dependencies = [
     "vulcan-retrieval>=0.7.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/imalsky/vulcan-jwst-tool"
+Repository = "https://github.com/imalsky/vulcan-jwst-tool"
+
 [project.optional-dependencies]
-gui = ["streamlit>=1.30", "pandas"]
+# streamlit floor: app.py uses the width="stretch" API on st.button/st.pyplot/
+# st.dataframe, introduced for those widgets by 1.49.0 (2025-08-26).
+gui = ["streamlit>=1.49", "pandas"]
 dev = ["ruff>=0.11", "build>=1.2", "twine>=5"]
 
 [project.scripts]
