@@ -1,5 +1,12 @@
 # CLAUDE.md — vulcan-jwst-tool operational notes
 
+- **Fail fast and loud (standing rule, same as the sibling repos):** no
+  behavior-changing fallback paths, ever. Missing backends/data/refdata
+  raise with the offending path and the remedy; a mismatched engine/refdata
+  pair is refused, not attempted; a check that cannot run must SAY so
+  (RuntimeWarning / explicit "SKIPPED"), never pass silently; unknown
+  scenario/parameter values raise instead of defaulting. When adding a
+  feature, prefer a loud error over a degraded result.
 - Dist `vulcan-jwst-tool`, import `jwst_tool`, console script `jwst-tool`. Depends on
   the sibling `vulcan-retrieval` dist for the forward-model engine
   (`retrieval_framework.forward`). Local install: `pip install --no-deps -e .`
