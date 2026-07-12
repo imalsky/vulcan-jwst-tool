@@ -11,7 +11,10 @@ job.json:
      "modes": [{"key":.., "instrument":.., "mode":.., "config": {...},
                 "strategy": {...}, "ngroup_min":.., "ngroup_max":..}, ...]}
 
-result.json, per mode key:
+result.json: one entry per mode key, plus a reserved "__provenance__" entry
+(engine/refdata/python versions -- the exact backend identity of this run;
+written before any mode runs so even an all-failed result is attributable).
+Per mode key:
     {"wl": [...um], "flux": [...e-/s], "noise_1int": [...e-/s, sigma for 1 integ],
      "n_part_sat": [...], "n_full_sat": [...],   per-pixel saturated-group counts
      "r_native": [...] | null,      native resolving power R(lambda) on the wl
@@ -206,6 +209,54 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
     }
 
 
+def _release(version):
+    """Leading dotted-numeric release segment of a version string
+    ("3.0rc3" -> "3.0", "2026.2" -> "2026.2"); None if it has none."""
+    import re
+    m = re.match(r"(\d+(?:\.\d+)*)", str(version).strip())
+    return m.group(1) if m else None
+
+
+def _refdata_version(refdata):
+    """Best-available refdata version: the VERSION file (newer pandeia_data),
+    else VERSION_PSF's first line (3.0-era trees have only that), else the
+    pandeia_data-<ver> directory name. Returns (version|None, source)."""
+    for name in ("VERSION", "VERSION_PSF"):
+        p = os.path.join(refdata, name)
+        if os.path.isfile(p):
+            with open(p) as f:
+                first = f.readline().strip()
+            if first:
+                return first, name
+    base = os.path.basename(os.path.normpath(refdata))
+    if base.startswith("pandeia_data-"):
+        return base[len("pandeia_data-"):], "directory name"
+    return None, "no VERSION/VERSION_PSF file or pandeia_data-<ver> dir name"
+
+
+def _check_backend_match(engine_version, refdata):
+    """Enforce STScI's matching rule (engine and refdata versions must be the
+    same release) BEFORE any calculation: a mismatched pair otherwise fails
+    deep inside the engine (or worse, runs with wrong calibrations). Returns
+    the provenance fields; raises RuntimeError on mismatch/undeterminable."""
+    ref_ver, source = _refdata_version(refdata)
+    if ref_ver is None:
+        raise RuntimeError(
+            f"cannot determine the pandeia_data version of {refdata} ({source}); "
+            "refusing to run against unidentifiable reference data. Point "
+            "JWST_TOOL_PANDEIA_REFDATA at an intact pandeia_data tree.")
+    eng_rel, ref_rel = _release(engine_version), _release(ref_ver)
+    if eng_rel is None or ref_rel is None or eng_rel != ref_rel:
+        raise RuntimeError(
+            f"pandeia.engine {engine_version} does not match pandeia_data "
+            f"{ref_ver} (from {source}) at {refdata}. STScI requires the "
+            "engine and refdata releases to be the same. Fix the pair: point "
+            "JWST_TOOL_PANDEIA_PYTHON at an env whose engine matches "
+            "JWST_TOOL_PANDEIA_REFDATA (this repo's validated pair is engine "
+            "3.0 + pandeia_data-3.0rc3 in the picaso_base env).")
+    return {"refdata_version": ref_ver, "refdata_version_source": source}
+
+
 def _preflight(job):
     """Fail with the offending PATH, not a deep synphot traceback, when the
     reference trees are missing (e.g. a stale job/cache from an old layout)."""
@@ -251,7 +302,23 @@ def main():
     from pandeia.engine.calc_utils import build_default_calc
     from pandeia.engine.perform_calculation import perform_calculation
 
-    out = {}
+    import pandeia.engine
+    engine_version = str(getattr(pandeia.engine, "__version__", "unknown"))
+    match = _check_backend_match(engine_version, job["refdata"])
+    out = {
+        "__provenance__": {
+            "engine_version": engine_version,
+            "refdata_path": job["refdata"],
+            "refdata_name": os.path.basename(os.path.normpath(job["refdata"])),
+            **match,
+            "python": sys.version.split()[0],
+            "numpy": np.__version__,
+            "worker_version": job.get("worker_version"),
+        },
+    }
+    print(f"[pandeia] engine {engine_version} + {out['__provenance__']['refdata_name']} "
+          f"(refdata {match['refdata_version']} from {match['refdata_version_source']})",
+          flush=True)
     for m in job["modes"]:
         key = m["key"]
         print(f"[pandeia] {key} ...", flush=True)

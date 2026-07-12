@@ -68,6 +68,16 @@ NOISE_CACHE = OUTPUT_DIR / "noise_cache"
 # worker runs in picaso_base (pandeia 3.0), which matches it. Both paths are
 # machine-specific; override via env vars on any other machine / install
 # (noise.run_pandeia refuses loudly if the python is missing).
+#
+# DECISION 2026-07-12: stay on the matched pair engine 3.0 + pandeia_data-3.0rc3
+# (current STScI release is 2026.2 = ETC 5.1, six JWST releases newer). The pair
+# is internally consistent (the worker gates on the STScI same-release rule) and
+# every result records it in "__provenance__"; upgrading is a data-download +
+# env change, not a code change. Before trusting forecasts from an upgraded
+# backend: re-run one reference star and compare sigma/ngroup, and check the
+# G395H degenerate-pixel counter (n_pix_degenerate_dropped) — the 3.0rc3
+# red-edge grid artifact's fix status in newer refdata is unverified. Caches
+# self-invalidate on upgrade (engine+refdata are in every cache key).
 PICASO_PYTHON = os.environ.get(
     "JWST_TOOL_PANDEIA_PYTHON",
     "/opt/homebrew/Caskroom/miniforge/base/envs/picaso_base/bin/python")
