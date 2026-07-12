@@ -10,10 +10,39 @@ import os
 
 import pytest
 
+from jwst_tool import instruments as ins
 from jwst_tool import pandeia_worker as pw
 
 
-# --- _release ---------------------------------------------------------------
+# --- ngroup limits (PandExo compatibility, 2026-07-12 audit item 5) ----------
+
+def test_nircam_modes_respect_pandexo_group_cap():
+    """NIRCam grism must not permit more than PandExo's hard 100-group max."""
+    cap = ins.PANDEXO_NGROUP_MAX["nircam"]
+    assert cap == 100
+    nircam = [k for k, m in ins.MODES.items() if m["instrument"] == "nircam"]
+    assert nircam                                        # the modes exist
+    for key in nircam:
+        assert ins.MODES[key]["ngroup_max"] <= cap, key
+
+
+def test_every_mode_respects_its_instrument_cap():
+    """The import-time guard mirror: no mode exceeds its instrument's cap."""
+    for key, m in ins.MODES.items():
+        cap = ins.PANDEXO_NGROUP_MAX.get(m["instrument"])
+        if cap is not None:
+            assert m["ngroup_max"] <= cap, key
+
+
+def test_optimizer_clamp_never_exceeds_ngroup_max():
+    """The worker's group selection is bounded by _clamp_ngroup at every step;
+    a faint-target candidate far above ng_max still returns <= ng_max, and a
+    saturated candidate below ng_min still returns >= ng_min."""
+    for key, m in ins.MODES.items():
+        lo, hi = m["ngroup_min"], m["ngroup_max"]
+        for cand in (-5, 0, 1, lo, lo + 1, hi - 1, hi, hi + 50, 10_000):
+            got = pw._clamp_ngroup(cand, lo, hi)
+            assert lo <= got <= hi, (key, cand, got)
 
 @pytest.mark.parametrize("raw, expected", [
     ("3.0", "3.0"),

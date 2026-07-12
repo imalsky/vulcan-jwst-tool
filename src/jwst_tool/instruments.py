@@ -105,6 +105,16 @@ PYSYN_CDBS = str(DATA_DIR / "cdbs")
 _COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#008300",
            "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"]
 
+# PandExo-compatible hard maximum group counts per instrument. Current PandExo
+# caps NIRCam grism at 100 groups; a request above that falls outside the
+# PandExo-supported range and can trip a backend/config failure on faint
+# targets (2026-07-12 external audit, item 5). Every mode's ngroup_max below
+# must respect its instrument's cap (asserted at import); the worker clamps its
+# selected ramp to [ngroup_min, ngroup_max], so this bounds the optimizer.
+# (A dynamic query of the installed Pandeia/PandExo config is the preferred
+# long-term source; this static table is the pinned-backend equivalent.)
+PANDEXO_NGROUP_MAX = {"nircam": 100}
+
 # wl_min/wl_max: the usable science bandpass we bin over (intersected with the
 # forward model's 1-15 um coverage; NIRISS SOSS order 1 nominally reaches 0.85 um
 # but the model band starts at 1.0 um -- the H2-H2 CIA table's short edge).
@@ -148,7 +158,7 @@ MODES = {
         config=dict(instrument=dict(filter="f322w2", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=2.45, wl_max=3.95,
-        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=100,
     ),
     "nircam_f444w": dict(
         label="NIRCam F444W",
@@ -156,7 +166,7 @@ MODES = {
         config=dict(instrument=dict(filter="f444w", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
         wl_min=3.9, wl_max=4.95,
-        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=180,
+        floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=100,
     ),
     "miri_lrs": dict(
         label="MIRI LRS (slitless)",
@@ -184,6 +194,16 @@ LITERATURE_NOISE_FACTORS = {
     "nircam_f444w": 1.05,
     "miri_lrs": 1.15,
 }
+
+# enforce the PandExo group caps at import (loud, no silent out-of-range mode)
+for _key, _m in MODES.items():
+    _cap = PANDEXO_NGROUP_MAX.get(_m["instrument"])
+    if _cap is not None and _m["ngroup_max"] > _cap:
+        raise RuntimeError(
+            f"mode {_key!r} sets ngroup_max={_m['ngroup_max']}, above the "
+            f"PandExo-compatible maximum {_cap} for {_m['instrument']}; the "
+            "optimizer would select an unsupported group count on faint "
+            "targets (2026-07-12 audit item 5).")
 
 MODE_COLOR = {key: _COLORS[i % len(_COLORS)] for i, key in enumerate(MODES)}
 

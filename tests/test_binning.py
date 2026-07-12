@@ -2,6 +2,7 @@
 constant-depth conservation, estimator/variance consistency (Monte Carlo),
 model-vs-noise same-estimator identity, Jacobian linearity, gap handling."""
 import numpy as np
+import pytest
 
 from jwst_tool import binning, noise as noise_mod
 
@@ -22,6 +23,48 @@ def test_constant_depth_conservation():
     binned = binning.bin_model(op, wl_model, np.full(wl_model.size, d0))
     # exact up to float64 cumsum roundoff (sequential sum over the model grid)
     assert np.allclose(binned, d0, rtol=0, atol=1e-12)
+
+
+def test_pl_antideriv_exact_on_audit_counterexample():
+    """2026-07-12 audit item 2: the antiderivative of a piecewise-linear model
+    is piecewise-QUADRATIC, so linearly interpolating the cumulative integral
+    (the old np.interp path) is wrong between nodes. Model y=x on [0,1]:
+    int_0^0.1 = 0.005, int_0^0.2 = 0.02, average over [0.1,0.2] = 0.15 (the
+    old code returned 0.5)."""
+    x = np.array([0.0, 1.0])
+    y = np.array([0.0, 1.0])
+    icum = binning._pl_cumint(x, y)
+    ia = binning._pl_antideriv(np.array([0.1]), x, y, icum)[0]
+    ib = binning._pl_antideriv(np.array([0.2]), x, y, icum)[0]
+    assert ia == pytest.approx(0.005, rel=0, abs=1e-15)
+    assert ib == pytest.approx(0.02, rel=0, abs=1e-15)
+    assert (ib - ia) / (0.2 - 0.1) == pytest.approx(0.15, rel=0, abs=1e-14)
+    # endpoints reproduce the exact node integrals
+    assert binning._pl_antideriv(x, x, y, icum) == pytest.approx(icum, abs=1e-15)
+
+
+def test_bin_model_exact_for_linear_submodel():
+    """Audit item 2 end-to-end: a globally-linear model on a COARSE grid with
+    pixel cells falling BETWEEN nodes must bin to machine precision (a linear
+    model's cumulative integral is quadratic, so this was the failure case).
+    Exact cell average of a linear model over [lo,hi] is its midpoint value."""
+    wl_model = np.array([2.0, 3.0, 4.0])          # coarse: only 2 intervals
+    slope, intercept = 1.5, 0.7
+    y = slope * wl_model + intercept
+    rng = np.random.default_rng(11)
+    wl_pix = np.sort(rng.uniform(2.05, 3.95, 60))  # cells sit between nodes
+    flux = rng.uniform(0.5, 2.0, wl_pix.size)
+    edges = np.array([2.0, 3.0, 4.0])
+    op = binning.build_operator(wl_pix, flux, edges, wl_lo=2.0, wl_hi=4.0)
+    got = binning.bin_model(op, wl_model, y)
+    mid = 0.5 * (op["cell_lo"] + op["cell_hi"])
+    d_pix = slope * mid + intercept               # exact per-cell average
+    ref = np.zeros(op["wl_center"].size)
+    den = np.zeros(op["wl_center"].size)
+    np.add.at(ref, op["pix_bin"], op["pix_w"] * d_pix)
+    np.add.at(den, op["pix_bin"], op["pix_w"])
+    ref /= den
+    assert np.allclose(got, ref, rtol=0, atol=1e-14)
 
 
 def test_model_binning_is_linear():

@@ -42,6 +42,17 @@
   model, and Jacobians — never reintroduce separate binning paths (that was the
   2026-07-11 external audit's headline finding; history in `notes.md` v6).
   Degenerate-wavelength pandeia pixels (G395H red-edge pileup) are excluded there.
+- **Exact cell-edge integration (2026-07-12 re-audit V2, item 2)**: model
+  cell-averages go through `binning._pl_antideriv` (EXACT piecewise-quadratic
+  antiderivative of the piecewise-linear model). NEVER `np.interp` a
+  cumulative-trapezoid integral to cell edges — that is only O(h²) and was off
+  by ~1–2 ppm for edges between model nodes. Applies to BOTH `bin_model` and
+  `smooth_to_native_r`; pinned by machine-precision tests in `test_binning.py`.
+- **PandExo group caps (re-audit V2, item 5)**: `instruments.PANDEXO_NGROUP_MAX`
+  bounds each instrument's `ngroup_max` (NIRCam grism = 100, not 180); an
+  import-time guard refuses any mode above its cap and the worker clamps its
+  selected ramp via `pandeia_worker._clamp_ngroup`. Never raise a NIRCam mode
+  above 100 without a matching PandExo/Pandeia change.
 - **Detector-segment offsets**: `binning.segment_ids` splits the pixel grid at
   wavelength gaps (NRS1|NRS2). One depth-offset nuisance per segment is
   profiled in BOTH `detect.detection_significance` and `fisher.mode_forecast`/
@@ -69,7 +80,11 @@
   (`fisher._marg_sigmas`); nuisance profiling normalizes the normal matrix
   to correlation form (`detect.detection_significance`). Never threshold raw
   eigenvalues of a mixed-unit matrix -- both regressions are pinned in
-  `tests/test_floor_and_invariance.py` (24-decade rescaling sweeps).
+  `tests/test_floor_and_invariance.py` (24-decade rescaling sweeps). Null-space
+  overlap uses the basis-invariant L2 projection norm over null eigenvectors
+  (not a single eigenvector's max component); the nuisance score is pinned
+  invariant under an arbitrary nonsingular remix of the rows, not just per-row
+  rescaling (re-audit V2, item 3/5 tightening).
 - **LEGACY backend label**: `instruments.BACKEND_STATUS` must stay on every
   user-facing surface (GUI captions, README) while the Pandeia 3.0 pin
   stands -- an internally consistent but obsolete calibration must not

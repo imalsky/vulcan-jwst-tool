@@ -51,9 +51,12 @@ _TO_DISPLAY = {"lnZ": 1.0 / _LN10, "lnKzz": 1.0 / _LN10}
 # rescaling (2026-07-12 external audit, confirmed). eigh's noise floor is
 # ~1e-16 x wmax; 1e-10 keeps 6 decades of margin.
 REL_EIG_TOL = 1e-10
-# A reported parameter whose loading on any null eigenvector (whitened
-# coordinates) exceeds this is flagged inf (it lives partly in an
-# unconstrained direction).
+# A reported parameter whose projection ONTO the null subspace (whitened
+# coordinates) exceeds this is flagged inf (it lives partly in an unconstrained
+# direction). The metric is the L2 norm over the null eigenvectors -- a
+# basis-invariant subspace projection, not any single eigenvector's largest
+# component (that is arbitrary when the null eigenspace is degenerate;
+# 2026-07-12 external audit, item 3).
 NULL_LOAD_TOL = 1e-6
 
 
@@ -101,7 +104,9 @@ def _marg_sigmas(F: np.ndarray, n_report: int,
     cov_w = ((V[:, good] ** 2) / w[good]).sum(axis=1)
     sig_nz = np.sqrt(cov_w) / d[nz]
     if (~good).any():
-        load = np.abs(V[:, ~good]).max(axis=1)
+        # basis-invariant projection onto the null subspace: L2 norm over the
+        # null eigenvectors, not a single vector's largest component (audit 3)
+        load = np.sqrt(np.sum(V[:, ~good] ** 2, axis=1))
         sig_nz[load > NULL_LOAD_TOL] = np.inf
     full = np.full(n, np.inf)
     full[nz] = sig_nz

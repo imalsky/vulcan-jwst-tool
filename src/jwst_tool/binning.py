@@ -155,11 +155,13 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
     n = int(np.ceil((hi - lo) / dl)) + 1
     grid = lo + dl * np.arange(n)
 
-    # flux-conserving cell average of the piecewise-linear model in ln-lambda
-    icum = np.concatenate([[0.0], np.cumsum(0.5 * (yv[1:] + yv[:-1]) * np.diff(lnw))])
+    # flux-conserving cell average of the piecewise-linear model in ln-lambda,
+    # via the EXACT piecewise-quadratic antiderivative (linear interp of icum
+    # would misplace flux for cell edges between nodes -- audit item 2)
+    icum = _pl_cumint(lnw, yv)
     edges = np.concatenate([[grid[0] - 0.5 * dl], grid + 0.5 * dl])
     edges = np.clip(edges, lnw[0], lnw[-1])
-    ic = np.interp(edges, lnw, icum)
+    ic = _pl_antideriv(edges, lnw, yv, icum)
     widths = np.maximum(np.diff(edges), 1e-300)
     yg = np.diff(ic) / widths
 
@@ -266,20 +268,53 @@ def bin_counts(op: dict, flag_pix: np.ndarray) -> np.ndarray:
     return _wsum(op, v)
 
 
+def _pl_cumint(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Running integral of the piecewise-linear (x, y) AT the nodes:
+    icum[k] = int_{x[0]}^{x[k]}. The trapezoid rule is EXACT for a
+    piecewise-linear integrand, so this is exact at the nodes (only float64
+    cumsum roundoff); the sub-node evaluation is done by _pl_antideriv."""
+    return np.concatenate([[0.0], np.cumsum(0.5 * (y[1:] + y[:-1]) * np.diff(x))])
+
+
+def _pl_antideriv(xq: np.ndarray, x: np.ndarray, y: np.ndarray,
+                  icum: np.ndarray) -> np.ndarray:
+    """EXACT antiderivative of the piecewise-linear function (x, y) evaluated at
+    query points xq, given its node integrals ``icum`` (from _pl_cumint).
+
+    The antiderivative of a piecewise-LINEAR spectrum is piecewise-QUADRATIC,
+    so linearly interpolating ``icum`` between nodes (np.interp) is wrong
+    whenever a query point falls inside an interval -- exactly the case for a
+    detector cell edge lying between model nodes (2026-07-12 audit, item 2:
+    the y=x, [0.1,0.2] counterexample returned 0.5 instead of 0.15). The
+    quadratic term is carried explicitly here: for x in interval k
+    ([x_k, x_{k+1}]),
+
+        I(x) = icum[k] + y_k (x - x_k) + 0.5 slope_k (x - x_k)^2,
+        slope_k = (y_{k+1} - y_k) / (x_{k+1} - x_k).
+
+    Query points are clamped to [x_0, x_{-1}] (the model span; callers already
+    clip pixel cells to it). ``x`` must be strictly ascending."""
+    xq = np.asarray(xq, float)
+    xc = np.clip(xq, x[0], x[-1])
+    k = np.clip(np.searchsorted(x, xc, side="right") - 1, 0, x.size - 2)
+    dx = xc - x[k]
+    slope = (y[k + 1] - y[k]) / (x[k + 1] - x[k])
+    return icum[k] + y[k] * dx + 0.5 * slope * dx * dx
+
+
 def bin_model(op: dict, wl_model: np.ndarray, y_model: np.ndarray) -> np.ndarray:
     """Bin a native model through the operator: exact cell average of the
     piecewise-linear model per pixel, then the count-weighted bin mean.
 
     ``wl_model`` must be ascending and span every pixel cell (build_operator's
     wl_lo/wl_hi clipping guarantees this). Linear in y_model, so the binned
-    Jacobian is the operator applied to each Jacobian row. Exact for a
-    constant model (constant-depth conservation)."""
+    Jacobian is the operator applied to each Jacobian row. Exact for a constant
+    model (constant-depth conservation) AND, via the exact piecewise-quadratic
+    antiderivative, for any pixel cell whose edges fall between model nodes."""
     wl = np.asarray(wl_model, float)
     y = np.asarray(y_model, float)
-    # cumulative trapezoid integral at the model nodes; linear interpolation of
-    # it is exact for constant y and O(h^2) otherwise -- same order as the model
-    icum = np.concatenate([[0.0], np.cumsum(0.5 * (y[1:] + y[:-1]) * np.diff(wl))])
-    ia = np.interp(op["cell_lo"], wl, icum)
-    ib = np.interp(op["cell_hi"], wl, icum)
+    icum = _pl_cumint(wl, y)
+    ia = _pl_antideriv(op["cell_lo"], wl, y, icum)
+    ib = _pl_antideriv(op["cell_hi"], wl, y, icum)
     d_pix = (ib - ia) / (op["cell_hi"] - op["cell_lo"])
     return _wsum(op, op["pix_w"] * d_pix) / _wsum(op, op["pix_w"])

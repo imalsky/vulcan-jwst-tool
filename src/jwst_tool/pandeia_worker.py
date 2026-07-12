@@ -111,6 +111,16 @@ def _native_r(refdata, m, wl):
     return r_i.tolist(), os.path.basename(hits[0])
 
 
+def _clamp_ngroup(ng, ng_min, ng_max):
+    """Clamp a candidate group count to the mode's supported [ng_min, ng_max].
+
+    ng_max is the PandExo-compatible hard maximum for the mode (NIRCam grism =
+    100; see instruments.PANDEXO_NGROUP_MAX). This is the ONE place the group
+    optimizer's output is bounded, so a selected ramp can never exceed the
+    supported range on a faint target (2026-07-12 audit item 5)."""
+    return max(int(ng_min), min(int(ng_max), int(ng)))
+
+
 def _run(perform_calculation, calc, ngroup):
     c = copy.deepcopy(calc)
     c["configuration"]["detector"]["ngroup"] = int(ngroup)
@@ -149,7 +159,7 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
         cands.append(int(math.floor(sat_limit * float(sat_ng))))
     ng_best = min(cands) if cands else ng_max
     saturated = ng_best < ng_min      # even the shortest ramp busts the limit
-    ng_best = max(ng_min, min(ng_max, ng_best))
+    ng_best = _clamp_ngroup(ng_best, ng_min, ng_max)
 
     rpt = probe if ng_best == ng_min else _run(perform_calculation, calc, ng_best)
     # verify the CHOSEN ramp: the linear full-well model can overshoot, so step

@@ -158,6 +158,35 @@ def test_fisher_rank_and_sigmas_invariant_under_unit_rescaling():
         assert np.allclose(sig[m], base[m], rtol=1e-7, atol=0)
 
 
+def test_fisher_multi_dim_null_space_invariant_under_rescaling():
+    """A 2-D null space (two independent degeneracies), with two parameters
+    still constrained. Rank and the finite/inf classification must be invariant
+    under per-parameter rescaling -- which requires the null-overlap test to use
+    a basis-invariant subspace projection (the null eigenvectors of a degenerate
+    eigenspace are only defined up to rotation)."""
+    rng = np.random.default_rng(4)
+    J0 = rng.standard_normal((6, 80)) * np.array(
+        [1.0, 1e3, 1e-5, 1.0, 1e2, 1e-3])[:, None]
+    J0[1] = 3.0 * J0[0]          # degeneracy A: params 0,1 unconstrained
+    J0[3] = -2.0 * J0[2]         # degeneracy B: params 2,3 unconstrained
+    s = np.full(80, 2e-4)
+    F0 = (J0 / s[None, :] ** 2) @ J0.T
+    d0 = {}
+    base = fisher._marg_sigmas(F0, 6, diag=d0)
+    assert d0["fisher_rank"] == 4                        # 6 params, 2 null dirs
+    assert np.all(np.isinf(base[:4])) and np.all(np.isfinite(base[4:]))
+    for _ in range(15):
+        f = 10.0 ** rng.uniform(-9, 9, 6)
+        Js = J0 * f[:, None]
+        Fs = (Js / s[None, :] ** 2) @ Js.T
+        ds = {}
+        sig = fisher._marg_sigmas(Fs, 6, diag=ds) * f
+        assert ds["fisher_rank"] == d0["fisher_rank"]
+        assert np.array_equal(np.isinf(sig), np.isinf(base))
+        m = np.isfinite(base)
+        assert np.allclose(sig[m], base[m], rtol=1e-6, atol=0)
+
+
 def test_fisher_zero_response_parameter_reads_inf():
     F = np.diag([4.0, 0.0])
     sig = fisher._marg_sigmas(F, 2)
@@ -190,6 +219,35 @@ def test_detection_score_invariant_under_nuisance_row_rescaling():
         got_cov = detect.detection_significance(signal, sigma,
                                                 nuisance=scaled, cov=C)
         assert got_cov == pytest.approx(base_cov, rel=1e-9)
+
+
+def test_detection_score_invariant_under_nuisance_basis_rotation():
+    """Audit item 5, second required regression: the profiled score depends only
+    on the SPAN of the nuisance rows, so ANY nonsingular remix (rotation + mixing
+    + scaling), not just per-row rescaling, must leave it unchanged."""
+    rng = np.random.default_rng(9)
+    n = 60
+    wl = np.geomspace(3.0, 5.0, n)
+    sigma = np.full(n, 1e-4)
+    signal = 5e-4 * np.exp(-0.5 * ((wl - 4.0) / 0.1) ** 2)
+    seg = (wl >= 4.0).astype(int)
+    rows = detect._segment_rows(seg) + detect._slope_rows(seg, wl)
+    R = np.stack(rows)
+    base = detect.detection_significance(signal, sigma, nuisance=rows)
+    C = noise_mod.build_cov(wl, sigma ** 2 * 0.25, sigma, "conservative")
+    base_cov = detect.detection_significance(signal, sigma, nuisance=rows, cov=C)
+    trials = 0
+    while trials < 20:
+        M = rng.standard_normal((len(rows), len(rows)))
+        if abs(np.linalg.det(M)) < 1e-3:            # keep M well-conditioned
+            continue
+        trials += 1
+        mixed = list(M @ R)                          # arbitrary basis of the span
+        assert detect.detection_significance(signal, sigma, nuisance=mixed) \
+            == pytest.approx(base, rel=1e-7)
+        assert detect.detection_significance(signal, sigma, nuisance=mixed,
+                                             cov=C) == pytest.approx(base_cov,
+                                                                     rel=1e-7)
 
 
 def test_zero_nuisance_row_is_ignored():

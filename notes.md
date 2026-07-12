@@ -305,3 +305,51 @@ nonzero); no change needed.
 **Tests 52 → 70** (+18: floor semantics ×8, invariance sweeps ×4 incl.
 24-decade rescalings, zero-row/zero-response guards, updated scenario
 invariants): `python -m pytest tests -q`, numpy-only, all green.
+
+## v10: 2026-07-12 strict re-audit V2 (exact sub-cell integration, NIRCam groups)
+
+Response to the "final strict re-audit (V2)". Re-audit re-confirmed items 1/3/4
+as already fixed in v9 (PandExo floor semantics, Fisher unit-invariance,
+nuisance row-scale invariance — verified against the actual code, not the
+docs). Two genuinely-remaining code defects fixed; two invariance requirements
+tightened to the audit's exact wording.
+
+**Confirmed and fixed:**
+- **Exact piecewise-linear antiderivative** (audit item 2): `binning.bin_model`
+  and `binning.smooth_to_native_r` built a cumulative-*trapezoid* integral at
+  the model nodes and then LINEARLY interpolated it to arbitrary cell edges.
+  The antiderivative of a piecewise-linear spectrum is piecewise-*quadratic*,
+  so that was wrong for any cell edge between nodes (the audit's y=x, [0.1,0.2]
+  counterexample returned 0.5 instead of 0.15; ~1–2 ppm on realistic narrow
+  features). New `binning._pl_antideriv` carries the quadratic term
+  explicitly — `I(x) = icum_k + y_k·dx + ½·slope_k·dx²` — so every cell-edge
+  integral (final bins AND the native-R regrid) is exact to machine precision.
+- **NIRCam group cap** (item 5): NIRCam grism `ngroup_max` was 180, above
+  PandExo's hard NIRCam maximum of 100 — on a faint target the optimizer could
+  pick an unsupported ramp. Both NIRCam modes capped at 100;
+  `instruments.PANDEXO_NGROUP_MAX` documents the cap and an import-time guard
+  refuses any mode above its instrument's cap; the worker's group selection
+  goes through one `pandeia_worker._clamp_ngroup`, so a selected ramp can never
+  leave `[ngroup_min, ngroup_max]`.
+
+**Tightened to the audit's exact regression wording:**
+- Fisher null-subspace overlap (item 3) now uses the basis-invariant L2
+  projection norm over the null eigenvectors, not a single eigenvector's
+  largest component (arbitrary for a degenerate null eigenspace).
+- Added the second required item-5 regression: `detection_significance` is now
+  pinned invariant under an arbitrary nonsingular remix (rotation + mixing) of
+  the nuisance rows, not only per-row rescaling.
+
+**Deferred, unchanged, still explicitly labeled (validation gates, not code):**
+items 6 (upgrade to the current matched Pandeia data stack — the 3.0/3.0rc3 pin
+is a dated decision with a written upgrade checklist and LEGACY label), 7
+(automated current-PandExo parity fixtures), and 8 (recorded physical
+convergence/history passes — run on HPC, Isaac's to schedule). These need heavy
+backend/HPC runs, not source changes, and remain the documented pre-production
+release gates.
+
+**Tests 70 → 76** (+7: exact-antiderivative counterexample + linear-submodel
+machine-precision closure ×2, NIRCam/instrument group-cap + optimizer-clamp
+×3, multi-dim Fisher null-space invariance + nuisance-basis rotation
+invariance ×2): `python -m pytest tests -q`, numpy-only, all green
+(76 passed, 1 slow test skipped by default).
