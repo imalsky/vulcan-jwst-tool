@@ -201,3 +201,55 @@ scenarios, time-domain injection-recovery, 2-D Pandeia response matrix, cloud
 marginalization in the Fisher forecast. Pandeia 2026.2/JWST 5.1 upgrade
 (current 3.0rc3) still deferred — needs matching refdata + regression pass, and
 ETC 6.0/Cycle 6 lands ~2026-07-16 anyway.
+
+## v8: 2026-07-12 triad-audit response (provenance, scenarios, closure, exposure)
+
+**Backend identity (worker_version 4 → 5, noise caches stale):**
+- `pandeia_worker` now ENFORCES the STScI same-release rule before any
+  calculation (`_check_backend_match`: engine `__version__` vs the refdata
+  VERSION / VERSION_PSF / dir-name version; one clear error instead of seven
+  identical per-mode tracebacks) and writes a top-level `__provenance__`
+  block (engine/refdata/python/numpy versions, worker_version) into every
+  result → every cache file. GUI shows it as a caption. Dated decision
+  recorded (instruments.py + README): STAY on engine 3.0 + pandeia_data-3.0rc3;
+  upgrade checklist documented (re-check `n_pix_degenerate_dropped`,
+  re-baseline sigma/ngroup on one star).
+
+**Correlated-noise scenario tier (the audit's checklist-B gap):**
+- `noise.SCENARIOS` (random / moderate / conservative) re-allocates the
+  R-anchored floor budget between white and ln-λ-smooth (SE kernel) parts;
+  `noise.build_cov` returns None (random: exact diagonal fast path) or a PD
+  covariance. INVARIANT: diag(C) = var_phot + floor² in every scenario —
+  ranking changes are correlation structure, never bigger error bars.
+- `detect.detection_significance(..., cov=)` full-covariance metric;
+  per-segment SLOPE nuisance rows (`_slope_rows`, conservative scenario);
+  `evaluate_mode(..., scenario=)` stores `cov`/`slope_rows`/`scenario` and
+  reports `sigma_detect_by_scenario` (all three shown in the GUI table).
+- Fisher: `F = J C⁻¹ Jᵀ` per mode (block-diagonal across modes in
+  `combined_forecast`), slope rows marginalized like offsets;
+  transits-to-target rebuilds C at every N (photon diagonal scales 1/N,
+  floor kernel fixed) in both detect and fisher solvers.
+
+**Closure tests + terminology (checklist D/E residuals):**
+- Poisson synthetic-COUNT closure of the binned estimator (mean + variance vs
+  the analytic noise model), matched-filter amplitude-variance closure under
+  the scenario covariance (diagonal metric pinned as miscalibrated on
+  correlated noise), and an opt-in slow FD test (`JWST_TOOL_RUN_SLOW=1`,
+  3 real forward runs) closing a cached autodiff Jacobian row against central
+  finite differences.
+- σ_detect terminology sweep finished: chart subheader/x-axis, pyproject
+  description, `__init__` docstring, README all say "conditional template
+  S/N" now.
+
+**Parameter exposure + README:**
+- The dead broadening knob (audit's one confirmed bug) is a real canonical
+  cache-keyed parameter: `broadening="air"|"h2he"` validated in
+  `canonical_params`, flows to the RT profile, GUI selectbox in Physics.
+  (Adding the key re-keys all model caches; old entries are orphaned, not
+  wrong.)
+- README lead rewritten differentiability/Fisher-first (intuitive-then-formal:
+  derivative currency → template S/N tier → Fisher tier with CRLB caveats),
+  PandExo-style GUI demoted to the closing sentence.
+
+**28 new tests** (24 → 52: 13 worker backend-identity, 12 scenario/covariance
++ slopes, 2 closure, 1 opt-in FD): suite still numpy-only by default.

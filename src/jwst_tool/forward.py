@@ -170,6 +170,12 @@ def canonical_params(params: dict) -> dict:
         # (v3 and earlier ran without it -- that biased the <1.5 um slope);
         # the cloud deck is the ExoJax power-law retrieval cloud, OFF by default.
         "use_rayleigh": bool(params.get("use_rayleigh", True)),
+        # line-broadening perturber: "air" (HITRAN terrestrial widths, the
+        # validated default) or "h2he" (planetary H2/He blend; downloads
+        # separate <db>_h2he line-list caches on first use, and exojax_rt
+        # RAISES for a molecule with no H2/He coverage rather than silently
+        # falling back)
+        "broadening": str(params.get("broadening", "air")),
         "cloud_on": bool(params.get("cloud_on", False)),
         "log_kappa_cloud": round(float(params.get("log_kappa_cloud", -1.0)), 3),
         "alpha_cloud": round(float(params.get("alpha_cloud", 0.0)), 2),
@@ -181,6 +187,8 @@ def canonical_params(params: dict) -> dict:
         raise ValueError(f"sl_angle_deg={cp['sl_angle_deg']} outside [0, 89] deg")
     if not 0.0 < cp["f_diurnal"] <= 1.0:
         raise ValueError(f"f_diurnal={cp['f_diurnal']} outside (0, 1]")
+    if cp["broadening"] not in ("air", "h2he"):
+        raise ValueError(f"broadening={cp['broadening']!r} (choose 'air' or 'h2he')")
     bad_mols = set(cp["extra_mols"]) - set(EXTRA_MOLECULES)
     if bad_mols:
         raise ValueError(f"unknown extra molecules {sorted(bad_mols)} "
@@ -332,7 +340,7 @@ def run_model(params: dict, log=print) -> Path:
     # reanchor_atom_ini is moot in this mode but kept for a masks-mode fallback.
     profile["abundance_mode"] = "elemental"
     profile["co_mode"] = "fixed_O"
-    profile["broadening"] = str(cp.get("broadening", "air"))
+    profile["broadening"] = cp["broadening"]   # canonical (cache-keyed) knob
     profile["reanchor_atom_ini"] = True   # finite-Z steps must re-anchor atom totals
     # step-size cap, validated state-preserving (retrieval case.py): prevents the
     # adaptive-dt ballooning non-convergence at high Kzz the GUI sliders can reach

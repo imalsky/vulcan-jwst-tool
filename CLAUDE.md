@@ -15,11 +15,17 @@
   machines (the pandeia preflight fails loudly). Do not replace it with a copy.
 - `forward._VERSION` is the cache-buster for model_cache spectra (v5 = 2026-07-11
   exact-elemental map); bump it whenever the physics changes.
-- `noise.noise_job`'s `worker_version` (**4** as of the 2026-07-11 v7 audit
-  pass) + the backend fingerprint (engine version, refdata VERSION hashes) bust
-  the noise_cache; bump worker_version whenever `pandeia_worker.py` output
-  changes. v4 = photsys Ks normalization + `r_native` export (all noise caches
-  stale; model cache `_VERSION=5` NOT).
+- `noise.noise_job`'s `worker_version` (**5** as of 2026-07-12) + the backend
+  fingerprint (engine version, refdata VERSION hashes) bust the noise_cache;
+  bump worker_version whenever `pandeia_worker.py` output changes. v4 =
+  photsys Ks normalization + `r_native` export; v5 = engine/refdata
+  release-match gate (worker refuses a mismatched pair) + `__provenance__`
+  block (exact engine/refdata/python versions) in every result/cache file
+  (noise caches stale again; model cache `_VERSION=5` NOT).
+- Pandeia stays PINNED at engine 3.0 + pandeia_data-3.0rc3 (dated decision
+  2026-07-12, rationale + upgrade checklist in README "Known limits" and
+  instruments.py). Do not upgrade casually; on upgrade re-check
+  `n_pix_degenerate_dropped` and re-baseline sigma/ngroup on one star.
 - Star normalization is band-integrated **2MASS Ks vegamag** (synphot
   `2mass,ks` + local CALSPEC Vega in `data/cdbs/calspec/`), NOT the retired
   monochromatic at_lambda/666.7 Jy shortcut (mis-scaled 0.4–3.1% by Teff). The
@@ -50,7 +56,21 @@
 - Fisher inversion must stay rank-aware (`fisher._marg_sigmas`: unconditional
   eigh + relative threshold; degenerate directions read `inf`) — no
   `np.linalg.inv` on Fisher matrices.
-- Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX needed).
+- **Noise scenarios** (2026-07-12): `noise.SCENARIOS` re-allocates the floor
+  budget between white and ln-λ-smooth (SE kernel) parts — `noise.build_cov`
+  returns None for "random" (exact diagonal fast path) or a PD covariance.
+  INVARIANT: diag(C) = var_phot + floor² in every scenario (scenarios change
+  correlation, never totals — tested). detect/fisher/transits-to-target all
+  consume the stored `cov`/`slope_rows`; "conservative" adds per-segment
+  slope nuisances. Kernel presets are stated assumptions, not measurements.
+- Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX
+  needed). One env-gated slow test (`JWST_TOOL_RUN_SLOW=1`) FD-closes a
+  Jacobian row with 3 real forward runs — Isaac schedules it, never run it
+  unprompted.
+- **σ_detect terminology is settled** (2026-07-12 sweep): "conditional
+  template S/N" everywhere user-facing (chart header/axis, pyproject
+  description, __init__, README) — never reintroduce bare "detection
+  significance" for σ_detect.
 - The forward model imports must keep the order config -> vulcan_chem -> exojax
   (guard-enforced in retrieval_framework.forward.vulcan_chem).
 - Heavy HPC/retrieval operational rules live in the sibling vulcan-retrieval repo's

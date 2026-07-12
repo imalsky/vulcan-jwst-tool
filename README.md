@@ -1,13 +1,43 @@
-# vulcan-jwst-tool: JWST instrument selector (VULCAN-JAX × ExoJAX × Pandeia)
+# vulcan-jwst-tool: differentiable JWST forecasting (VULCAN-JAX × ExoJAX × Pandeia)
 
-A PandExo-style planning GUI built on the forward-model engine from the
-sibling vulcan-retrieval repo (dist `vulcan-retrieval`, module
-`retrieval_framework.forward`): pick a planet and a science goal (detect
-molecule X, forecast parameter constraints), run the VULCAN-JAX photochemistry
-→ ExoJAX transmission model **locally**, simulate each JWST time-series mode's
-transit-depth precision with the **real STScI Pandeia ETC engine**, and rank
-the modes. Dist name `vulcan-jwst-tool`, import name `jwst_tool`. Version
-history: `notes.md`.
+An instrument selector built around one capability: the full forward model —
+steady-state VULCAN-JAX photochemistry → ExoJAX transmission spectrum (the
+engine from the sibling vulcan-retrieval repo, module
+`retrieval_framework.forward`) — is **differentiable end to end**. The tool
+computes exact parameter derivatives of the model spectrum as one
+warm-started forward-mode JVP per parameter, not finite-difference re-runs or
+precomputed grids: `∂(depth)/∂(lnZ, ΔlnC/O, lnKzz, T-P parameters, lnR0)`
+through the converged chemistry and the RT together.
+
+The intuition for why derivatives are the right currency for instrument
+selection: a mode serves a science goal when the parameters you care about
+move the spectrum in ways the instrument's noise can still see AFTER
+everything a real fit would soak up — calibration offsets and slopes,
+temperature structure, the reference radius — has had its chance to absorb
+the signal. The tool makes that quantitative in two tiers:
+
+- **Conditional template S/N (σ_detect)**: the matched-template √Δχ² between
+  the spectrum with and without one molecule's opacity, with the calibration
+  nuisances profiled out (and, in σ_detect_proj, the T-P/lnR0 Jacobian
+  directions too). It is conditional on the assumed atmospheric state — an
+  upper bound on any retrieval detection, and labeled that way everywhere.
+- **Fisher forecasts**: with the autodiff Jacobian J (n_par × n_bins) and the
+  per-bin noise covariance C, the Fisher matrix is F = J C⁻¹ Jᵀ and the
+  marginalized 1σ forecast on parameter i is √((F⁻¹)ᵢᵢ) — a local Cramér–Rao
+  lower bound under the stated noise model, never a posterior width. The
+  inversion is always rank-aware: degenerate directions read "unconstrained"
+  instead of a fake number, and rank/condition diagnostics are shown.
+
+Noise per JWST time-series mode comes from the **real STScI Pandeia ETC
+engine** (saturation-verified group selection), combined with an R-anchored
+systematic floor whose correlation structure is a selectable scenario — see
+"Known limits" for the tier's honest scope. Everything runs **locally** and is
+disk-cached.
+
+In practice it behaves like a PandExo-style planning GUI: pick a planet and a
+science goal (detect molecule X, forecast parameter constraints), press Run,
+read the ranking. Dist name `vulcan-jwst-tool`, import name `jwst_tool`.
+Version history: `notes.md`.
 
 ## Install and launch
 
@@ -172,7 +202,7 @@ machine-specific defaults):
   explicitly in the GUI.
 - Registry values are literature planning defaults; edit them for proposals.
 - Default spectra are CLEAR-SKY: the cloud deck is opt-in and OFF by default,
-  so feature amplitudes (and detection significances) are upper limits for
+  so feature amplitudes (and template S/N scores) are upper limits for
   planets with muting aerosols (W39b PRISM needed clouds). Turn the deck on
   to stress-test a goal against clouds; it is not marginalized in the Fisher
   forecast.
@@ -215,10 +245,12 @@ machine-specific defaults):
 - HITRAN line lists (main isotopologue), adequate for planning; not
   HITEMP/ExoMol — room-T lists under-represent hot bands at ≳1000 K, so
   absolute feature strengths lean low where hot bands matter. Broadening is
-  terrestrial air by default; `config.BROADENING="h2he"` (or the profile
-  override) switches to HITRAN planetary H2/He widths where available
-  (the sibling vulcan-retrieval repo's `validation/broadening_ab.py` measures
-  the difference).
+  terrestrial air by default; the `broadening="h2he"` parameter (a canonical,
+  cache-keyed knob — API and GUI "Physics" panel) switches to HITRAN
+  planetary H2/He widths where available (first use downloads separate
+  `<db>_h2he` caches; a molecule with no H2/He coverage raises loudly; the
+  sibling vulcan-retrieval repo's `validation/broadening_ab.py` measures the
+  difference).
 - Abundance knobs are exact **elemental** directions
   (`abundance_mode="elemental"`): lnZ and dlnCO move conserved column
   elemental ratios exactly (H/He fixed), the column sums to P/(k_B T) per
@@ -229,21 +261,39 @@ machine-specific defaults):
   monochromatic at_lambda shortcut mis-scaled the flux by 0.4–3.1% across
   Teff 3200–6500 K (worst for hot stars, Brackett-γ wing) and fed that into
   saturation/ngroup selection.
-- Forecast tier: everything here is the **ETC lower-bound tier** (diagonal
-  noise × per-mode inflation + R-anchored floor + offset/segment nuisances).
-  Not yet implemented (roadmap, in priority order): full wavelength-covariance
-  input (a GP/empirical covariance matrix — the modern best practice per
-  Holmberg & Madhusudhan 2023, Rotman+2025 — beyond the diagonal envelope
-  here), empirically calibrated per-mode systematics scenarios from public
-  JWST residuals, and a time-domain injection-recovery tier (light-curve fits
-  with limb-darkening/trend nuisances) for publication-grade detection claims.
-  The √(R/100) fine-binning growth of the floor is a conservative white-noise
-  envelope, not a measured covariance behavior.
+- Forecast tier: everything here is the **ETC lower-bound tier** (Pandeia
+  noise × per-mode inflation + R-anchored floor + offset/segment/slope
+  nuisances). The floor's CORRELATION STRUCTURE is a selectable scenario
+  (`noise.SCENARIOS`): "random" keeps it white (diagonal), "moderate" and
+  "conservative" re-allocate part of the budget into a spectrally smooth
+  squared-exponential kernel in ln λ (PSD by construction; per-bin totals are
+  scenario-invariant, so score/ranking changes between scenarios are purely
+  correlation structure — the direction of Holmberg & Madhusudhan 2023,
+  Rotman+2025). "Conservative" also profiles a per-detector-segment slope
+  nuisance. The scenario flows through σ_detect, the Fisher forecasts
+  (F = J C⁻¹ Jᵀ, block-diagonal across modes), and transits-to-target; the
+  results table reports σ_detect under all three. The kernel presets are
+  stated ASSUMPTIONS bracketing the structure, not measured covariances.
+  Still on the roadmap: empirically calibrated per-mode covariances from
+  public JWST residuals, and a time-domain injection-recovery tier
+  (light-curve fits with limb-darkening/trend nuisances) for
+  publication-grade detection claims. The √(R/100) fine-binning growth of
+  the floor is a conservative white-noise envelope, not a measured
+  covariance behavior.
 - Pandeia backend is pinned to engine 3.0 + `pandeia_data-3.0rc3` (current
   STScI release is 2026.2/JWST 5.1, which updates SOSS backgrounds, PSFs, and
-  BOTS multistripe timing). Upgrading requires downloading the matching
-  refdata; the engine + refdata versions are hashed into every noise cache
-  key, so a backend change invalidates caches automatically.
+  BOTS multistripe timing). Deliberate decision (2026-07-12): the pinned pair
+  is matched and self-consistent — the worker refuses to run a mismatched
+  engine/refdata pair (STScI same-release rule) and records the exact versions
+  in a `__provenance__` block in every result and cache file. Upgrade path:
+  install pandeia.engine 2026.2 in its env, download the matching refdata
+  (stsci.box.com pandeia-data-v2026p2-jwst + the now-separate PSF library),
+  point the two env vars at them — then, before trusting forecasts, compare
+  sigma/ngroup on one reference star and check the G395H
+  `n_pix_degenerate_dropped` counter (whether newer refdata fixes the 3.0rc3
+  red-edge grid artifact is unverified). The engine + refdata versions are
+  hashed into every noise cache key, so a backend change invalidates caches
+  automatically.
 
 ## Tests
 
@@ -254,7 +304,16 @@ Monte Carlo, model/noise same-estimator identity, operator linearity
 degenerate-wavelength flagging, detector-segment splitting, native-R LSF
 flux conservation + high-R no-op; detection-score tests — constant offset and
 per-segment step profile to zero, a real feature survives, sub-cycle windows
-raise, inflation scales variance; and rank-aware Fisher tests — duplicated
+raise, inflation scales variance; scenario tests — covariance PSD with
+scenario-invariant per-bin totals, diagonal-C ≡ σ fast-path identity, smooth
+templates penalized under a correlated floor, per-segment slopes absorb
+trends but not centered features; and rank-aware Fisher tests — duplicated
 and near-duplicated Jacobian rows read unconstrained, Gaussian-prior posterior
 identity, well-conditioned analytic match, segment-offset absorption, combined
-per-segment offset counting.
+per-segment offset counting; closure tests — Poisson synthetic-count
+mean/variance closure of the binned estimator against the analytic noise
+model, and matched-filter amplitude-variance closure under the scenario
+covariance (with the diagonal metric pinned as miscalibrated on correlated
+noise). One opt-in slow test (`JWST_TOOL_RUN_SLOW=1`, JAX + chemistry stack,
+~5-10 min) closes a cached autodiff Jacobian row against central finite
+differences of the full forward model.

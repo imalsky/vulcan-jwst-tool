@@ -301,6 +301,13 @@ with st.sidebar:
                 help="0 = gray deck; 4 ≈ Rayleigh-like small-particle haze.")
         else:
             log_kappa_cloud, alpha_cloud = -1.0, 0.0
+        broadening = st.selectbox(
+            "Line broadening perturber", ["air", "h2he"], index=0,
+            key=K("broad"),
+            help="'air' = HITRAN terrestrial widths (validated default); "
+                 "'h2he' = planetary H₂/He blend — first use downloads "
+                 "separate line-list caches, and molecules with no H₂/He "
+                 "coverage raise loudly instead of silently falling back.")
 
     avail_free = forward.CHEM_PARAM_NAMES + forward.TP_PARAM_NAMES[tp_mode]
     mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
@@ -425,6 +432,17 @@ with st.sidebar:
                                    float(ins.MODES[k].get("noise_infl", 1.0)),
                                    0.05, key=K(f"infl_{k}"))
                 for k in mode_keys}
+        st.markdown("**Systematics scenario (floor correlation structure)**")
+        scenario = st.radio(
+            "Systematics scenario", list(noise_mod.SCENARIOS),
+            format_func=lambda s: noise_mod.SCENARIOS[s]["label"],
+            key=K("scenario"), label_visibility="collapsed")
+        st.caption("Re-allocates the floor budget between white and "
+                   "spectrally smooth (ln-λ squared-exponential kernel) parts "
+                   "— per-bin totals are identical in every scenario, so "
+                   "score differences are purely correlation structure. "
+                   "Conservative also profiles per-segment slopes. The "
+                   "results table shows σ_detect under all three.")
 
     st.button("Reset all settings", on_click=_reset_all,
               help="Back to the defaults (also clears the current results).")
@@ -437,7 +455,8 @@ params = dict(planet=planet_key, quality=quality,
               tp_mode=tp_mode, fisher_params=fisher_params,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
-              use_rayleigh=use_rayleigh, cloud_on=cloud_on,
+              use_rayleigh=use_rayleigh, broadening=broadening,
+              cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,
               extra_mols=extra_mols, **tp_kwargs)
 star = dict(teff=teff, log_g=logg, metallicity=feh, ks_mag=ks_mag)
@@ -555,7 +574,8 @@ def compute():
             try:
                 results.append(detect.evaluate_mode(
                     k, etc[k], model, target_mol, r_bin, t_in_s, t_out_s,
-                    n_transits, floors[k], noise_inflation=infl[k]))
+                    n_transits, floors[k], noise_inflation=infl[k],
+                    scenario=scenario))
             except Exception as e:
                 # one bad mode must not kill the whole run -- report it with
                 # its label + the actual reason, keep evaluating the rest
@@ -563,7 +583,8 @@ def compute():
                                   f"(binning/noise evaluation for {k}; the other "
                                   "modes are unaffected)"))
     return dict(model=model, results=results, failed=failed, unusable=unusable,
-                fisher_names=list(fisher_params))
+                fisher_names=list(fisher_params),
+                provenance=etc.get("__provenance__"))
 
 
 if run_clicked:
@@ -574,7 +595,7 @@ if run_clicked:
             goal=goal, target=target_mol, goal_param=goal_param,
             target_prec=target_prec, target_sig=target_sig,
             n_transits=n_transits, show_noise=show_noise, seed=seed,
-            r_bin=r_bin, planet=planet_label)
+            r_bin=r_bin, planet=planet_label, scenario=scenario)
 
 # ---------------------------------------------------------------------------
 # Render
@@ -599,6 +620,13 @@ for k, reason in out["unusable"]:
 
 if not results:
     st.stop()
+
+if out.get("provenance"):
+    _pv = out["provenance"]
+    st.caption(
+        f"Noise backend: pandeia.engine {_pv['engine_version']} + "
+        f"{_pv['refdata_name']} (refdata {_pv['refdata_version']}), "
+        f"worker v{_pv['worker_version']} — recorded in every noise cache.")
 
 fisher_names = ([str(x) for x in model["jac_names"][:-1]]
                 if "jac_names" in model else [])
@@ -732,12 +760,12 @@ col1, col2 = st.columns([2.6, 1.4])
 
 with col1:
     if goal_r == "detect":
-        st.subheader(f"{meta['target']} detection significance")
+        st.subheader(f"{meta['target']} conditional template S/N (σ_detect)")
         rs = sorted(results, key=lambda r: r["sigma_detect"])
         names = [r["label"] + (" (sat)" if r["saturated"] else "") for r in rs]
         vals = [r["sigma_detect"] for r in rs]
         cols = [ins.MODE_COLOR[r["mode_key"]] for r in rs]
-        xrefs, xlabel = (3.0, 5.0), (f"detection significance "
+        xrefs, xlabel = (3.0, 5.0), (f"conditional template S/N "
                                      f"({meta['n_transits']} transit"
                                      f"{'s' if meta['n_transits'] > 1 else ''})")
         fmt_v = lambda v: f"{v:.1f}σ"
@@ -832,6 +860,9 @@ for r in sorted(results, key=key_order):
         _proj = r.get("sigma_detect_proj", float("nan"))
         if np.isfinite(_proj):
             row["σ_detect (proj)"] = round(_proj, 1)
+        for _sc, _v in r.get("sigma_detect_by_scenario", {}).items():
+            if _sc != r.get("scenario"):
+                row[f"σ ({_sc})"] = round(_v, 1)
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
@@ -873,7 +904,11 @@ if goal_r == "detect":
         "term only — the floor does not integrate out, so it can honestly read "
         "'never'. Groups are chosen and verified against Pandeia's measured "
         "saturation. Because T, clouds, and the other abundances are not re-fit, "
-        "a full retrieval detection can only be weaker."
+        "a full retrieval detection can only be weaker. σ_detect is scored under "
+        f"the selected **{meta.get('scenario', 'random')}** systematics scenario; "
+        "the σ (…) columns re-score it under the other scenarios (same per-bin "
+        "totals, different floor correlation structure) so assumption-driven "
+        "ranking changes are visible."
     )
 else:
     st.caption(
