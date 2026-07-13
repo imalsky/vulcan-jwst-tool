@@ -119,8 +119,11 @@ def detection_significance(signal: np.ndarray, sigma: np.ndarray,
     diagonal C.
     """
     signal = np.asarray(signal, float)
-    rows = ([np.ones_like(signal)] if marginalize_offset and signal.size > 1
-            else [])
+    # the constant row is included even for a single bin: with a free offset
+    # one bin carries NO shape information, so the honest score is 0 -- the
+    # old size>1 guard returned a false |s|/sigma "detection" there
+    # (2026-07-12 recheck, P2-D)
+    rows = [np.ones_like(signal)] if marginalize_offset else []
     rows += [np.asarray(r, float) for r in (nuisance or [])]
     if cov is not None:
         ci_s = np.linalg.solve(np.asarray(cov, float), signal)
@@ -301,13 +304,20 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
         flux_model = np.maximum(np.interp(wl_model, wl_pix[po], flux_pix[po]), 0.0)
         depth_sm = binning.smooth_to_native_r(wl_model, depth, wl_pix, r_nat,
                                               b_lo, b_hi, weight=flux_model)
+        # metadata ONLY: whether the blur changed the baseline. It must never
+        # gate the operator on OTHER vectors -- a flat baseline is a fixed
+        # point of any normalized LSF while a narrow Jacobian feature is not,
+        # so the old "and lsf_applied" guard left Jacobians unsmoothed
+        # exactly when the baseline happened to be LSF-invariant (2026-07-12
+        # recheck, P1-C: 58.6 ppm on a flat-baseline reproducer). The
+        # smoother is its own no-op when the kernel is unresolved.
         lsf_applied = bool(np.any(depth_sm != depth))
         depth = depth_sm
         if depth_wo is not None:
             depth_wo = binning.smooth_to_native_r(wl_model, depth_wo, wl_pix,
                                                   r_nat, b_lo, b_hi,
                                                   weight=flux_model)
-        if jac_rows is not None and lsf_applied:
+        if jac_rows is not None:
             jac_rows = [binning.smooth_to_native_r(wl_model, row, wl_pix,
                                                    r_nat, b_lo, b_hi,
                                                    weight=flux_model)

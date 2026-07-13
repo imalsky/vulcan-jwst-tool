@@ -45,11 +45,16 @@ _TO_DISPLAY = {"lnZ": 1.0 / _LN10, "lnKzz": 1.0 / _LN10}
 # Relative eigenvalue threshold, applied to the WHITENED (unit-diagonal,
 # correlation-form) Fisher matrix: directions below REL_EIG_TOL x the largest
 # whitened eigenvalue are treated as numerically unconstrained (null space).
-# Whitening first is what makes the rank decision invariant under a change of
-# parameter units -- thresholding the raw mixed-unit matrix flipped exactly
-# finite constraints to "unconstrained" (or back) under a pure K-vs-kK style
-# rescaling (2026-07-12 external audit, confirmed). eigh's noise floor is
-# ~1e-16 x wmax; 1e-10 keeps 6 decades of margin.
+# PRECISE GUARANTEE: whitening makes the rank decision invariant under
+# DIAGONAL per-parameter rescalings (unit changes) -- thresholding the raw
+# mixed-unit matrix flipped finite constraints to "unconstrained" (or back)
+# under a pure K-vs-kK rescaling (2026-07-12 external audit, confirmed). It
+# is NOT invariant under arbitrary MIXED reparameterizations of directions
+# sitting near the threshold: no numerical rank cut is metric-free, and a
+# publication-grade statement should quote the whitened eigenvalue spectrum
+# (the ``diag`` output) and, where it matters, the constrained
+# eigen-combinations rather than only coordinate-wise sigmas. eigh's noise
+# floor is ~1e-16 x wmax; 1e-10 keeps 6 decades of margin either way.
 REL_EIG_TOL = 1e-10
 # A reported parameter whose projection ONTO the null subspace (whitened
 # coordinates) exceeds this is flagged inf (it lives partly in an unconstrained
@@ -119,16 +124,24 @@ def display_sigma(name: str, sigma: float) -> float:
 
 
 def _segment_offset_rows(result: dict) -> np.ndarray:
-    """One indicator row per detector segment beyond the first, from
-    result["seg"] (per-bin segment id from detect.evaluate_mode). Empty
-    (0, n_bins) for a single-segment mode. Row s is 1 on the bins of segment
-    s+1, 0 elsewhere -- the constant offset (or shared lnR0) already spans the
-    first segment, so only the STEPS relative to it are added here."""
+    """One constant-offset indicator row per detector segment INCLUDING the
+    first (n_seg rows; a single-segment mode gets one global constant), from
+    result["seg"] (per-bin segment id from detect.evaluate_mode).
+
+    The pre-2026-07-12 version omitted segment 0 on the premise that the
+    shared lnR0 derivative "already spans" the first segment's constant --
+    WRONG: lnR0 is a physical radiative-transfer derivative, generally not
+    constant in wavelength, so the calibration offset and lnR0 are distinct
+    nuisance directions, and a spectrally-constant science signal could read
+    as constrained (recheck item P0-A, confirmed by reproducer). Any exact
+    redundancy between rows is precisely what the rank-aware _marg_sigmas
+    handles. With every segment present, mode_forecast(r) implements the
+    SAME statistical model as combined_forecast([r]) -- pinned by
+    test_mode_forecast_equals_combined_single_result."""
     nb = np.asarray(result["sigma"]).size
     seg = np.asarray(result.get("seg", np.zeros(nb, int)), int)
     n_seg = int(seg.max()) + 1 if seg.size else 1
-    return np.stack([(seg == s).astype(float) for s in range(1, n_seg)]) \
-        if n_seg > 1 else np.zeros((0, nb))
+    return np.stack([(seg == s).astype(float) for s in range(n_seg)])
 
 
 def _slope_nuisance_rows(result: dict) -> np.ndarray:

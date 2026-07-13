@@ -25,11 +25,17 @@ same statistic.
 
 The model is averaged over each pixel's wavelength cell (exact integral of the
 piecewise-linear model), never point-sampled, so a model grid finer than the
-pixel grid (e.g. MIRI LRS) cannot alias. No extra LSF blur is applied on top:
-Pandeia's extraction already carries the PSF/throughput into F_i and sigma_i,
-and for a depth spectrum smooth on pixel scales the residual intra-pixel LSF
-correction is second order. (A full Pandeia response matrix -- monochromatic
-impulses through the 3D engine -- would refine this; documented limitation.)
+pixel grid (e.g. MIRI LRS) cannot alias. Where the FINAL binning approaches
+the instrument's NATIVE resolving power (MIRI LRS, PRISM, blue SOSS),
+detect.evaluate_mode additionally blurs the model -- the depth, the
+removed-molecule depth, and EVERY Jacobian row, with one flux weight -- to
+R_native via smooth_to_native_r (the flux-weighted count-ratio Gaussian LSF
+in this module) BEFORE the cell average; for high-R modes that kernel is
+unresolved by the model grid and the blur is a no-op. The Gaussian R(lambda)
+kernel is an approximation to the full Pandeia response matrix
+(monochromatic impulses through the 3D engine); impulse-response validation
+against the engine is a documented pending gate, and Pandeia's extraction
+already carries PSF/throughput into F_i and sigma_i.
 """
 from __future__ import annotations
 
@@ -283,6 +289,13 @@ def build_operator(wl_pix: np.ndarray, w_pix: np.ndarray, edges: np.ndarray,
                     expectation is undefined) -- from BOTH model and noise,
                     so the two stay the same estimator.
     valid         : optional per-pixel bool mask (e.g. saturation exclusion).
+
+    Bin-assignment policy: a pixel belongs to the bin containing its CENTER
+    wavelength (extracted pixels are indivisible samples grouped into bins;
+    no fractional pixel-response splitting across bin edges is performed),
+    while the MODEL is integrated over the pixel's full cell. This matches
+    how real reductions group extracted pixels; it is not an arbitrary-edge
+    fractional regridding and is not claimed to be one.
 
     Duplicate-wavelength policy: an exact-duplicate pixel has a zero-width
     cell (no wavelength support), so it drops out of the estimator here; such

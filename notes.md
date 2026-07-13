@@ -497,3 +497,50 @@ extraction parity may be claimed; sigmas are pandeia-extracted-noise
 forecasts, never "PandExo-identical".
 
 Suite stays 86 green; README noise/backends/validation sections updated.
+
+## v14: 2026-07-12 current-head recheck response (Fisher offsets, LSF gating, fail-fast)
+
+Response to the same-day "current-head scientific and mathematical recheck"
+(ran against 96582fa-era main; its five old-audit closures confirmed). Four
+confirmed code defects, all fixed + regression-pinned (suite 86 → 96):
+
+**P0-A — per-mode Fisher omitted the FIRST segment's constant offset.**
+`fisher._segment_offset_rows` returned rows for segments 1..n-1 on the
+premise that the shared lnR0 derivative "spans" the first segment's
+constant. Wrong: lnR0 is a physical RT derivative, generally non-constant,
+so a spectrally-constant science signal could read as CONSTRAINED, and
+`mode_forecast(r)` disagreed with `combined_forecast([r])` (two models for
+one observation). Now n_seg rows including segment 0; redundancy is the
+rank-aware machinery's job. Pinned: mode==combined equality (multi-segment
++ slopes), constant-science-derivative → unconstrained, per-segment-step →
+unconstrained, and an independent Schur-complement GLS cross-check. The old
+"one segment adds no usable offset beyond lnR0" test premise replaced.
+Consequence: per-mode forecasts get honestly WIDER where a constant
+direction was leaking information; transits-to-target inherits the fix.
+
+**P1-C — Jacobian LSF smoothing was gated on `lsf_applied`** (whether the
+baseline depth numerically changed under the blur). A flat baseline is a
+fixed point of any normalized LSF; a narrow Jacobian feature is not (58.6
+ppm on the recheck's reproducer). The blur now applies to every Jacobian
+row unconditionally whenever `r_native` exists; `lsf_applied` is metadata.
+Pinned: binned Jacobian identical for flat vs bumped baselines, and
+genuinely different from the no-blur case.
+
+**P2-D — one-bin matched-template score skipped the constant offset**
+(`signal.size > 1` guard): a single bin scored |s|/σ (false 3σ) instead of
+0. The constant row is now profiled whenever `marginalize_offset` is on.
+
+**P2-E — public noise APIs accepted invalid inputs**: noise_inflation −1
+acted as +1 (squared), 0/NaN zeroed/poisoned σ silently; `build_cov` took
+negative variances to a plausible positive diagonal. `depth_error_bins`,
+`pixel_depth_variance`, `build_cov`, `make_bins` now validate and raise.
+
+**P2-F — stale docs**: binning.py's module docstring claimed "no extra LSF
+blur" (contradicting the native-R blur detect applies); now one
+specification. Also documented: pixel-CENTER bin assignment (indivisible
+extracted samples, not fractional regridding), and the precise Fisher rank
+guarantee (invariant under DIAGONAL rescalings; not metric-free under mixed
+reparameterizations near REL_EIG_TOL — quote the whitened spectrum).
+
+The recheck's P0-B (retrieval logZ_box_physical) is fixed in the sibling
+vulcan-retrieval repo the same day; see its CLAUDE.md/notes.

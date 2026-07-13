@@ -258,3 +258,72 @@ def test_zero_nuisance_row_is_ignored():
     b = detect.detection_significance(signal, sigma,
                                       nuisance=[np.zeros(30)])
     assert b == pytest.approx(a, rel=1e-12)
+
+
+# --- fail-fast on invalid public noise/covariance inputs (recheck P2-E) ------
+# noise_inflation was squared (so -1 silently acted as +1, 0 zeroed the
+# uncertainty, NaN poisoned it); build_cov accepted negative variances (a
+# plausible positive diagonal came back) and NaN/negative wavelengths.
+
+def _tiny_mode_result(n=50):
+    return dict(wl=np.linspace(3.0, 4.0, n).tolist(),
+                flux=np.full(n, 1e6).tolist(),
+                noise_1int=np.full(n, 1e3).tolist(),
+                t_cycle_s=10.0)
+
+
+def test_invalid_noise_inflation_raises():
+    mr = _tiny_mode_result()
+    edges = np.geomspace(3.0, 4.0, 12)
+    for bad in (-1.0, 0.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="noise_inflation"):
+            noise_mod.depth_error_bins(mr, edges, 3600.0, 3600.0, 1,
+                                       floor_spec=None, noise_inflation=bad)
+
+
+def test_pixel_variance_rejects_bad_inputs():
+    good = _tiny_mode_result()
+    with pytest.raises(ValueError, match="t_cycle"):
+        noise_mod.pixel_depth_variance(dict(good, t_cycle_s=0.0),
+                                       3600.0, 3600.0, 1)
+    with pytest.raises(ValueError, match="windows"):
+        noise_mod.pixel_depth_variance(good, float("nan"), 3600.0, 1)
+    bad_flux = dict(good)
+    bad_flux["flux"] = np.where(np.arange(50) == 3, np.nan,
+                                np.full(50, 1e6)).tolist()
+    with pytest.raises(ValueError, match="flux"):
+        noise_mod.pixel_depth_variance(bad_flux, 3600.0, 3600.0, 1)
+    bad_noise = dict(good)
+    bad_noise["noise_1int"] = np.where(np.arange(50) == 3, -1.0,
+                                       np.full(50, 1e3)).tolist()
+    with pytest.raises(ValueError, match="noise_1int"):
+        noise_mod.pixel_depth_variance(bad_noise, 3600.0, 3600.0, 1)
+
+
+def test_build_cov_rejects_bad_inputs():
+    wl = np.linspace(3.0, 4.0, 10)
+    var = np.full(10, 1e-9)
+    fl = np.full(10, 5e-5)
+    for kw, msg in ((dict(wl_center=np.where(np.arange(10) == 2, -1.0, wl)),
+                     "wavelengths"),
+                    (dict(var_phot=np.where(np.arange(10) == 2, -1e-9, var)),
+                     "var_phot"),
+                    (dict(var_phot=np.where(np.arange(10) == 2, np.nan, var)),
+                     "var_phot"),
+                    (dict(floor=np.where(np.arange(10) == 2, np.nan, fl)),
+                     "floor")):
+        args = dict(wl_center=wl, var_phot=var, floor=fl)
+        args.update(kw)
+        with pytest.raises(ValueError, match=msg):
+            noise_mod.build_cov(args["wl_center"], args["var_phot"],
+                                args["floor"], "moderate")
+    with pytest.raises(ValueError, match="1-D"):
+        noise_mod.build_cov(wl, var[:5], fl, "moderate")
+
+
+def test_make_bins_rejects_bad_inputs():
+    for args in ((-1.0, 4.0, 100.0), (4.0, 3.0, 100.0),
+                 (3.0, float("nan"), 100.0), (3.0, 4.0, 0.0),
+                 (3.0, 4.0, float("inf"))):
+        with pytest.raises(ValueError):
+            noise_mod.make_bins(*args)

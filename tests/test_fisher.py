@@ -3,6 +3,7 @@ columns must be reported as degenerate, near-singular matrices must not return
 arbitrary finite sigmas, and the well-conditioned case must match the analytic
 inverse."""
 import numpy as np
+import pytest
 
 from jwst_tool import fisher
 
@@ -72,7 +73,8 @@ def test_mode_forecast_diag_passthrough():
     diag = {}
     out = fisher.mode_forecast(result, ["p0"], diag=diag)
     assert set(out) == {"p0"} and np.isfinite(out["p0"])
-    assert diag["fisher_dimension"] == 2 and diag["fisher_rank"] == 2
+    # dimension = free + lnR0 + the (always-present) constant offset (P0-A)
+    assert diag["fisher_dimension"] == 3 and diag["fisher_rank"] == 3
 
 
 def test_segment_offset_widens_forecast_and_absorbs_step():
@@ -95,8 +97,11 @@ def test_segment_offset_widens_forecast_and_absorbs_step():
 
 
 def test_single_segment_forecast_unchanged():
-    """One detector segment adds no usable offset beyond lnR0, so the forecast
-    is identical to the no-seg call (regression guard)."""
+    """A single-segment mode and a no-seg call must agree: both carry exactly
+    one constant-offset nuisance (the global offset). The old premise here --
+    "one segment adds no usable offset beyond lnR0" -- was recheck bug P0-A:
+    lnR0 is a physical derivative, not a constant, so the offset is always
+    its own nuisance row now."""
     rng = np.random.default_rng(3)
     jac = rng.standard_normal((3, 30))             # 2 free + lnR0
     s = np.full(30, 1e-4)
@@ -118,3 +123,81 @@ def test_combined_forecast_counts_offsets_per_segment():
     fisher.combined_forecast([r1, r2], ["p0"], diag=diag)
     # 1 free + lnR0 + (2 + 1) segment offsets = 5
     assert diag["fisher_dimension"] == 1 + 1 + 3
+
+
+def test_mode_forecast_equals_combined_single_result():
+    """2026-07-12 recheck P0-A: mode_forecast(r) and combined_forecast([r])
+    must implement the SAME statistical model (free params + shared lnR0 +
+    one constant offset per segment + slope rows). The old mode_forecast
+    omitted the first segment's offset."""
+    rng = np.random.default_rng(7)
+    nb = 45
+    seg = np.array([0] * 22 + [1] * 23)
+    jac = rng.standard_normal((3, nb))             # 2 free + lnR0
+    slope_rows = rng.standard_normal((2, nb))
+    r = dict(jac_bins=jac, sigma=np.full(nb, 1e-4), seg=seg,
+             slope_rows=slope_rows)
+    a = fisher.mode_forecast(dict(r), ["p0", "p1"])
+    b = fisher.combined_forecast([dict(r)], ["p0", "p1"])
+    for k in ("p0", "p1"):
+        if np.isinf(a[k]) or np.isinf(b[k]):
+            assert np.isinf(a[k]) and np.isinf(b[k])
+        else:
+            assert a[k] == pytest.approx(b[k], rel=1e-10)
+    # and the single-segment / no-seg variants agree too
+    r1 = dict(jac_bins=jac, sigma=np.full(nb, 1e-4))
+    a1 = fisher.mode_forecast(dict(r1), ["p0", "p1"])
+    b1 = fisher.combined_forecast([dict(r1)], ["p0", "p1"])
+    for k in ("p0", "p1"):
+        assert a1[k] == pytest.approx(b1[k], rel=1e-10)
+
+
+def test_constant_science_derivative_unconstrained():
+    """Recheck P0-A reproducer: an exactly CONSTANT science derivative must be
+    absorbed by the constant calibration offset (unconstrained), even when
+    the lnR0 derivative is NOT constant (0.3 + 0.2x): lnR0 cannot stand in
+    for the offset."""
+    nb = 40
+    x = np.linspace(0.0, 1.0, nb)
+    jac = np.stack([np.ones(nb), 0.3 + 0.2 * x])   # [free=const, lnR0 nonconst]
+    r = dict(jac_bins=jac, sigma=np.full(nb, 1e-4))
+    sig = fisher.mode_forecast(r, ["p0"])["p0"]
+    assert np.isinf(sig)
+    # a science derivative with real shape stays constrained
+    jac2 = np.stack([np.sin(6 * x), 0.3 + 0.2 * x])
+    sig2 = fisher.mode_forecast(dict(jac_bins=jac2, sigma=np.full(nb, 1e-4)),
+                                ["p0"])["p0"]
+    assert np.isfinite(sig2)
+
+
+def test_per_segment_constant_derivative_unconstrained():
+    """A science derivative that is constant WITHIN each segment (any step
+    pattern) lies in the span of the per-segment offsets -> unconstrained."""
+    nb = 40
+    seg = np.array([0] * 20 + [1] * 20)
+    jac = np.stack([np.where(seg == 0, 0.7, -0.2), np.linspace(1, 2, nb)])
+    r = dict(jac_bins=jac, sigma=np.full(nb, 1e-4), seg=seg)
+    assert np.isinf(fisher.mode_forecast(r, ["p0"])["p0"])
+
+
+def test_mode_forecast_matches_schur_complement():
+    """Marginalized sigma against an independent Schur-complement GLS
+    calculation on the full nuisance-augmented design (recheck test 4)."""
+    rng = np.random.default_rng(11)
+    nb = 60
+    seg = np.array([0] * 30 + [1] * 30)
+    jac = rng.standard_normal((3, nb))             # 2 free + lnR0
+    sigma = np.full(nb, 2e-4)
+    r = dict(jac_bins=jac, sigma=sigma, seg=seg)
+    got = fisher.mode_forecast(dict(r), ["p0", "p1"])
+    # independent construction: rows = [free(2), lnR0, seg0, seg1]
+    rows = np.vstack([jac, (seg == 0).astype(float), (seg == 1).astype(float)])
+    F = (rows / sigma[None, :] ** 2) @ rows.T
+    n_f = 2
+    A = F[:n_f, :n_f]
+    B = F[:n_f, n_f:]
+    D = F[n_f:, n_f:]
+    S = A - B @ np.linalg.solve(D, B.T)            # Schur complement
+    cov = np.linalg.inv(S)
+    assert got["p0"] == pytest.approx(np.sqrt(cov[0, 0]), rel=1e-9)
+    assert got["p1"] == pytest.approx(np.sqrt(cov[1, 1]), rel=1e-9)

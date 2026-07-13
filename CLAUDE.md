@@ -90,7 +90,22 @@
   profiled in BOTH `detect.detection_significance` and `fisher.mode_forecast`/
   `combined_forecast`. Never drop the per-segment offset for the two-detector
   gratings — a single mode-wide offset lets an NRS1/NRS2 step masquerade as
-  signal.
+  signal. **INCLUDING segment 0** (2026-07-12 recheck P0-A): lnR0 is a
+  physical derivative, NOT a constant, so it never stands in for the first
+  segment's offset — `fisher._segment_offset_rows` returns n_seg rows and
+  `mode_forecast(r)` must equal `combined_forecast([r])` (pinned). In
+  `detect`, the constant row is profiled even for a SINGLE bin (one bin +
+  free offset = zero shape information, score 0, never |s|/σ — recheck P2-D).
+- **The LSF operator never gates on data** (recheck P1-C): when `r_native`
+  exists, `smooth_to_native_r` is applied to the depth, the removed-molecule
+  depth, AND every Jacobian row unconditionally — `lsf_applied` is display
+  metadata only. A flat baseline is a fixed point of the blur while a narrow
+  Jacobian feature is not; gating on `lsf_applied` left Jacobians unsmoothed
+  by ~59 ppm on the reproducer (pinned in `test_detect.py`).
+- **Public noise APIs fail fast** (recheck P2-E): `noise_inflation` must be
+  finite >0 (it is squared, so −1 silently acted as +1), `build_cov`/
+  `pixel_depth_variance`/`make_bins` validate shapes/finiteness/signs and
+  raise. Never re-loosen these for convenience.
 - **Native-R LSF**: `binning.smooth_to_native_r` blurs the model to the
   worker's `r_native` before binning; it auto-no-ops when the kernel is
   unresolved by the model grid (high-R gratings), so it only bites on MIRI

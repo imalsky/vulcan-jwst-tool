@@ -76,3 +76,63 @@ def test_noise_inflation_scales_variance():
     b = noise_mod.depth_error_bins(mode_result, edges, 3600.0, 3600.0, 1, 0.0,
                                    noise_inflation=1.2)
     assert np.allclose(b["var_phot"], a["var_phot"] * 1.2 ** 2)
+
+
+def test_one_bin_offset_profiles_to_zero():
+    """2026-07-12 recheck P2-D: with a free constant offset, a single bin has
+    no shape information -- the score must be 0, not |s|/sigma (the old
+    size>1 guard returned a false 3-sigma 'detection')."""
+    s = detect.detection_significance(np.array([3e-4]), np.array([1e-4]),
+                                      marginalize_offset=True)
+    assert s == pytest.approx(0.0, abs=1e-9)
+    # consistency: two identical bins were already 0; one bin now matches
+    s2 = detect.detection_significance(np.array([3e-4, 3e-4]),
+                                       np.array([1e-4, 1e-4]),
+                                       marginalize_offset=True)
+    assert s2 == pytest.approx(0.0, abs=1e-9)
+    # with the offset explicitly disabled the one-bin score is |s|/sigma
+    s3 = detect.detection_significance(np.array([3e-4]), np.array([1e-4]),
+                                       marginalize_offset=False)
+    assert s3 == pytest.approx(3.0, rel=1e-12)
+
+
+def _lsf_mode_inputs(depth_baseline):
+    """Minimal evaluate_mode inputs for a low-R mode where the native-R blur
+    is active: PRISM-like R_native=100, narrow Jacobian feature."""
+    wl_pix = np.linspace(1.0, 2.0, 600)
+    flux = np.full(wl_pix.size, 1e6)
+    mode_result = dict(
+        wl=wl_pix.tolist(), flux=flux.tolist(),
+        noise_1int=np.full(wl_pix.size, 1e3).tolist(),
+        t_cycle_s=10.0, r_native=np.full(wl_pix.size, 100.0).tolist(),
+        n_full_sat=np.zeros(wl_pix.size).tolist(),
+        n_part_sat=np.zeros(wl_pix.size).tolist(),
+        ngroup=10, sat_frac=0.5, saturated=False)
+    wl_model = np.linspace(0.95, 2.05, 4000)
+    jac_row = 1e-3 * np.exp(-0.5 * ((wl_model - 1.5) / 0.002) ** 2)
+    model = dict(wl_um=wl_model, depth=depth_baseline(wl_model),
+                 mols=["H2O"], jac=[jac_row], jac_names=["p0"])
+    return mode_result, model
+
+
+def test_jacobian_lsf_does_not_depend_on_baseline_shape():
+    """2026-07-12 recheck P1-C: the LSF is a linear operator on every vector;
+    whether the BASELINE happens to be a fixed point of the blur (e.g. an
+    exactly flat depth) must not decide whether Jacobian rows are smoothed.
+    The binned Jacobian must be identical for a flat and a broad-bump
+    baseline, and must differ from the unsmoothed native-R=inf case."""
+    mr_flat, model_flat = _lsf_mode_inputs(lambda wl: np.zeros(wl.size))
+    mr_bump, model_bump = _lsf_mode_inputs(
+        lambda wl: 5e-3 * np.exp(-0.5 * ((wl - 1.5) / 0.2) ** 2))
+    kw = dict(target_mol=None, R_bin=200.0, t_in_s=3600.0, t_out_s=3600.0,
+              n_transits=1, floor_spec=None)
+    r_flat = detect.evaluate_mode("nirspec_prism", mr_flat, model_flat, **kw)
+    r_bump = detect.evaluate_mode("nirspec_prism", mr_bump, model_bump, **kw)
+    assert np.allclose(r_flat["jac_bins"][0], r_bump["jac_bins"][0],
+                       rtol=0, atol=1e-15)
+    # and the blur genuinely acts on the narrow feature: an identical setup
+    # with no r_native (no blur) must differ by many ppm at the feature
+    mr_none, model_none = _lsf_mode_inputs(lambda wl: np.zeros(wl.size))
+    mr_none["r_native"] = None
+    r_none = detect.evaluate_mode("nirspec_prism", mr_none, model_none, **kw)
+    assert np.max(np.abs(r_none["jac_bins"][0] - r_flat["jac_bins"][0])) > 5e-6

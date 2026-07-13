@@ -169,6 +169,12 @@ def run_pandeia(job: dict, progress=None, force: bool = False) -> dict:
 
 def make_bins(wl_lo: float, wl_hi: float, R: float) -> np.ndarray:
     """Log-spaced bin EDGES at resolving power R over [wl_lo, wl_hi]."""
+    if not (np.isfinite(wl_lo) and np.isfinite(wl_hi) and 0.0 < wl_lo < wl_hi):
+        raise ValueError(f"make_bins: need finite 0 < wl_lo < wl_hi, got "
+                         f"[{wl_lo!r}, {wl_hi!r}]")
+    if not (np.isfinite(R) and R > 0.0):
+        raise ValueError(f"make_bins: resolving power must be finite and > 0, "
+                         f"got {R!r}")
     n = max(2, int(np.ceil(np.log(wl_hi / wl_lo) * R)))
     return np.geomspace(wl_lo, wl_hi, n + 1)
 
@@ -273,11 +279,26 @@ def build_cov(wl_center: np.ndarray, var_phot: np.ndarray, floor: np.ndarray,
     diagonal path quotes. Returns None for a fully-white scenario OR when the
     floor binds nowhere (no excess to correlate), so callers keep the exact
     diagonal fast path; otherwise a positive-definite (n_bins, n_bins)
-    matrix. Unknown scenario names raise (KeyError) rather than defaulting.
+    matrix. Unknown scenario names raise (KeyError) rather than defaulting;
+    non-finite or negative variances/floors and non-positive wavelengths
+    raise (2026-07-12 recheck, P2-E: a negative variance used to come back
+    as a plausible positive diagonal, NaNs propagated silently).
     """
     sc = SCENARIOS[scenario]
+    wl = np.asarray(wl_center, float)
     var = np.asarray(var_phot, float)
-    a = np.sqrt(np.maximum(np.asarray(floor, float) ** 2 - var, 0.0))
+    fl = np.asarray(floor, float)
+    if wl.ndim != 1 or var.shape != wl.shape or fl.shape != wl.shape:
+        raise ValueError(
+            f"build_cov: wl_center/var_phot/floor must be matching 1-D "
+            f"arrays, got shapes {wl.shape}/{var.shape}/{fl.shape}")
+    if not np.all(np.isfinite(wl)) or np.any(wl <= 0.0):
+        raise ValueError("build_cov: wavelengths must be finite and > 0")
+    if not np.all(np.isfinite(var)) or np.any(var < 0.0):
+        raise ValueError("build_cov: var_phot must be finite and >= 0")
+    if not np.all(np.isfinite(fl)) or np.any(fl < 0.0):
+        raise ValueError("build_cov: floor must be finite and >= 0")
+    a = np.sqrt(np.maximum(fl ** 2 - var, 0.0))
     if sc["f_white"] >= 1.0 or not np.any(a > 0.0):
         return None
     lnl = np.log(np.asarray(wl_center, float))
@@ -310,9 +331,26 @@ def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
     in/out flux/variance propagation is a pending PandExo-parity release gate
     (see the module docstring and README), not a same-answer refactor.
     """
-    flux = np.asarray(mode_result["flux"])
-    noise = np.asarray(mode_result["noise_1int"])
+    flux = np.asarray(mode_result["flux"], float)
+    noise = np.asarray(mode_result["noise_1int"], float)
     t_cycle = float(mode_result["t_cycle_s"])
+    # fail-fast on inputs the worker normally guarantees but the public API
+    # does not (2026-07-12 recheck, P2-E): a NaN/zero flux or cycle time
+    # otherwise propagates NaN/inf variance silently.
+    if not (np.isfinite(t_cycle) and t_cycle > 0.0):
+        raise ValueError(f"t_cycle_s must be finite and > 0, got {t_cycle!r}")
+    if not (np.isfinite(t_in_s) and t_in_s > 0.0
+            and np.isfinite(t_out_s) and t_out_s > 0.0):
+        raise ValueError(f"observation windows must be finite and > 0, got "
+                         f"t_in_s={t_in_s!r}, t_out_s={t_out_s!r}")
+    if flux.size == 0 or not np.all(np.isfinite(flux)) or np.any(flux <= 0.0):
+        raise ValueError("extracted flux must be non-empty, finite and > 0 "
+                         "(the worker drops unusable pixels; do not pass raw "
+                         "grids with NaN/zero flux here)")
+    if noise.shape != flux.shape or not np.all(np.isfinite(noise)) \
+            or np.any(noise < 0.0):
+        raise ValueError("noise_1int must match flux's shape and be finite "
+                         "and >= 0")
     # int() floors to whole integrations (conservative); a window shorter than
     # one integration cycle yields NO usable integration -- say so, never
     # silently pretend one fits (the old max(1, ...) did exactly that).
@@ -361,11 +399,17 @@ def depth_error_bins(mode_result: dict, edges: np.ndarray,
     default. Proportional noise: it averages down with transits, unlike the
     floor.
     """
+    ninf = float(noise_inflation)
+    if not (np.isfinite(ninf) and ninf > 0.0):
+        # squared below, so a negative factor would silently act like its
+        # absolute value and 0/NaN would zero/poison the sigma (recheck P2-E)
+        raise ValueError(f"noise_inflation must be finite and > 0, got "
+                         f"{noise_inflation!r}")
     if op is None:
         op = binning.build_operator(np.asarray(mode_result["wl"]),
                                     np.asarray(mode_result["flux"]), edges)
     var_pix = pixel_depth_variance(mode_result, t_in_s, t_out_s, n_transits)
-    var_phot = binning.bin_variance(op, var_pix) * float(noise_inflation) ** 2
+    var_phot = binning.bin_variance(op, var_pix) * ninf ** 2
     floor = resolve_floor(op["wl_center"], floor_spec)
     sigma = np.maximum(np.sqrt(var_phot), floor)
     return dict(wl_center=op["wl_center"], sigma=sigma, n_pix=op["n_pix"],
