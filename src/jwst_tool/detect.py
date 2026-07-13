@@ -117,8 +117,44 @@ def detection_significance(signal: np.ndarray, sigma: np.ndarray,
     (chi2 = s^T C^-1 s, A = U C^-1 U^T). With ``cov=None`` the metric is the
     exact diagonal W = diag(1/sigma^2) fast path -- identical numbers to a
     diagonal C.
+
+    Inputs are validated (2026-07-13 recheck 5.2): a public scientific API
+    must reject bad inputs loudly, not return inf (zero sigma) / NaN (NaN
+    sigma) or silently broadcast a shape mismatch. ``signal`` must be 1-D and
+    finite; ``sigma`` must match it and be finite and > 0 (unused when ``cov``
+    is given); each nuisance row must match ``signal``'s length; ``cov`` must
+    be a matching square, finite, symmetric, positive-definite matrix (a
+    failed Cholesky raises).
     """
     signal = np.asarray(signal, float)
+    if signal.ndim != 1 or signal.size == 0 or not np.all(np.isfinite(signal)):
+        raise ValueError("detection_significance: signal must be a non-empty "
+                         "1-D finite array")
+    for i, r in enumerate(nuisance or []):
+        if np.asarray(r).shape != signal.shape:
+            raise ValueError(f"detection_significance: nuisance row {i} has "
+                             f"shape {np.asarray(r).shape}, expected "
+                             f"{signal.shape}")
+    if cov is not None:
+        C = np.asarray(cov, float)
+        if C.shape != (signal.size, signal.size):
+            raise ValueError(f"detection_significance: cov shape {C.shape} "
+                             f"must be ({signal.size}, {signal.size})")
+        if not np.all(np.isfinite(C)):
+            raise ValueError("detection_significance: cov has non-finite values")
+        if not np.allclose(C, C.T, rtol=1e-8, atol=1e-30):
+            raise ValueError("detection_significance: cov is not symmetric")
+        try:
+            np.linalg.cholesky(C)
+        except np.linalg.LinAlgError as e:
+            raise ValueError("detection_significance: cov is not "
+                             "positive-definite") from e
+    else:
+        sig = np.asarray(sigma, float)
+        if sig.shape != signal.shape or not np.all(np.isfinite(sig)) \
+                or np.any(sig <= 0.0):
+            raise ValueError("detection_significance: sigma must match signal's "
+                             "shape and be finite and > 0")
     # the constant row is included even for a single bin: with a free offset
     # one bin carries NO shape information, so the honest score is 0 -- the
     # old size>1 guard returned a false |s|/sigma "detection" there
@@ -155,6 +191,17 @@ def detection_significance(signal: np.ndarray, sigma: np.ndarray,
     return float(np.sqrt(max(chi2, 0.0)))
 
 
+def _n_transits(n_transits) -> int:
+    """A positive-integer transit count, or a loud error. Replaces the old
+    max(1, int(n_transits)) that silently turned 0 / negative / fractional
+    inputs into a 1-transit result (2026-07-13 recheck 5.1)."""
+    n = int(n_transits)
+    if n < 1 or n != n_transits:
+        raise ValueError(f"n_transits must be a positive integer, got "
+                         f"{n_transits!r}")
+    return n
+
+
 def sigma_at_transits(result: dict, n_transits: int) -> np.ndarray:
     """Per-bin depth sigma of an evaluated mode re-scaled to ``n_transits``.
 
@@ -163,7 +210,7 @@ def sigma_at_transits(result: dict, n_transits: int) -> np.ndarray:
     (PandExo semantics): sigma_N = max(sigma_random_N, floor).
     """
     n0 = int(result["n_transits_eval"])
-    scale = n0 / float(max(1, int(n_transits)))
+    scale = n0 / float(_n_transits(n_transits))
     return np.maximum(np.sqrt(np.asarray(result["var_phot"]) * scale),
                       np.asarray(result["floor"]))
 
@@ -182,7 +229,7 @@ def cov_at_transits(result: dict, n_transits: int,
         return noise_mod.build_cov(result["wl"], np.zeros_like(floor),
                                    np.maximum(floor, 1e-30), scen)
     n0 = int(result["n_transits_eval"])
-    var = np.asarray(result["var_phot"]) * (n0 / float(max(1, int(n_transits))))
+    var = np.asarray(result["var_phot"]) * (n0 / float(_n_transits(n_transits)))
     return noise_mod.build_cov(result["wl"], var, floor, scen)
 
 

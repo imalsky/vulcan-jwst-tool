@@ -157,8 +157,9 @@
   n_transits < 1 (retired the silent `max(1, ...)`). It uses the OUT-of-transit
   flux/σ for BOTH in/out terms (symmetric shallow-transit approximation) — kept
   model-INDEPENDENT so one operator bins noise and model; this is CONSERVATIVE
-  (excess ~d/2: +0.76% at d=1%, +8% at 10%). Exact separate in/out propagation
-  is a pending PandExo-parity gate, NOT a same-answer refactor (2026-07-12
+  (excess ~**3d/4** for equal in/out baselines — NOT d/2; +0.76% at d=1%, +8.2%
+  at 10%; d/2–d for unequal baselines). Exact separate in/out propagation
+  is a remaining refinement, NOT a same-answer refactor (2026-07-12
   maximal-audit item 3, docstring has the numbers).
 - Fisher inversion must stay rank-aware (`fisher._marg_sigmas`: unconditional
   eigh + relative threshold; degenerate directions read `inf`) — no

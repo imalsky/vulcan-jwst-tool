@@ -251,9 +251,12 @@ model itself and it is one-sided: this tool propagates pandeia's full
 extracted noise (correlated ramp noise, background, dark, IPC), while
 PandExo's default "fml" calculation is an analytic ramp formula close to
 pure photon noise. This tool's sigmas are therefore conservative relative
-to PandExo, by roughly 7 to 12 percent for NIRSpec, NIRISS, and NIRCam and
-by 35 to 48 percent for MIRI LRS, margins quantified per mode in the
-report. Published achieved-versus-PandExo ratios (COMPASS G395H 1.05 to
+to PandExo, by roughly 6 to 12 percent for G235H, G395H, NIRISS SOSS, and
+NIRCam; by roughly 34 to 50 percent for NIRSpec PRISM under the shipped
+two-group minimum (an intentional group-selection policy difference -- PRISM
+is not full group-selection parity, and it saturates on bright targets); and
+by roughly 33 to 49 percent for MIRI LRS. Margins are quantified per mode in
+the report. Published achieved-versus-PandExo ratios (COMPASS G395H 1.05 to
 1.12; MIRI LRS roughly 1.15 above random-noise simulations) fall on the
 same side. Uncertainties are labeled pandeia-extracted-noise forecasts,
 never PandExo-identical output.
@@ -262,9 +265,10 @@ Pending release gates, tracked explicitly rather than assumed:
 
 - **Exact in/out propagation.** The box-transit formula uses the
   out-of-transit flux and noise for both sides (documented symmetric
-  approximation, conservative by about depth/2); exact separate in-transit
-  propagation remains open, bounded at about +0.5 percent sigma at 1
-  percent depth.
+  approximation). It is conservative by 1 + 3d/4 to first order at equal
+  in/out baselines (about +0.76 percent sigma at 1 percent depth, +8.2
+  percent at 10 percent; the coefficient ranges d/2 to d for unequal
+  baselines); exact separate in-transit propagation remains open.
 - **Physics sensitivity ladders** (heavy, scheduled on HPC): spectral
   resolution convergence of binned depths and Jacobians, top-pressure and
   extended-chemistry ladder, air versus H2/He broadening A/B

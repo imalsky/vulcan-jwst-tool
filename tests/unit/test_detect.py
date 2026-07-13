@@ -136,3 +136,46 @@ def test_jacobian_lsf_does_not_depend_on_baseline_shape():
     mr_none["r_native"] = None
     r_none = detect.evaluate_mode("nirspec_prism", mr_none, model_none, **kw)
     assert np.max(np.abs(r_none["jac_bins"][0] - r_flat["jac_bins"][0])) > 5e-6
+
+
+# --- fail-fast input validation (2026-07-13 recheck 5.1, 5.2) ----------------
+
+def test_detection_significance_rejects_bad_inputs():
+    good_s = np.array([3e-4, 1e-4, 2e-4])
+    good_sig = np.full(3, 1e-4)
+    # baseline still works
+    assert np.isfinite(detect.detection_significance(good_s, good_sig))
+    with pytest.raises(ValueError, match="signal"):
+        detect.detection_significance(np.array([[1.0, 2.0]]), np.array([1.0, 1.0]))
+    with pytest.raises(ValueError, match="signal"):
+        detect.detection_significance(np.array([1e-4, np.nan]), np.full(2, 1e-4))
+    with pytest.raises(ValueError, match="sigma"):
+        detect.detection_significance(good_s, np.array([1e-4, 0.0, 1e-4]))
+    with pytest.raises(ValueError, match="sigma"):
+        detect.detection_significance(good_s, np.array([1e-4, np.nan, 1e-4]))
+    with pytest.raises(ValueError, match="sigma"):
+        detect.detection_significance(good_s, np.full(2, 1e-4))       # shape
+    with pytest.raises(ValueError, match="nuisance row"):
+        detect.detection_significance(good_s, good_sig,
+                                      nuisance=[np.ones(2)])
+    # covariance: non-square, non-finite, non-symmetric, non-PD all raise
+    with pytest.raises(ValueError, match="cov shape"):
+        detect.detection_significance(good_s, good_sig, cov=np.eye(2))
+    with pytest.raises(ValueError, match="symmetric"):
+        detect.detection_significance(good_s, good_sig,
+                                      cov=np.array([[1.0, 2.0, 0.0],
+                                                    [0.0, 1.0, 0.0],
+                                                    [0.0, 0.0, 1.0]]) * 1e-8)
+    with pytest.raises(ValueError, match="positive-definite"):
+        detect.detection_significance(good_s, good_sig, cov=-np.eye(3) * 1e-8)
+
+
+def test_sigma_and_cov_at_transits_reject_bad_n():
+    result = dict(n_transits_eval=1, var_phot=np.full(4, 1e-8),
+                  floor=np.zeros(4), wl=np.linspace(3, 4, 4), scenario="random")
+    assert detect.sigma_at_transits(result, 3).shape == (4,)   # valid
+    for bad in (0, -2, 2.5):
+        with pytest.raises(ValueError, match="positive integer"):
+            detect.sigma_at_transits(result, bad)
+        with pytest.raises(ValueError, match="positive integer"):
+            detect.cov_at_transits(result, bad)

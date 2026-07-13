@@ -24,8 +24,12 @@ added (the random term does; the floor caps it from below).
 
 What this is, and is not: a Pandeia-extracted-noise BOX-TRANSIT APPROXIMATION
 under the selected extraction/detector configuration -- an instrument-model
-planning forecast, not verified PandExo-equivalent output (a per-mode parity
-suite against current PandExo is a pending release gate; see README). Pandeia's
+planning forecast. A per-mode parity suite against current PandExo (engine
+2026.2, both sides) is COMPLETE (tests/parity/, REPORT.md): configuration,
+timing, wavelength grids, and extracted flux match, and the sigma difference
+is attributed to the noise model (Pandeia full extracted noise vs PandExo's
+analytic fml), with this tool conservative. Absolute sigmas are still
+pandeia-extracted-noise forecasts, NOT labeled PandExo-identical. Pandeia's
 extracted noise includes photon (with the HgCdTe quantum-yield/Fano excess
 variance below ~2 um), background, dark, and correlated read noise + IPC -- it
 is NOT a time-series systematics model (1/f residuals, visit-long trends,
@@ -319,16 +323,18 @@ def pixel_depth_variance(mode_result: dict, t_in_s: float, t_out_s: float,
 
     SYMMETRIC in/out approximation (2026-07-12 re-audit item 3): this uses the
     OUT-of-transit extracted flux and sigma for BOTH the in- and out-of-transit
-    terms -- i.e. F_in ~ F_out and sigma_in ~ sigma_out. Exact box-transit
-    propagation of depth = 1 - F_in/F_out carries an F_in/F_out^2 = (1-d)/F_out
-    factor on the in-transit term and a (1-d) source-photon variance, so the
-    exact sigma is smaller by ~d/2 to first order in the transit depth d. This
-    approximation is therefore CONSERVATIVE (it never under-predicts the random
-    sigma from this effect) and the excess grows with depth: about +0.08% at
-    d=0.1%, +0.76% at 1%, +1.5% at 2%, +8% at 10%. It is kept deliberately
-    model-INDEPENDENT (the noise never sees the depth spectrum, so one
-    measurement operator bins noise and model consistently); exact separate
-    in/out flux/variance propagation is a pending PandExo-parity release gate
+    terms -- i.e. F_in ~ F_out and sigma_in ~ sigma_out. For pure source
+    Poisson noise the exact box-transit propagation of depth = 1 - F_in/F_out
+    (with F_in = (1-d) F_out) gives sigma_sym/sigma_exact =
+    sqrt[(a+b) / ((1-d)a + (1-d)^2 b)] where a=1/n_in, b=1/n_out. For EQUAL
+    in/out baselines this is 1 + 3d/4 + O(d^2) (2026-07-13 recheck item 1: the
+    first-order coefficient is 3d/4, NOT d/2; for unequal baselines it ranges
+    d/2 to d). The approximation is therefore CONSERVATIVE (never
+    under-predicts the random sigma from this effect) and the excess grows with
+    depth: about +0.075% at d=0.1%, +0.76% at 1%, +1.5% at 2%, +8.2% at 10%.
+    It is kept deliberately model-INDEPENDENT (the noise never sees the depth
+    spectrum, so one measurement operator bins noise and model consistently);
+    exact separate in/out flux/variance propagation is a remaining refinement
     (see the module docstring and README), not a same-answer refactor.
     """
     flux = np.asarray(mode_result["flux"], float)
