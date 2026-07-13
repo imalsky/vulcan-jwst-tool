@@ -544,3 +544,43 @@ reparameterizations near REL_EIG_TOL — quote the whitened spectrum).
 
 The recheck's P0-B (retrieval logZ_box_physical) is fixed in the sibling
 vulcan-retrieval repo the same day; see its CLAUDE.md/notes.
+
+## v15: 2026-07-12 parameter-scope pass (T-P/Kzz restriction, condensation, GUI regroup)
+
+Four user-directed changes to the tool's forward-model parameters
+(`_VERSION` 5 -> 6, all pre-v6 model_cache spectra stale):
+
+1. **T-P restricted to isothermal / Guillot** (GUI). The WASP-39 b GCM
+   `baseline` T-P is removed from the selectbox. `canonical_params` still
+   accepts it (test_closure.py + scripted reproduction), so the backend
+   keeps the validated W39b GCM capability; it is just not user-selectable.
+2. **Kzz restricted to constant** (GUI). The GCM-profile `scale` Kzz radio is
+   gone; `kzz_mode` is always "const". Backend still accepts "scale".
+3. **Condensation (`use_condense`) added** as a VULCAN option, OFF by default.
+   Gated HARD to the only self-consistent regime: tp_mode=='isothermal' (so
+   the structural T the saturation tables are baked at equals the on-graph
+   chemistry T -- verified: the isothermal tp_eval returns T_iso everywhere)
+   AND no Fisher forecast (the forward-mode jvp through a condensing steady
+   state carries condensation-pin subtleties that are not validated; see the
+   adjoint dropped-terms audit). canonical_params raises for any other
+   combination; the GUI disables the checkbox off-isothermal and disables the
+   Fisher controls (with a clear note) while it is on. The sibling engine
+   wrapper `vulcan_chem.build_chem_model` relaxes its blanket
+   NotImplementedError ONLY when the forward runner sets the explicit
+   `profile['_condense_validated_isothermal']=True` flag -- the retrieval never
+   sets it, so its condensation refusal is unchanged (provably neutral). NOT
+   locally validated end-to-end: a real isothermal+condensation forward
+   spectrum needs one spot-check on the chemistry stack before production.
+4. **GUI regrouped into five labeled sections** (request: separate VULCAN /
+   ExoJax / noise / science): 🪐 Planet & star, 🧪 VULCAN chemistry, 🌈 ExoJAX
+   radiative transfer, 🎯 Science goal, 🔭 Instrument & noise. Instrument
+   config (modes, transits, baseline, saturation) moved OUT of the science
+   goal into Instrument & noise; the T-P profile is flagged as shared
+   (chemistry + RT). Verified end-to-end with Streamlit AppTest (headers in
+   order, T-P options {Isothermal, Guillot}, no Kzz radio, condensation
+   present + correctly disabled under Guillot, all state combinations
+   exception-free).
+
+Tests: fast suite 96 -> 103 (+7 `test_forward_params.py`, pure-Python gating).
+Retrieval suite re-run green (vulcan_chem guard change is neutral for
+use_condense=False).

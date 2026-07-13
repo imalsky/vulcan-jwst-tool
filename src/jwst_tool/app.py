@@ -139,16 +139,17 @@ def K(name: str) -> str:
 
 
 with st.sidebar:
-    st.header("Planet & star")
+    st.markdown("### 🪐 Planet & star")
+    st.caption("The target system (physical identity + host star). Defines the "
+               "object; the atmosphere model is set in the sections below.")
     planet_key = st.selectbox(
         "Planet", list(planets.PLANETS) + ["custom"], key=K("planet"),
         format_func=lambda k: planets.PLANETS[k]["label"] if k in planets.PLANETS
         else "Custom planet …",
         help="Every planet runs the same validated chemistry+RT machinery; the "
              "system identity (gravity, radii, star, orbit, UV spectrum) is "
-             "swapped in. Only WASP-39b carries a GCM T-P/Kzz baseline.")
+             "swapped in. The T-P profile is set below (isothermal or Guillot).")
     pdef = planets.PLANETS.get(planet_key, planets.CUSTOM_DEFAULTS)
-    has_gcm = planets.PLANETS.get(planet_key, {}).get("has_gcm_baseline", False)
     st.caption(pdef["note"] if planet_key in planets.PLANETS
                else "Starts from WASP-39 b values — edit everything below.")
 
@@ -192,22 +193,22 @@ with st.sidebar:
                                   "spectral type. Drives photolysis (SO2, CH4 …).")
 
     teq = float(pdef["teq_k"])
-    with st.expander("Atmosphere structure"):
-        tp_options = (["baseline", "isothermal", "guillot"] if has_gcm
-                      else ["isothermal", "guillot"])
+    st.markdown("### 🧪 VULCAN chemistry")
+    st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward model "
+               "(composition + transport + photochemistry → steady-state "
+               "abundances). The T-P profile is shared: it also sets the "
+               "ExoJAX radiative transfer below.")
+
+    with st.expander("Atmosphere structure — T-P profile (shared with RT)"):
         tp_mode = st.selectbox(
-            "T-P profile", tp_options, index=0, key=_k("tp"),
-            format_func={"baseline": "WASP-39b GCM profile + ΔT",
-                         "isothermal": "Isothermal",
+            "T-P profile", ["isothermal", "guillot"], index=0, key=_k("tp"),
+            format_func={"isothermal": "Isothermal",
                          "guillot": "Guillot (2010)"}.get,
-            help=None if has_gcm else
-            "No GCM profile is baked in for this planet — defaults are set from "
-            "its equilibrium temperature.")
+            help="Sets the temperature the chemistry AND the radiative transfer "
+                 "see. (The WASP-39b GCM profile is retired from the tool for "
+                 "now — isothermal / Guillot only.)")
         tp_kwargs = {}
-        if tp_mode == "baseline":
-            tp_kwargs["dT"] = st.slider("ΔT (K, uniform shift)", -200.0, 200.0,
-                                        0.0, 25.0, key=K("dT"))
-        elif tp_mode == "isothermal":
+        if tp_mode == "isothermal":
             tp_kwargs["T_iso"] = st.slider("T_iso (K)", 400.0, 2500.0,
                                            float(np.clip(teq, 400.0, 2500.0)),
                                            25.0, key=_k("tiso"))
@@ -224,26 +225,6 @@ with st.sidebar:
             tp_kwargs["log_gamma"] = st.slider("log₁₀ γ (κ_vis/κ_IR)", -2.0, 0.3,
                                                -1.0, 0.05, key=_k("lg"))
 
-        if has_gcm:
-            kzz_mode = st.radio("K_zz profile", ["scale", "const"],
-                                horizontal=True, key=_k("kzzmode"),
-                                format_func={"scale": "GCM profile × factor",
-                                             "const": "constant"}.get)
-        else:
-            kzz_mode = "const"
-            st.caption("K_zz: constant profile (no GCM K_zz for this planet).")
-        if kzz_mode == "scale":
-            kzz_x = st.select_slider("K_zz multiplier",
-                                     options=[0.01, 0.1, 0.3, 1.0, 3.0, 10.0, 100.0],
-                                     value=1.0, key=K("kzzx"))
-            kzz_const = 1.0e9
-        else:
-            log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
-                                key=_k("kzz"),
-                                help="Eddy diffusion: stronger mixing quenches "
-                                     "photochemical gradients.")
-            kzz_const, kzz_x = 10.0 ** log_kzz, 1.0
-
     with st.expander("Composition"):
         st.caption("Element totals re-anchored from the 10× solar FastChem baseline.")
         met = st.select_slider(
@@ -253,11 +234,16 @@ with st.sidebar:
         dco = st.slider("Δ ln(C/O) (carbon enrichment)", -0.5, 0.5, 0.0, 0.05,
                         key=K("dco"))
 
-    with st.expander("Chemistry (VULCAN-JAX)"):
-        st.caption("Photochemistry knobs, flowing through the validated "
-                   "cfg_overrides hook; defaults reproduce the Tsai et al. "
-                   "2023 W39b setup. Composition, T-P, and K_zz (also VULCAN "
-                   "inputs) live in the two sections above.")
+    with st.expander("Vertical mixing (K_zz)"):
+        # constant K_zz only (the WASP-39b GCM K_zz profile is retired for now)
+        kzz_mode = "const"
+        log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
+                            key=_k("kzz"),
+                            help="Constant eddy-diffusion coefficient: stronger "
+                                 "mixing quenches photochemical gradients.")
+        kzz_const, kzz_x = 10.0 ** log_kzz, 1.0
+
+    with st.expander("Photochemistry & transport"):
         use_photo = st.checkbox(
             "Photochemistry (UV photolysis)", value=True, key=K("photo"),
             help="Off = thermochemistry + transport only (no SO2 story, no "
@@ -278,7 +264,33 @@ with st.sidebar:
             help="Species-dependent molecular diffusion competing with Kzz "
                  "(sets the homopause; matters high up).")
 
-    with st.expander("Spectrum & clouds (ExoJAX RT)"):
+    with st.expander("Condensation (rainout / cold-trap)"):
+        _iso = tp_mode == "isothermal"
+        use_condense = st.checkbox(
+            "Enable condensation", value=False, key=_k("conden"),
+            disabled=not _iso,
+            help="VULCAN condensation of condensible species (H₂O and others "
+                 "on cool atmospheres). Its saturation tables are frozen at "
+                 "the structural temperature, so it is supported ONLY with the "
+                 "isothermal T-P (structural T == chemistry T) and NOT with a "
+                 "Fisher forecast (the jvp through a condensing state is "
+                 "unvalidated). OFF by default.")
+        if not _iso:
+            st.caption("Condensation needs the **isothermal** T-P profile "
+                       "(saturation tables are baked at a single temperature). "
+                       "Switch T-P to isothermal to enable it.")
+        elif use_condense:
+            st.caption("⚠️ Isothermal only, and the Fisher forecast is "
+                       "disabled while condensation is on. First production "
+                       "use should be spot-checked against a direct VULCAN run.")
+
+    st.divider()
+    st.markdown("### 🌈 ExoJAX radiative transfer")
+    st.caption("Turns the VULCAN abundances (at the same T-P) into the "
+               "transmission spectrum. Opacity set, scattering, clouds, and "
+               "line broadening.")
+
+    with st.expander("Opacity, scattering & clouds"):
         extra_mols = st.multiselect(
             "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
             key=K("xmols"),
@@ -320,7 +332,12 @@ with st.sidebar:
     mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
                                        if m in extra_mols]
 
-    with st.expander("Science goal", expanded=True):
+    st.divider()
+    st.markdown("### 🎯 Science goal")
+    st.caption("What this observation should achieve, and the forecast "
+               "settings. These do NOT change the underlying spectrum.")
+
+    with st.expander("Goal", expanded=True):
         goal = st.radio(
             "Goal", ["detect", "constrain"], horizontal=True, key=K("goal"),
             format_func={"detect": "Detect a molecule",
@@ -338,7 +355,12 @@ with st.sidebar:
             target_mol = None
             if not use_photo:
                 st.warning("Parameter constraints use the Fisher forecast, "
-                           "which needs photochemistry ON (Physics section).")
+                           "which needs photochemistry ON (VULCAN section).")
+            if use_condense:
+                st.warning("Parameter constraints use the Fisher forecast, "
+                           "which is disabled while condensation is on "
+                           "(VULCAN section). Use the 'detect' goal, or turn "
+                           "condensation off.")
             goal_param = st.selectbox(
                 "Constrain parameter", avail_free, key=K(f"gp_{tp_mode}"),
                 format_func=lambda n: f"{forward.PARAM_LABELS[n]} ({n})",
@@ -361,22 +383,6 @@ with st.sidebar:
                  "Detection verdicts require this significance; a precision "
                  "target must be met AT it (so the 1σ error must be "
                  "precision/level); Fisher intervals are quoted at it.")
-        n_transits = st.slider("Number of transits", 1, 10, 1, key=K("ntr"))
-        t_base = st.number_input("Out-of-transit baseline (hr)", 0.5, 10.0,
-                                 float(t14), 0.1, key=_k("tbase"),
-                                 help="Sets how well the stellar flux is "
-                                      "anchored; PandExo convention is ≈ T14.")
-        r_bin = st.select_slider("Binned resolving power R",
-                                 options=[50, 100, 200], value=100, key=K("rbin"))
-        mode_keys = st.multiselect(
-            "Instrument modes",
-            options=list(ins.MODES),
-            default=ins.DEFAULT_MODES, key=K("modes"),
-            help="The ETC computes every mode once per star, so adding modes "
-                 "later is instant.",
-            format_func=lambda k: (f"{ins.MODES[k]['label']}  "
-                                   f"({ins.MODES[k]['wl_min']:g}–"
-                                   f"{ins.MODES[k]['wl_max']:g} µm)"))
 
     with st.expander("Model fidelity"):
         quality = st.radio(
@@ -396,7 +402,15 @@ with st.sidebar:
             "observation — a linearized retrieval (Cramér–Rao bound) built "
             "from d(spectrum)/d(parameter), computed by autodiff through the "
             "full chemistry+RT chain. No MCMC, no priors.")
-        if goal == "constrain":
+        if use_condense:
+            # the jvp through a condensing steady state is unvalidated
+            # (canonical_params rejects use_condense + any Fisher param)
+            fisher_params = []
+            st.info("The Fisher forecast is unavailable while condensation is "
+                    "on: the derivative through a condensing steady state is "
+                    "not validated. Turn condensation off to forecast "
+                    "parameter constraints.")
+        elif goal == "constrain":
             fisher_extra = st.multiselect(
                 "Jointly free parameters", avail_free,
                 default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
@@ -414,6 +428,34 @@ with st.sidebar:
             fisher_params = st.multiselect(
                 "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
                 default=["lnZ", "dlnCO", "lnKzz"]) if (do_fisher and use_photo) else []
+
+    st.divider()
+    st.markdown("### 🔭 Instrument & noise")
+    st.caption("The JWST measurement itself: which modes, how many transits, "
+               "detector saturation, and the Pandeia/PandExo noise model. "
+               "Independent of the atmosphere physics above.")
+
+    with st.expander("Observation & instrument modes", expanded=True):
+        mode_keys = st.multiselect(
+            "Instrument modes",
+            options=list(ins.MODES),
+            default=ins.DEFAULT_MODES, key=K("modes"),
+            help="The ETC computes every mode once per star, so adding modes "
+                 "later is instant.",
+            format_func=lambda k: (f"{ins.MODES[k]['label']}  "
+                                   f"({ins.MODES[k]['wl_min']:g}–"
+                                   f"{ins.MODES[k]['wl_max']:g} µm)"))
+        r_bin = st.select_slider("Binned resolving power R",
+                                 options=[50, 100, 200], value=100, key=K("rbin"))
+        n_transits = st.slider("Number of transits", 1, 10, 1, key=K("ntr"))
+        t_base = st.number_input("Out-of-transit baseline (hr)", 0.5, 10.0,
+                                 float(t14), 0.1, key=_k("tbase"),
+                                 help="Sets how well the stellar flux is "
+                                      "anchored; PandExo convention is ≈ T14.")
+        sat_limit = st.slider("Saturation limit (full-well fraction)",
+                              0.5, 0.95, 0.80, 0.05, key=K("sat"),
+                              help="Group selection keeps the brightest pixel "
+                                   "below this full-well fraction.")
 
     with st.expander("Noise model"):
         st.markdown("**Minimum noise floor** (PandExo convention)")
@@ -493,9 +535,7 @@ with st.sidebar:
                    "move with correlation structure; conservative also "
                    "profiles per-segment slopes.")
 
-    with st.expander("Advanced"):
-        sat_limit = st.slider("Saturation limit (full-well fraction)",
-                              0.5, 0.95, 0.80, 0.05, key=K("sat"))
+    with st.expander("Display"):
         show_noise = st.checkbox("Show simulated noise realization", value=False,
                                  key=K("shownoise"))
         seed = st.number_input("Realization seed", 0, 9999, 0, key=K("seed"))
@@ -511,6 +551,7 @@ params = dict(planet=planet_key, quality=quality,
               tp_mode=tp_mode, fisher_params=fisher_params,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
+              use_condense=use_condense,
               use_rayleigh=use_rayleigh, broadening=broadening,
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,

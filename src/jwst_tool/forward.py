@@ -25,15 +25,19 @@ Quality tiers (the GUI's fidelity switch; "fast" is the default):
 Atmosphere-structure knobs (all consumed by the same validated pipeline hooks the
 retrieval framework uses):
 
-    T-P profile (tp_mode):
-      "baseline"    WASP-39b GCM T(P) + uniform shift dT          (tp_eval=None)
+    T-P profile (tp_mode). The GUI offers only "isothermal" and "guillot";
+    "baseline" stays accepted by canonical_params for the validated W39b
+    closure test and scripted reproducibility, but is not exposed in the tool:
       "isothermal"  T(P) = T_iso                                  (tp_eval hook)
       "guillot"     ExoJax atmprof_Guillot(Tirr, Tint, log10 kappa, log10 gamma)
                     with f=0.25 and the planet's surface gravity  (tp_eval hook)
-    Kzz:
-      kzz_mode "scale"  baseline GCM Kzz profile x kzz_x
+      "baseline"    WASP-39b GCM T(P) + uniform shift dT (backend only, not in
+                    the GUI)                                       (tp_eval=None)
+    Kzz. The GUI offers only "const"; "scale" stays backend-accepted (W39b GCM
+    reproducibility) but is not exposed:
       kzz_mode "const"  constant Kzz = kzz_const cm^2/s (cfg_overrides
                         Kzz_prof="const"), further x kzz_x if given
+      kzz_mode "scale"  baseline GCM Kzz profile x kzz_x (backend only)
     Composition:
       met_x_solar  metallicity in x solar -> lnZ = ln(met/10) about the 10x baseline
       dco          Delta ln(C/O) carbon-enrichment proxy
@@ -43,6 +47,12 @@ retrieval framework uses):
       sl_angle_deg  photolysis zenith angle (deg; 83 = Tsai 2023 terminator slant)
       f_diurnal     diurnal photolysis factor (1.0 = permanent dayside)
       use_moldiff   molecular diffusion on/off (homopause)
+      use_condense  condensation (rainout / cold-trap) on/off. OFF by default
+                    and gated to isothermal T-P with NO Fisher forecast: the
+                    saturation tables are frozen at the structural T (== the
+                    chemistry T only when isothermal), and the jvp through a
+                    condensing steady state is unvalidated. canonical_params
+                    raises for any other combination.
       use_rayleigh  H2/He Rayleigh scattering (ON by default from v4; v3 lacked it)
       cloud_on + log_kappa_cloud + alpha_cloud
                     ExoJax power-law cloud deck (fixed in the Fisher forecast)
@@ -85,9 +95,10 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 5   # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 6   # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
-               # broadening knob in the RT -- all pre-v5 spectra are stale)
+               # broadening knob in the RT; v6: use_condense knob in the cache
+               # key -- all pre-v6 spectra are stale)
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -166,6 +177,13 @@ def canonical_params(params: dict) -> dict:
         "sl_angle_deg": round(float(params.get("sl_angle_deg", 83.0)), 1),
         "f_diurnal": round(float(params.get("f_diurnal", 1.0)), 3),
         "use_moldiff": bool(params.get("use_moldiff", True)),
+        # VULCAN condensation (rainout / cold-trap of condensible species).
+        # OFF by default. Gated hard below to the ONLY self-consistent regime:
+        # isothermal T-P (so the structural T the saturation tables are baked
+        # at equals the on-graph chemistry T) and NO Fisher forecast (the
+        # forward-mode jvp through a condensing steady state carries
+        # condensation-pin subtleties that are not validated here).
+        "use_condense": bool(params.get("use_condense", False)),
         # RT physics: Rayleigh is known zero-parameter physics, ON by default
         # (v3 and earlier ran without it -- that biased the <1.5 um slope);
         # the cloud deck is the ExoJax power-law retrieval cloud, OFF by default.
@@ -199,6 +217,24 @@ def canonical_params(params: dict) -> dict:
             "steady-state jvp is validated only in the photo-on regime "
             "(config.py run-profile notes). Enable photochemistry or clear "
             "the Fisher parameter list.")
+    if cp["use_condense"]:
+        # condensation saturation/growth tables are frozen at the structural
+        # T-P. Only isothermal keeps structural T == on-graph chemistry T, so
+        # the tables are evaluated at the conditions they were built for.
+        if cp["tp_mode"] != "isothermal":
+            raise ValueError(
+                "condensation (use_condense) is supported only with the "
+                "isothermal T-P profile: its saturation tables are baked at "
+                "the structural temperature, which equals the chemistry "
+                f"temperature only when isothermal (got tp_mode={cp['tp_mode']!r}). "
+                "Use isothermal, or turn condensation off.")
+        if cp["fisher_params"]:
+            raise ValueError(
+                "condensation (use_condense) cannot be combined with a Fisher "
+                "forecast: the forward-mode jvp through a condensing steady "
+                "state carries condensation-pin terms that are not validated "
+                "here. Clear the Fisher parameter list, or turn condensation "
+                "off.")
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
@@ -362,6 +398,14 @@ def run_model(params: dict, log=print) -> Path:
         "sflux_file": f"atm/stellar_flux/{cp['sflux']}",
         "use_moldiff": cp["use_moldiff"],
     }
+    if cp["use_condense"]:
+        # canonical_params has already confirmed the self-consistent regime
+        # (isothermal, no Fisher). Turn condensation on in the chemistry and
+        # authorize the engine's condensation path for this run via an
+        # explicit profile flag (vulcan_chem otherwise refuses use_condense to
+        # protect the T-varying retrieval).
+        ovr["use_condense"] = True
+        profile["_condense_validated_isothermal"] = True
     if cp["use_photo"]:                  # photolysis geometry/averaging knobs
         ovr["sl_angle"] = float(np.deg2rad(cp["sl_angle_deg"]))
         ovr["f_diurnal"] = cp["f_diurnal"]

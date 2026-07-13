@@ -180,31 +180,38 @@ future goal, not a current feature.
 Wide-band (1 to 15 micron) transmission spectra from steady-state VULCAN-JAX
 photochemistry (SNCHO network, photochemistry on by default) and ExoJAX
 radiative transfer. Molecules H2O, CO2, CO, CH4, SO2 always; C2H2, H2S, HCN,
-NH3 opt-in. Exposed physical parameters, all validated and cache-keyed:
+NH3 opt-in. The GUI groups the parameters by the engine they drive, all
+validated and cache-keyed:
 
-- composition: metallicity (exact elemental scaling about the 10x solar
-  baseline), delta ln(C/O);
-- mixing: Kzz (GCM profile times a factor on WASP-39 b, or constant);
-- temperature structure: GCM baseline plus delta-T (WASP-39 b), isothermal,
-  or Guillot;
-- chemistry: photochemistry on/off, photolysis zenith angle, diurnal
-  averaging factor, molecular diffusion on/off, stellar UV spectrum;
-- radiative transfer: H2/He Rayleigh scattering, optional power-law cloud
-  deck, line-broadening perturber (terrestrial air or H2/He, cache-keyed;
-  molecules without H2/He coverage raise rather than fall back);
-- system: radii, gravity, orbital distance, transit duration, host star.
+- **VULCAN chemistry inputs.** Temperature structure: isothermal (T_iso) or
+  Guillot (2010) T-P — this profile is shared with the radiative transfer.
+  Composition: metallicity (exact elemental scaling about the 10x solar
+  baseline), delta ln(C/O). Vertical mixing: a constant Kzz. Photochemistry
+  on/off, photolysis zenith angle, diurnal averaging factor, molecular
+  diffusion on/off, stellar UV spectrum. Condensation (rainout / cold-trap)
+  is available for the isothermal profile only and without a Fisher forecast
+  (see Known limitations), off by default.
+- **ExoJAX radiative-transfer inputs.** The opacity molecule set, H2/He
+  Rayleigh scattering, an optional power-law cloud deck, and the
+  line-broadening perturber (terrestrial air or H2/He, cache-keyed; molecules
+  without H2/He coverage raise rather than fall back).
+- **System / target.** Radii, gravity, orbital distance, transit duration,
+  host star.
 
-Two fidelity tiers ("fast" and "high") trade grid resolution for runtime at
-identical physics. Out-of-window temperature profiles and non-converged
-chemistry solves raise errors; nothing is clipped or silently carried.
+The WASP-39 b GCM T-P and GCM-scaled Kzz baselines are retired from the tool
+(isothermal / Guillot and constant Kzz only); they remain in the backend for
+the validated closure test and scripted reproduction. Two fidelity tiers
+("fast" and "high") trade grid resolution for runtime at identical physics.
+Out-of-window temperature profiles and non-converged chemistry solves raise
+errors; nothing is clipped or silently carried.
 
 ## Planets
 
 `planets.py` registry: WASP-39 b (validated against the Tsai et al. 2023
-setup, GCM temperature and Kzz baselines), HD 189733 b, HD 209458 b,
-WASP-107 b, or a fully custom system. Every planet runs the same validated
-chemistry and radiative-transfer machinery with the system identity swapped
-in; GCM-tied options are enforced as WASP-39 b only.
+setup), HD 189733 b, HD 209458 b, WASP-107 b, or a fully custom system. Every
+planet runs the same validated chemistry and radiative-transfer machinery with
+the system identity swapped in, and the same isothermal / Guillot T-P and
+constant Kzz choices.
 
 ## Instrument modes
 
@@ -273,8 +280,13 @@ Pending release gates, tracked explicitly rather than assumed:
   (not marginalized) in Fisher forecasts.
 - The box-transit depth-error formula neglects ingress/egress and
   limb-darkening covariance; there is no time-domain light-curve tier.
-- Non-WASP-39 b planets use an isothermal structural baseline with the
-  nearest shipped stellar UV spectrum.
+- All planets use an isothermal or Guillot T-P and a constant Kzz; the
+  WASP-39 b GCM baselines are retired from the tool for now.
+- Condensation is gated to the isothermal profile with no Fisher forecast: its
+  saturation tables are frozen at the structural temperature (which equals the
+  chemistry temperature only when isothermal), and the derivative through a
+  condensing steady state is not validated. It is off by default; a first
+  production use should be spot-checked against a direct VULCAN run.
 - Registry values are literature planning defaults; edit them for proposals.
 
 ## Repository layout
