@@ -61,14 +61,17 @@ def main():
     w("")
     w("- **Bit-identical (max difference exactly 0):** the instrument "
       "configuration (subarray, readout, disperser, filter, aperture, "
-      "background) and the extracted WAVELENGTH GRID -- every pixel, every "
-      "mode (verified: max |Δλ| = 0 over all 12,748 extracted pixels).")
+      "background) and the extracted WAVELENGTH GRID -- every extracted "
+      "pixel, every mode and star (verified: max |Δλ| = 0).")
     w("- **Groups agree to ≤1:** each tool independently optimizes the ramp to "
       "the same 80% saturation target; the only freedom left is rounding to an "
       "integer group count (e.g. G395H 124 vs 125). Integration time and "
       "integration count then follow deterministically from that one-group "
-      "choice. PRISM is the one real policy difference (this tool's "
-      "ngroup_min=2 vs PandExo selecting ngroup=1 on a bright star).")
+      "choice. The one off-diagonal case is PRISM on the two BRIGHT stars, "
+      "where it is SATURATED (unusable) -- both tools flag it, this tool "
+      "floors at ngroup=2 while PandExo drops to ngroup=1; on the faint star "
+      "PRISM is unsaturated and lands on the diagonal. Saturated points are "
+      "drawn hollow in the figure.")
     w("- **Extracted flux agrees to a systematic ~0.3%** (binned median 0.997 "
       "for G395H), with per-pixel scatter from the two tools' independent "
       "extraction of the same 2D calculation -- photon-level for the smooth "

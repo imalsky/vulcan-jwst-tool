@@ -55,8 +55,10 @@ LABEL = {"nirspec_prism": "PRISM", "nirspec_g395h": "G395H",
          "nircam_f322w2": "F322W2", "nircam_f444w": "F444W",
          "miri_lrs": "MIRI LRS"}
 MCOL = dict(zip(MODES, MODE_HUES))
-STAR_MARK = {"w39_like": "o", "bright_hot": "s"}
-STAR_LABEL = {"w39_like": "W39-like (Ks 10.7)", "bright_hot": "bright (Ks 8.5)"}
+STAR_MARK = {"w39_like": "o", "bright_hot": "s", "faint_k": "^"}
+STAR_LABEL = {"w39_like": "W39-like (Ks 10.7)", "bright_hot": "bright (Ks 8.5)",
+              "faint_k": "faint (Ks 13)"}
+SAT_LIMIT = 0.80   # a mode with sat_frac_ours above this is saturated (unusable)
 
 plt.rcParams.update({
     "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
@@ -93,7 +95,7 @@ def fig_config_parity(summary):
         ("n_int_pandexo_in", "n_int_ours", "integrations in transit"),
     ]
     unit = {"integration time": " (s)"}
-    fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(11.5, 5.7))
     for ax, (kx, ky, title) in zip(axes, quantities):
         xs, ys = [], []
         for star in summary["stars"]:
@@ -104,9 +106,14 @@ def fig_config_parity(summary):
                 x, y = rows[key][kx], rows[key][ky]
                 xs.append(x)
                 ys.append(y)
+                # a saturated mode (sat_frac_ours > limit) is not a valid
+                # config -- draw it HOLLOW so its off-diagonal ramp reads as
+                # "unusable here", not a parity miss (PRISM on the bright stars)
+                sat = rows[key].get("sat_frac_ours", 0.0) > SAT_LIMIT
                 ax.scatter(x, y, s=46, marker=STAR_MARK[star],
-                           color=MCOL[key], edgecolor="white", linewidth=0.7,
-                           zorder=3)
+                           facecolor="none" if sat else MCOL[key],
+                           edgecolor=MCOL[key] if sat else "white",
+                           linewidth=1.3 if sat else 0.7, zorder=3)
         lo = min(xs + ys) * 0.7
         hi = max(xs + ys) * 1.4
         ax.plot([lo, hi], [lo, hi], color=INK2, lw=1.0, ls="--", zorder=1)
@@ -126,20 +133,23 @@ def fig_config_parity(summary):
     star_handles = [Line2D([], [], marker=STAR_MARK[s], ls="", color=INK2,
                            markeredgecolor="white", label=STAR_LABEL[s])
                     for s in STAR_MARK]
-    line_handle = [Line2D([], [], color=INK2, ls="--", label="1:1 parity")]
+    line_handle = [
+        Line2D([], [], color=INK2, ls="--", label="1:1 parity"),
+        Line2D([], [], marker="o", ls="", markerfacecolor="none",
+               markeredgecolor=INK2, label="hollow = saturated (unusable)"),
+    ]
     fig.legend(handles=mode_handles + star_handles + line_handle,
-               loc="lower center", ncol=5, frameon=False, fontsize=8.5,
-               bbox_to_anchor=(0.5, 0.0))
+               loc="lower center", ncol=6, frameon=False, fontsize=8.5,
+               bbox_to_anchor=(0.5, 0.005))
     fig.suptitle("Configuration & timing parity: this tool vs current PandExo "
-                 "on the same Pandeia 2026.2 engine", fontsize=11.5, y=1.0)
-    fig.text(0.5, 0.905, "Configuration and wavelength grid are bit-identical "
-             "(max |Δλ| = 0 across all 12,748 pixels). Groups are independently "
-             "optimized and agree to ≤1 (integer rounding of the same 80% "
-             "saturation target); integration time and count follow. The one "
-             "visible outlier is PRISM: this tool's ngroup_min=2 vs PandExo's "
-             "ngroup=1 on a bright star.", ha="center", fontsize=8.0,
+                 "on the same Pandeia 2026.2 engine", fontsize=11.5, y=0.99)
+    fig.text(0.5, 0.90, "Config + wavelength grid bit-identical (max |Δλ| = 0); "
+             "groups agree to ≤1 (integer rounding of the same 80% saturation "
+             "target), timing follows. HOLLOW = saturated/unusable (PRISM on "
+             "the bright stars, ngroup floor 2 vs 1); PRISM is on-diagonal on "
+             "the faint star where it is usable.", ha="center", fontsize=8.2,
              color=INK2, wrap=True)
-    fig.tight_layout(rect=[0, 0.16, 1, 0.885])
+    fig.tight_layout(rect=[0, 0.17, 1, 0.86])
     out = FIGS / "parity_config_timing.png"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)

@@ -15,15 +15,15 @@ These show the quantities that match 1:1 -- the parity result. The depth-uncerta
 
 The two are INDEPENDENT tools calling the same Pandeia engine, so only what is read straight from the shared engine is bit-for-bit identical; anything each computes on its own agrees closely but not exactly. This is a property of a cross-tool test, not a defect -- forcing bit-equality would mean one tool copying the other's numbers, which is not a validation.
 
-- **Bit-identical (max difference exactly 0):** the instrument configuration (subarray, readout, disperser, filter, aperture, background) and the extracted WAVELENGTH GRID -- every pixel, every mode (verified: max |Δλ| = 0 over all 12,748 extracted pixels).
-- **Groups agree to ≤1:** each tool independently optimizes the ramp to the same 80% saturation target; the only freedom left is rounding to an integer group count (e.g. G395H 124 vs 125). Integration time and integration count then follow deterministically from that one-group choice. PRISM is the one real policy difference (this tool's ngroup_min=2 vs PandExo selecting ngroup=1 on a bright star).
+- **Bit-identical (max difference exactly 0):** the instrument configuration (subarray, readout, disperser, filter, aperture, background) and the extracted WAVELENGTH GRID -- every extracted pixel, every mode and star (verified: max |Δλ| = 0).
+- **Groups agree to ≤1:** each tool independently optimizes the ramp to the same 80% saturation target; the only freedom left is rounding to an integer group count (e.g. G395H 124 vs 125). Integration time and integration count then follow deterministically from that one-group choice. The one off-diagonal case is PRISM on the two BRIGHT stars, where it is SATURATED (unusable) -- both tools flag it, this tool floors at ngroup=2 while PandExo drops to ngroup=1; on the faint star PRISM is unsaturated and lands on the diagonal. Saturated points are drawn hollow in the figure.
 - **Extracted flux agrees to a systematic ~0.3%** (binned median 0.997 for G395H), with per-pixel scatter from the two tools' independent extraction of the same 2D calculation -- photon-level for the smooth NIRSpec/MIRI traces (MIRI LRS matches to ~0.15%), larger for the curved NIRISS SOSS order-1 trace and the saturating low-R PRISM. The tool integrates over bins, so the per-pixel jitter averages out; the systematic is what enters the noise.
 
 Columns: sigma ratio = (this tool's per-pixel transit-depth sigma) / (PandExo's), median [5th, 95th percentile] over matched pixels. 'matched' uses PandExo's integration counts in the tool formula (isolates the noise model); 'policy' uses the tool's own floor(T/t_int) counts (adds the integration-counting policy). flux ratio compares extracted stellar count rates (engine parity; expect 1.0000).
 
 ## Star `w39_like` (Teff 5400 K, logg 4.45, [Fe/H] 0.0, Ks 10.663)
 
-Backend: engine 2026.2 + pandeia_data-2026.2-jwst (worker v5); PandExo 2026.2 (git master 1af4c79791, 2026-07-10) on engine 2026.2.
+Backend: engine 2026.2 + pandeia_data-2026.2-jwst (worker v5); PandExo unknown on engine 2026.2.
 
 | mode | status | ngroup ours/PX | t_int s ours/PX | n_int ours/PX(in) | flux ratio | sigma ratio (matched) | sigma ratio (policy) |
 |---|---|---|---|---|---|---|---|
@@ -55,7 +55,7 @@ PandExo warnings for nircam_f444w: {'Group Number Too High?': 'Optimized NGROUPS
 
 ## Star `bright_hot` (Teff 6250 K, logg 4.3, [Fe/H] 0.0, Ks 8.5)
 
-Backend: engine 2026.2 + pandeia_data-2026.2-jwst (worker v5); PandExo 2026.2 (git master 1af4c79791, 2026-07-10) on engine 2026.2.
+Backend: engine 2026.2 + pandeia_data-2026.2-jwst (worker v5); PandExo unknown on engine 2026.2.
 
 | mode | status | ngroup ours/PX | t_int s ours/PX | n_int ours/PX(in) | flux ratio | sigma ratio (matched) | sigma ratio (policy) |
 |---|---|---|---|---|---|---|---|
@@ -80,6 +80,36 @@ Noise-model attribution (median per-integration variance over pure photon counts
 | miri_lrs | 5.923 | 3.293 |
 
 PandExo warnings for nirspec_prism: {'Group Number Too Low?': 'All good. Ngroups=1 is a new mode since Cycle 4 and has not been rigorously tested. Proceed with caution.', 'Saturated?': 'Full saturation:\n There are 98 pixels saturated at the end of the first group. These pixels cannot be recovered.', 'Num Groups Reset?': 'Optimized NGROUPS below minimum (1). SET TO NGROUPS=1'}
+
+PandExo warnings for nircam_f444w: {'Group Number Too High?': 'Optimized NGROUPS above maximum (100). SET TO NGROUPS=100'}
+
+## Star `faint_k` (Teff 4500 K, logg 4.6, [Fe/H] 0.0, Ks 13.0)
+
+Backend: engine 2026.2 + pandeia_data-2026.2-jwst (worker v5); PandExo 2026.2 on engine 2026.2.
+
+| mode | status | ngroup ours/PX | t_int s ours/PX | n_int ours/PX(in) | flux ratio | sigma ratio (matched) | sigma ratio (policy) |
+|---|---|---|---|---|---|---|---|
+| nirspec_prism | OK | 20/20 | 4.770/4.749 | 2115/2126 | 0.9946 [0.9453, 1.5037] (n=403) | 1.0874 [1.0233, 1.1524] (n=403) | 1.0902 [1.0259, 1.1554] (n=403) |
+| nirspec_g395h | OK | 1063/1059 | 959.748/956.120 | 10/11 | 0.9925 [0.9130, 1.1100] (n=3330) | 1.1696 [1.1022, 1.2183] (n=3330) | 1.2267 [1.1560, 1.2777] (n=3330) |
+| nirspec_g235h | OK | 497/492 | 449.216/444.686 | 22/23 | 1.0014 [0.9485, 1.0897] (n=3424) | 1.1239 [1.0834, 1.1668] (n=3424) | 1.1491 [1.1078, 1.1930] (n=3424) |
+| niriss_soss | OK | 195/193 | 1076.844/1065.836 | 9/10 | 1.0296 [0.9640, 1.2897] (n=2040) | 1.2412 [1.1497, 1.3197] (n=2040) | 1.3083 [1.2119, 1.3911] (n=2040) |
+| nircam_f322w2 | OK | 100/100 | 34.407/34.402 | 293/294 | 0.9913 [0.9520, 1.0520] (n=1812) | 1.0437 [0.8911, 1.0589] (n=1812) | 1.0454 [0.8926, 1.0607] (n=1812) |
+| nircam_f444w | OK | 100/100 | 34.407/34.402 | 293/294 | 0.9867 [0.9229, 1.1058] (n=1267) | 1.0177 [0.8967, 1.0543] (n=1267) | 1.0195 [0.8983, 1.0561] (n=1267) |
+| miri_lrs | OK | 1021/1017 | 162.380/161.903 | 62/63 | 0.9923 [0.9864, 0.9946] (n=372) | 1.5430 [1.5398, 1.5612] (n=372) | 1.5554 [1.5522, 1.5737] (n=372) |
+
+Noise-model attribution (median per-integration variance over pure photon counts; photon-limited = 1.0):
+
+| mode | this tool (pandeia extracted noise) | PandExo (fml) |
+|---|---|---|
+| nirspec_prism | 1.396 | 1.113 |
+| nirspec_g395h | 1.356 | 1.015 |
+| nirspec_g235h | 1.261 | 1.014 |
+| niriss_soss | 3.083 | 1.937 |
+| nircam_f322w2 | 1.434 | 1.344 |
+| nircam_f444w | 1.947 | 1.963 |
+| miri_lrs | 249.215 | 106.315 |
+
+PandExo warnings for nircam_f322w2: {'Group Number Too High?': 'Optimized NGROUPS above maximum (100). SET TO NGROUPS=100'}
 
 PandExo warnings for nircam_f444w: {'Group Number Too High?': 'Optimized NGROUPS above maximum (100). SET TO NGROUPS=100'}
 

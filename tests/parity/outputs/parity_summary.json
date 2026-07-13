@@ -13,7 +13,7 @@
    },
    "provenance_pandexo": {
     "pandeia_engine_version": "2026.2",
-    "pandexo_version": "2026.2 (git master 1af4c79791, 2026-07-10)",
+    "pandexo_version": "unknown",
     "pandexo_path": "/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/lib/python3.12/site-packages/pandexo",
     "refdata": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
     "psf_dir": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_psfs-2026.2-jwst",
@@ -463,7 +463,7 @@
    },
    "provenance_pandexo": {
     "pandeia_engine_version": "2026.2",
-    "pandexo_version": "2026.2 (git master 1af4c79791, 2026-07-10)",
+    "pandexo_version": "unknown",
     "pandexo_path": "/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/lib/python3.12/site-packages/pandexo",
     "refdata": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
     "psf_dir": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_psfs-2026.2-jwst",
@@ -899,6 +899,456 @@
      }
     }
    ]
+  },
+  "faint_k": {
+   "provenance_ours": {
+    "engine_version": "2026.2",
+    "refdata_path": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
+    "refdata_name": "pandeia_data-2026.2-jwst",
+    "refdata_version": "2026.2",
+    "refdata_version_source": "VERSION_DATA",
+    "python": "3.12.13",
+    "numpy": "2.5.1",
+    "worker_version": 5
+   },
+   "provenance_pandexo": {
+    "pandeia_engine_version": "2026.2",
+    "pandexo_version": "2026.2",
+    "pandexo_path": "/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/lib/python3.12/site-packages/pandexo",
+    "refdata": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
+    "psf_dir": "/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_psfs-2026.2-jwst",
+    "python": "3.12.13",
+    "numpy": "2.5.1"
+   },
+   "modes": [
+    {
+     "key": "nirspec_prism",
+     "status": "OK",
+     "npix_ours": 403,
+     "npix_pandexo": 403,
+     "npix_matched": 403,
+     "ngroup_ours": 20,
+     "ngroup_pandexo": 20,
+     "sat_frac_ours": 0.7975070294230769,
+     "t_int_ours_s": 4.76984,
+     "t_int_pandexo_s": 4.74936,
+     "t_frame_pandexo_s": 0.22616,
+     "n_int_ours": 2115,
+     "n_int_pandexo_in": 2126.0,
+     "n_int_pandexo_out": 2126.0,
+     "config_ours": {
+      "subarray": "sub512",
+      "readout": "nrsrapid",
+      "filter": "clear",
+      "disperser": "prism"
+     },
+     "config_pandexo": {
+      "subarray": "sub512",
+      "readout": "nrsrapid",
+      "mode": "bots",
+      "filter": "clear",
+      "disperser": "prism"
+     },
+     "flux_ratio": {
+      "n": 403,
+      "median": 0.9945976688558318,
+      "p05": 0.9453075527396911,
+      "p95": 1.5037159258355273,
+      "max_abs_dev": 0.955962249864597
+     },
+     "sigma_ratio_matched": {
+      "n": 403,
+      "median": 1.0874053192168376,
+      "p05": 1.023282819642286,
+      "p95": 1.1523761286328154,
+      "max_abs_dev": 0.17060627928906813
+     },
+     "sigma_ratio_policy": {
+      "n": 403,
+      "median": 1.0902294199499336,
+      "p05": 1.0259403878094142,
+      "p95": 1.1553689650776637,
+      "max_abs_dev": 0.17364646126453254
+     },
+     "var_excess_ours": 1.3962283284186914,
+     "var_excess_pandexo": 1.1130894237315792,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "All good",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "nirspec_g395h",
+     "status": "OK",
+     "npix_ours": 3330,
+     "npix_pandexo": 3330,
+     "npix_matched": 3330,
+     "ngroup_ours": 1063,
+     "ngroup_pandexo": 1059,
+     "sat_frac_ours": 0.7993568932297926,
+     "t_int_ours_s": 959.7484800000001,
+     "t_int_pandexo_s": 956.12,
+     "t_frame_pandexo_s": 0.902,
+     "n_int_ours": 10,
+     "n_int_pandexo_in": 11.0,
+     "n_int_pandexo_out": 11.0,
+     "config_ours": {
+      "subarray": "sub2048",
+      "readout": "nrsrapid",
+      "filter": "f290lp",
+      "disperser": "g395h"
+     },
+     "config_pandexo": {
+      "subarray": "sub2048",
+      "readout": "nrsrapid",
+      "mode": "bots",
+      "filter": "f290lp",
+      "disperser": "g395h"
+     },
+     "flux_ratio": {
+      "n": 3330,
+      "median": 0.9924738990251409,
+      "p05": 0.9129769218245255,
+      "p95": 1.1100184468510237,
+      "max_abs_dev": 0.29665890302627074
+     },
+     "sigma_ratio_matched": {
+      "n": 3330,
+      "median": 1.169579741265531,
+      "p05": 1.1021679761856777,
+      "p95": 1.2182666976329455,
+      "max_abs_dev": 0.2957072494105486
+     },
+     "sigma_ratio_policy": {
+      "n": 3330,
+      "median": 1.2266655812798455,
+      "p05": 1.1559635255933278,
+      "p95": 1.277728891908464,
+      "max_abs_dev": 0.3589492278199926
+     },
+     "var_excess_ours": 1.3559008661780494,
+     "var_excess_pandexo": 1.0151396209801775,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "All good",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "nirspec_g235h",
+     "status": "OK",
+     "npix_ours": 3424,
+     "npix_pandexo": 3424,
+     "npix_matched": 3424,
+     "ngroup_ours": 497,
+     "ngroup_pandexo": 492,
+     "sat_frac_ours": 0.7986224000741813,
+     "t_int_ours_s": 449.21648000000005,
+     "t_int_pandexo_s": 444.68600000000004,
+     "t_frame_pandexo_s": 0.902,
+     "n_int_ours": 22,
+     "n_int_pandexo_in": 23.0,
+     "n_int_pandexo_out": 23.0,
+     "config_ours": {
+      "subarray": "sub2048",
+      "readout": "nrsrapid",
+      "filter": "f170lp",
+      "disperser": "g235h"
+     },
+     "config_pandexo": {
+      "subarray": "sub2048",
+      "readout": "nrsrapid",
+      "mode": "bots",
+      "filter": "f170lp",
+      "disperser": "g235h"
+     },
+     "flux_ratio": {
+      "n": 3424,
+      "median": 1.0014098938105356,
+      "p05": 0.9485137646803528,
+      "p95": 1.0896736960216453,
+      "max_abs_dev": 0.2797130092892456
+     },
+     "sigma_ratio_matched": {
+      "n": 3424,
+      "median": 1.1238724089868446,
+      "p05": 1.083430629063488,
+      "p95": 1.1668119656845497,
+      "max_abs_dev": 0.35174936519424094
+     },
+     "sigma_ratio_policy": {
+      "n": 3424,
+      "median": 1.149131122526208,
+      "p05": 1.1077804250727676,
+      "p95": 1.1930357335783592,
+      "max_abs_dev": 0.3821295486736429
+     },
+     "var_excess_ours": 1.2606072315973174,
+     "var_excess_pandexo": 1.0136316605548563,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "All good",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "niriss_soss",
+     "status": "OK",
+     "npix_ours": 2040,
+     "npix_pandexo": 2040,
+     "npix_matched": 2040,
+     "ngroup_ours": 195,
+     "ngroup_pandexo": 193,
+     "sat_frac_ours": 0.7990588242131615,
+     "t_int_ours_s": 1076.84448,
+     "t_int_pandexo_s": 1065.836,
+     "t_frame_pandexo_s": 5.494,
+     "n_int_ours": 9,
+     "n_int_pandexo_in": 10.0,
+     "n_int_pandexo_out": 10.0,
+     "config_ours": {
+      "subarray": "substrip256",
+      "readout": "nisrapid",
+      "filter": "clear",
+      "disperser": "gr700xd"
+     },
+     "config_pandexo": {
+      "subarray": "substrip256",
+      "readout": "nisrapid",
+      "mode": "soss",
+      "filter": "clear",
+      "disperser": "gr700xd"
+     },
+     "flux_ratio": {
+      "n": 2040,
+      "median": 1.0295672972725998,
+      "p05": 0.963978341775478,
+      "p95": 1.2896728617378974,
+      "max_abs_dev": 0.3773893682935321
+     },
+     "sigma_ratio_matched": {
+      "n": 2040,
+      "median": 1.2411972918997203,
+      "p05": 1.149701076691484,
+      "p95": 1.3197057947397457,
+      "max_abs_dev": 0.4145428498267387
+     },
+     "sigma_ratio_policy": {
+      "n": 2040,
+      "median": 1.3083368226786587,
+      "p05": 1.2118913435643375,
+      "p95": 1.3910920509000848,
+      "max_abs_dev": 0.4910590844526701
+     },
+     "var_excess_ours": 3.082560158151364,
+     "var_excess_pandexo": 1.9373690433378297,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "All good",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "nircam_f322w2",
+     "status": "OK",
+     "npix_ours": 1812,
+     "npix_pandexo": 1812,
+     "npix_matched": 1812,
+     "ngroup_ours": 100,
+     "ngroup_pandexo": 100,
+     "sat_frac_ours": 0.01958510255193136,
+     "t_int_ours_s": 34.40673,
+     "t_int_pandexo_s": 34.401610000000005,
+     "t_frame_pandexo_s": 0.34061,
+     "n_int_ours": 293,
+     "n_int_pandexo_in": 294.0,
+     "n_int_pandexo_out": 294.0,
+     "config_ours": {
+      "subarray": "subgrism64",
+      "readout": "rapid",
+      "filter": "f322w2",
+      "disperser": "grismr"
+     },
+     "config_pandexo": {
+      "subarray": "subgrism64",
+      "readout": "rapid",
+      "mode": "lw_tsgrism",
+      "filter": "f322w2",
+      "disperser": "grismr"
+     },
+     "flux_ratio": {
+      "n": 1812,
+      "median": 0.9913368666754121,
+      "p05": 0.9519589605432991,
+      "p95": 1.0520135016175005,
+      "max_abs_dev": 0.1937124188064765
+     },
+     "sigma_ratio_matched": {
+      "n": 1812,
+      "median": 1.0436538348780335,
+      "p05": 0.8910780068842853,
+      "p95": 1.0589397789114656,
+      "max_abs_dev": 0.18413283110331535
+     },
+     "sigma_ratio_policy": {
+      "n": 1812,
+      "median": 1.0454332970992466,
+      "p05": 0.8925973225772994,
+      "p95": 1.0607453041422843,
+      "max_abs_dev": 0.1827417522263336
+     },
+     "var_excess_ours": 1.4338368361910139,
+     "var_excess_pandexo": 1.3440479283863869,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "Optimized NGROUPS above maximum (100). SET TO NGROUPS=100",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "nircam_f444w",
+     "status": "OK",
+     "npix_ours": 1267,
+     "npix_pandexo": 1267,
+     "npix_matched": 1267,
+     "ngroup_ours": 100,
+     "ngroup_pandexo": 100,
+     "sat_frac_ours": 0.010929983114941805,
+     "t_int_ours_s": 34.40673,
+     "t_int_pandexo_s": 34.401610000000005,
+     "t_frame_pandexo_s": 0.34061,
+     "n_int_ours": 293,
+     "n_int_pandexo_in": 294.0,
+     "n_int_pandexo_out": 294.0,
+     "config_ours": {
+      "subarray": "subgrism64",
+      "readout": "rapid",
+      "filter": "f444w",
+      "disperser": "grismr"
+     },
+     "config_pandexo": {
+      "subarray": "subgrism64",
+      "readout": "rapid",
+      "mode": "lw_tsgrism",
+      "filter": "f444w",
+      "disperser": "grismr"
+     },
+     "flux_ratio": {
+      "n": 1267,
+      "median": 0.9866515532186457,
+      "p05": 0.9229274294929202,
+      "p95": 1.1057513775814138,
+      "max_abs_dev": 0.2261464793035497
+     },
+     "sigma_ratio_matched": {
+      "n": 1267,
+      "median": 1.0177203510599013,
+      "p05": 0.896729797238801,
+      "p95": 1.054269612250181,
+      "max_abs_dev": 0.18852524411473115
+     },
+     "sigma_ratio_policy": {
+      "n": 1267,
+      "median": 1.0194555958852918,
+      "p05": 0.8982587494100054,
+      "p95": 1.0560671747017112,
+      "max_abs_dev": 0.18714165443843322
+     },
+     "var_excess_ours": 1.946606738826085,
+     "var_excess_pandexo": 1.9631809884136762,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "Optimized NGROUPS above maximum (100). SET TO NGROUPS=100",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    },
+    {
+     "key": "miri_lrs",
+     "status": "OK",
+     "npix_ours": 372,
+     "npix_pandexo": 372,
+     "npix_matched": 372,
+     "ngroup_ours": 1021,
+     "ngroup_pandexo": 1017,
+     "sat_frac_ours": 0.7990753400082459,
+     "t_int_ours_s": 162.37983999999997,
+     "t_int_pandexo_s": 161.90272,
+     "t_frame_pandexo_s": 0.15904,
+     "n_int_ours": 62,
+     "n_int_pandexo_in": 63.0,
+     "n_int_pandexo_out": 63.0,
+     "config_ours": {
+      "subarray": "slitlessprism",
+      "readout": "fastr1",
+      "filter": null,
+      "disperser": null
+     },
+     "config_pandexo": {
+      "subarray": "slitlessprism",
+      "readout": "fastr1",
+      "mode": "lrsslitless",
+      "filter": null,
+      "disperser": "p750l"
+     },
+     "flux_ratio": {
+      "n": 372,
+      "median": 0.992319536899058,
+      "p05": 0.9864047574805783,
+      "p95": 0.994596187671132,
+      "max_abs_dev": 0.028005766800278664
+     },
+     "sigma_ratio_matched": {
+      "n": 372,
+      "median": 1.5430066074418087,
+      "p05": 1.539843403950812,
+      "p95": 1.5612047548994568,
+      "max_abs_dev": 0.6181763879019586
+     },
+     "sigma_ratio_policy": {
+      "n": 372,
+      "median": 1.555400433911619,
+      "p05": 1.5522118227555044,
+      "p95": 1.57374475357655,
+      "max_abs_dev": 0.6311739974082793
+     },
+     "var_excess_ours": 249.21474887744836,
+     "var_excess_pandexo": 106.3152152079076,
+     "pandexo_warnings": {
+      "Group Number Too Low?": "All good",
+      "Group Number Too High?": "All good",
+      "Non linear?": "All good",
+      "Saturated?": "All good",
+      "% full well high?": "All good",
+      "Num Groups Reset?": "All good",
+      "Minimum Integrations?": "All good"
+     }
+    }
+   ]
   }
  },
  "config": {
@@ -917,6 +1367,12 @@
     "log_g": 4.3,
     "metallicity": 0.0,
     "ks_mag": 8.5
+   },
+   "faint_k": {
+    "teff": 4500.0,
+    "log_g": 4.6,
+    "metallicity": 0.0,
+    "ks_mag": 13.0
    }
   }
  }

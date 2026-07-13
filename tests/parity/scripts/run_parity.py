@@ -61,6 +61,10 @@ SAT_LIMIT = 0.80
 STARS = {
     "w39_like": dict(teff=5400.0, log_g=4.45, metallicity=0.0, ks_mag=10.663),
     "bright_hot": dict(teff=6250.0, log_g=4.30, metallicity=0.0, ks_mag=8.5),
+    # a faint K dwarf so NIRSpec PRISM is UNSATURATED and gets a valid parity
+    # point (it saturates on the two brighter stars -- there both tools flag
+    # it and only the unusable-regime ngroup floor differs, ngroup 2 vs 1)
+    "faint_k": dict(teff=4500.0, log_g=4.60, metallicity=0.0, ks_mag=13.0),
 }
 
 # PandExo template name + the overrides that pin BOTH sides to one
