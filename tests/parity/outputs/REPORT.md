@@ -9,7 +9,15 @@ Both sides run on the SAME current Pandeia backend, so every difference below is
 These show the quantities that match 1:1 -- the parity result. The depth-uncertainty difference (a noise-model difference, not a configuration one) is quantified in the tables and Findings below, not plotted.
 
 - **parity_config_timing.png** -- selected groups, integration time, and integration count, this tool vs PandExo, on the 1:1 line (log-log). Every mode/star lands on the diagonal except PRISM's known group floor (ngroup_min=2 vs PandExo's 1 on a bright star).
-- **parity_extracted_flux.png** -- G395H extracted stellar count rate, per-wavelength overlay with a ratio strip. The curves coincide (median ratio ~0.997); the grids are pixel-for-pixel identical.
+- **parity_extracted_flux.png** -- G395H extracted stellar count rate, per-wavelength overlay with a ratio strip (per-pixel jitter + binned median). The curves coincide (systematic ratio ~0.997).
+
+## What is bit-identical, and why the rest is not
+
+The two are INDEPENDENT tools calling the same Pandeia engine, so only what is read straight from the shared engine is bit-for-bit identical; anything each computes on its own agrees closely but not exactly. This is a property of a cross-tool test, not a defect -- forcing bit-equality would mean one tool copying the other's numbers, which is not a validation.
+
+- **Bit-identical (max difference exactly 0):** the instrument configuration (subarray, readout, disperser, filter, aperture, background) and the extracted WAVELENGTH GRID -- every pixel, every mode (verified: max |Δλ| = 0 over all 12,748 extracted pixels).
+- **Groups agree to ≤1:** each tool independently optimizes the ramp to the same 80% saturation target; the only freedom left is rounding to an integer group count (e.g. G395H 124 vs 125). Integration time and integration count then follow deterministically from that one-group choice. PRISM is the one real policy difference (this tool's ngroup_min=2 vs PandExo selecting ngroup=1 on a bright star).
+- **Extracted flux agrees to a systematic ~0.3%** (binned median 0.997 for G395H), with per-pixel scatter from the two tools' independent extraction of the same 2D calculation -- photon-level for the smooth NIRSpec/MIRI traces (MIRI LRS matches to ~0.15%), larger for the curved NIRISS SOSS order-1 trace and the saturating low-R PRISM. The tool integrates over bins, so the per-pixel jitter averages out; the systematic is what enters the noise.
 
 Columns: sigma ratio = (this tool's per-pixel transit-depth sigma) / (PandExo's), median [5th, 95th percentile] over matched pixels. 'matched' uses PandExo's integration counts in the tool formula (isolates the noise model); 'policy' uses the tool's own floor(T/t_int) counts (adds the integration-counting policy). flux ratio compares extracted stellar count rates (engine parity; expect 1.0000).
 

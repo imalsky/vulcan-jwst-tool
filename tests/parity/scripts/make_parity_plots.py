@@ -132,10 +132,13 @@ def fig_config_parity(summary):
                bbox_to_anchor=(0.5, 0.0))
     fig.suptitle("Configuration & timing parity: this tool vs current PandExo "
                  "on the same Pandeia 2026.2 engine", fontsize=11.5, y=1.0)
-    fig.text(0.5, 0.905, "points on the dashed line agree exactly; the only "
-             "off-diagonal case is PRISM's group floor (this tool's "
-             "ngroup_min=2 vs PandExo's ngroup=1 on a bright star)",
-             ha="center", fontsize=8.5, color=INK2)
+    fig.text(0.5, 0.905, "Configuration and wavelength grid are bit-identical "
+             "(max |Δλ| = 0 across all 12,748 pixels). Groups are independently "
+             "optimized and agree to ≤1 (integer rounding of the same 80% "
+             "saturation target); integration time and count follow. The one "
+             "visible outlier is PRISM: this tool's ngroup_min=2 vs PandExo's "
+             "ngroup=1 on a bright star.", ha="center", fontsize=8.0,
+             color=INK2, wrap=True)
     fig.tight_layout(rect=[0, 0.16, 1, 0.885])
     out = FIGS / "parity_config_timing.png"
     fig.savefig(out, bbox_inches="tight")
@@ -166,11 +169,22 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
     idx = np.clip(np.searchsorted(wl_o, wl_p), 0, wl_o.size - 1)
     ex = np.abs(wl_o[idx] - wl_p) < 1e-9 * np.maximum(wl_p, 1e-9)
     io, ip = idx[ex], np.where(ex)[0]
+    wl_pair = wl_o[io]
     ratio = flux_o[io] / erate[ip]
     med = float(np.median(ratio))
+    # binned running median: the real systematic agreement, with the
+    # per-pixel photon-level extraction jitter averaged out (the tool never
+    # uses per-pixel flux -- it integrates over bins)
+    nb = 24
+    bedges = np.linspace(wl_pair.min(), wl_pair.max(), nb + 1)
+    bc = 0.5 * (bedges[:-1] + bedges[1:])
+    bmed = np.array([
+        np.median(ratio[(wl_pair >= bedges[k]) & (wl_pair < bedges[k + 1])])
+        if ((wl_pair >= bedges[k]) & (wl_pair < bedges[k + 1])).any() else np.nan
+        for k in range(nb)])
 
-    fig, axes = plt.subplots(2, 1, figsize=(8.6, 5.4), sharex=True,
-                             gridspec_kw={"height_ratios": [3, 1]})
+    fig, axes = plt.subplots(2, 1, figsize=(8.6, 5.6), sharex=True,
+                             gridspec_kw={"height_ratios": [3, 1.15]})
     ax = axes[0]
     ax.plot(wl_p, erate, color=PANDEXO, lw=1.4, label="PandExo", zorder=2)
     ax.plot(wl_o, flux_o, color=TOOL, lw=1.4, ls=(0, (4, 2)),
@@ -178,18 +192,19 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
     ax.set_ylabel("extracted stellar\ncount rate  (e$^-$/s)")
     ax.set_title(f"Extracted stellar flux parity, {LABEL[mode]} on a "
                  f"{STAR_LABEL[star]} star\n(the ETC engine product, "
-                 "Pandeia 2026.2 both sides)")
+                 "Pandeia 2026.2 both sides; wavelength grid bit-identical)")
     ax.legend(frameon=False, fontsize=9.5)
     _style(ax)
     axr = axes[1]
-    axr.plot(wl_o[io], ratio, color=INK2, lw=1.0)
-    axr.axhline(1.0, color=PANDEXO, lw=1.0, ls=":")
+    axr.plot(wl_pair, ratio, color="#c3c2bd", lw=0.6, alpha=0.9, zorder=2,
+             label="per-pixel (independent-extraction jitter)")
+    axr.plot(bc, bmed, color=TOOL, lw=2.0, zorder=3,
+             label=f"binned median = {med:.4f} (the systematic)")
+    axr.axhline(1.0, color=PANDEXO, lw=1.0, ls=":", zorder=1)
     axr.set_ylim(0.9, 1.1)
     axr.set_ylabel("ratio\ntool / PandExo")
     axr.set_xlabel("wavelength (micron)")
-    axr.annotate(f"median {med:.4f} (grids identical, flux 1:1)",
-                 xy=(0.5, 0.92), xycoords="axes fraction", ha="center",
-                 va="top", fontsize=8.5, color=INK2)
+    axr.legend(frameon=False, fontsize=8, loc="lower left", ncol=1)
     _style(axr)
     fig.tight_layout()
     out = FIGS / "parity_extracted_flux.png"
