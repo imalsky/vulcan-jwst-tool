@@ -2,7 +2,7 @@
 (where available) the raw per-wavelength run outputs.
 
 Usage:
-    python validation/pandexo_parity/make_parity_plots.py
+    python tests/parity/scripts/make_parity_plots.py
 
 These figures show the quantities that are in PARITY between this tool and
 current PandExo on the same Pandeia 2026.2 engine -- the things that match
@@ -12,16 +12,20 @@ difference, not a configuration one) is quantified in REPORT.md, not plotted.
 
 The config/timing figure reads only parity_summary.json (committed, always
 available). The extracted-flux figure additionally reads the raw
-$JWST_TOOL_OUTPUT_DIR/pandexo_parity/{star}_{ours,pandexo}.json produced by
-run_parity.py; it is skipped with a notice if that directory is absent.
+{star}_{ours,pandexo}.json that run_parity.py writes into this same directory
+(git-ignored); it is skipped with a notice if those are absent (a fresh clone
+has the committed figures already, and re-running run_parity.py regenerates
+the raw JSON).
+
+Layout under tests/parity/: scripts/ (this + the harness), outputs/ (the
+committed parity_summary.json + REPORT.md and the git-ignored raw run JSON),
+figs/ (the committed PNG figures this writes).
 
 Design: validated categorical palette (dataviz skill). Overlays use blue =
 this tool, orange = PandExo; per-mode panels color by mode in the fixed
 palette order. One axis per panel, thin marks, recessive grid, PNG @ 200 dpi.
-Figures are written next to this file (no separate subfolder).
 """
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +34,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent        # tests/parity/scripts
+OUTPUTS = HERE.parent / "outputs"             # parity_summary.json + raw JSON
+FIGS = HERE.parent / "figs"                   # committed PNG figures
 
 # --- validated categorical palette (light mode) ------------------------------
 TOOL = "#2a78d6"       # this tool (blue, slot 1)
@@ -69,7 +75,7 @@ def _style(ax):
 
 
 def load_summary():
-    return json.loads((HERE / "parity_summary.json").read_text())
+    return json.loads((OUTPUTS / "parity_summary.json").read_text())
 
 
 def ok_rows(summary, star):
@@ -131,7 +137,7 @@ def fig_config_parity(summary):
              "ngroup_min=2 vs PandExo's ngroup=1 on a bright star)",
              ha="center", fontsize=8.5, color=INK2)
     fig.tight_layout(rect=[0, 0.16, 1, 0.885])
-    out = HERE / "parity_config_timing.png"
+    out = FIGS / "parity_config_timing.png"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     return out
@@ -146,8 +152,7 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
     pf = out_root / f"{star}_pandexo.json"
     if not (of.exists() and pf.exists()):
         print(f"  [flux fig] raw run outputs not in {out_root} -- skipping "
-              "(set JWST_TOOL_OUTPUT_DIR and re-run run_parity.py to "
-              "regenerate)")
+              "(re-run run_parity.py to regenerate them)")
         return None
     o = json.loads(of.read_text())[mode]
     p = json.loads(pf.read_text())[mode]
@@ -187,7 +192,7 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
                  va="top", fontsize=8.5, color=INK2)
     _style(axr)
     fig.tight_layout()
-    out = HERE / "parity_extracted_flux.png"
+    out = FIGS / "parity_extracted_flux.png"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     return out
@@ -195,10 +200,9 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
 
 def main():
     summary = load_summary()
-    out_root = Path(os.environ.get(
-        "JWST_TOOL_OUTPUT_DIR", str(HERE))) / "pandexo_parity"
+    # raw per-run JSON lives in this dir (written by run_parity.py, git-ignored)
     made = [fig_config_parity(summary),
-            fig_extracted_flux(summary, out_root)]
+            fig_extracted_flux(summary, OUTPUTS)]
     for pth in made:
         if pth is not None:
             print(f"wrote {pth}")

@@ -47,14 +47,18 @@
   100, everything else saturation-limited (PANDEXO_UNBOUNDED_NGROUP).
   Leaving any of these implicit cost 8–20% in extracted flux and picked
   frame-averaged BOTS ramps. Never add a mode without all of them.
-- **PandExo parity is MEASURED, not pending** (`validation/pandexo_parity/`,
-  REPORT.md committed): config/grid/flux/ngroup/timing parity achieved on
-  engine 2026.2 both sides; the residual sigma gap is the NOISE MODEL
+- **PandExo parity is MEASURED, not pending** (`tests/parity/`, organized
+  `scripts/` + `outputs/` (REPORT.md + parity_summary.json committed, raw run
+  JSON git-ignored) + `figs/`): config/grid/flux/ngroup/timing parity achieved
+  on engine 2026.2 both sides; the residual sigma gap is the NOISE MODEL
   (pandeia full extracted noise vs PandExo's analytic fml ≈ photon-only):
   ours conservative by ~7–12% (NIR) / ~35–48% (MIRI LRS). NEVER label
   sigmas "PandExo-identical"; they are pandeia-extracted-noise forecasts.
-  Re-run: run_parity.py (5 env vars, loud) then make_report.py;
-  PARITY_REUSE_PANDEXO=1 reuses the PandExo side when its job is unchanged.
+  Figures show ONLY the 1:1 parity (config/timing + extracted flux); the
+  noise-model difference is documented in REPORT.md, not plotted. Re-run:
+  `tests/parity/scripts/run_parity.py` (5 env vars, loud) then `make_report.py`
+  + `make_parity_plots.py`; PARITY_REUSE_PANDEXO=1 reuses the PandExo side
+  when its job is unchanged.
 - Star normalization is band-integrated **2MASS Ks vegamag** (synphot
   `2mass,ks` + local CALSPEC Vega in `data/cdbs/calspec/`), NOT the retired
   monochromatic at_lambda/666.7 Jy shortcut (mis-scaled 0.4–3.1% by Teff). The

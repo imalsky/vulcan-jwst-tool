@@ -87,7 +87,7 @@ The worker also runs current-generation backends: point
 `JWST_TOOL_PANDEIA_PYTHON`/`JWST_TOOL_PANDEIA_REFDATA` at a matched 2026.x
 pair and set `JWST_TOOL_PANDEIA_PSF_DIR` to the split PSF library that
 newer pandeia_data releases ship separately. The PandExo parity harness
-(`validation/pandexo_parity/`) exercises exactly this path on engine
+(`tests/parity/`) exercises exactly this path on engine
 2026.2.
 
 ## Noise model and scope
@@ -240,7 +240,7 @@ opt-in slow test (`JWST_TOOL_RUN_SLOW=1`) closes an autodiff Jacobian row
 against finite differences of the full forward model.
 
 **PandExo parity (measured 2026-07-12,
-`validation/pandexo_parity/REPORT.md`).** Every instrument mode was run
+`tests/parity/outputs/REPORT.md`).** Every instrument mode was run
 through both this tool's worker and current PandExo (master, pinned commit)
 on the same Pandeia 2026.2 engine and reference data, for a moderate star, a
 bright star, and a saturation edge case, with no noise floor. Result:
@@ -293,6 +293,10 @@ Pending release gates, tracked explicitly rather than assumed:
 
 `src/jwst_tool/` package (GUI `app.py`, forward-model driver `forward.py`,
 Pandeia worker `pandeia_worker.py`, noise/detect/fisher/binning modules,
-instrument registry); `data/` input CDBS tree; `output/` generated caches
-(gitignored); `tests/`; version history in `notes.md`; operational notes in
-`CLAUDE.md`.
+instrument registry); `data/` input CDBS tree; `output/` generated runtime
+caches (model spectra + Pandeia noise, gitignored). All tests and validation
+live under `tests/`: `tests/unit/` the fast numpy suite (`python -m pytest
+tests -q`), `tests/parity/` the PandExo parity gate, split into `scripts/`
+(harness), `outputs/` (committed `REPORT.md` + `parity_summary.json`,
+git-ignored raw run JSON), and `figs/` (committed figures).
+Version history in `notes.md`; operational notes in `CLAUDE.md`.

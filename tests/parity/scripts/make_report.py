@@ -1,12 +1,13 @@
 """Render REPORT.md from parity_summary.json (run after run_parity.py).
 
-Usage: python validation/pandexo_parity/make_report.py
+Usage: python tests/parity/make_report.py
 """
 import json
 from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+OUTPUTS = HERE.parent / "outputs"      # parity_summary.json in, REPORT.md out
 
 
 def fmt_ratio(s: dict | None) -> str:
@@ -17,7 +18,7 @@ def fmt_ratio(s: dict | None) -> str:
 
 
 def main():
-    summary = json.loads((HERE / "parity_summary.json").read_text())
+    summary = json.loads((OUTPUTS / "parity_summary.json").read_text())
     cfg = summary["config"]
     lines = []
     w = lines.append
@@ -151,8 +152,8 @@ def main():
       "PandExo's analytic noise by the mode-dependent margins quantified "
       "above.")
     w("")
-    (HERE / "REPORT.md").write_text("\n".join(lines))
-    print(f"wrote {HERE / 'REPORT.md'}")
+    (OUTPUTS / "REPORT.md").write_text("\n".join(lines))
+    print(f"wrote {OUTPUTS / 'REPORT.md'}")
 
 
 if __name__ == "__main__":

@@ -2,18 +2,24 @@
 
 The 2026-07-12 external audit made mode-by-mode numerical parity against
 current PandExo a release gate for any "PandExo-style" precision claim. This
-directory is that gate. `REPORT.md` and `parity_summary.json` are the
-committed artifacts of the latest run; the raw per-pixel results live under
-`$JWST_TOOL_OUTPUT_DIR/pandexo_parity/` (generated, not tracked).
+directory is that gate, organized as:
+
+```
+tests/parity/
+  scripts/   run_parity.py, pandexo_worker.py, make_report.py, make_parity_plots.py
+  outputs/   parity_summary.json + REPORT.md (committed); raw run JSON (git-ignored)
+  figs/      parity_config_timing.png, parity_extracted_flux.png (committed)
+```
 
 ## What it does
 
-`run_parity.py` runs the SAME star and instrument configurations through
+`scripts/run_parity.py` runs the SAME star and instrument configurations
+through
 
 1. this package's Pandeia worker plus its box-transit depth-error
    propagation (`noise.pixel_depth_variance`), and
-2. current PandExo master (`pandexo_worker.py`, a standalone script that
-   runs inside the current-Pandeia conda env),
+2. current PandExo master (`scripts/pandexo_worker.py`, a standalone script
+   that runs inside the current-Pandeia conda env),
 
 both on the SAME current engine/refdata generation (2026.2). Differences are
 therefore estimator and policy differences, never engine calibration
@@ -49,9 +55,12 @@ J/H/K + 2MASS Ks bandpasses (fetch missing ones from
 `https://ssb.stsci.edu/trds/comp/nonhst/`). Then:
 
 ```
-JWST_TOOL_PANDEIA_PYTHON=<env python> JWST_TOOL_PANDEIA_REFDATA=<data tree> JWST_TOOL_PANDEIA_PSF_DIR=<psf tree> JWST_TOOL_DATA_DIR=<dir containing cdbs/> JWST_TOOL_OUTPUT_DIR=<scratch output> python validation/pandexo_parity/run_parity.py
-python validation/pandexo_parity/make_report.py
+JWST_TOOL_PANDEIA_PYTHON=<env python> JWST_TOOL_PANDEIA_REFDATA=<data tree> JWST_TOOL_PANDEIA_PSF_DIR=<psf tree> JWST_TOOL_DATA_DIR=<dir containing cdbs/> JWST_TOOL_OUTPUT_DIR=<the tool's noise cache> python tests/parity/scripts/run_parity.py
+python tests/parity/scripts/make_report.py
+python tests/parity/scripts/make_parity_plots.py
 ```
 
 All five environment variables are required and fail loudly; no machine
-paths are baked into the repository.
+paths are baked into the repository. `JWST_TOOL_OUTPUT_DIR` is only the
+tool's Pandeia noise cache; the parity artifacts (`outputs/`, `figs/`) and
+raw run JSON stay in this directory.

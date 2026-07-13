@@ -94,7 +94,7 @@ PANDEIA_REFDATA = os.environ.get(
 # carries its own PSFs (the 3.0-era layout); when set it is passed through to
 # the worker, preflighted, and joins the cache key. Only needed to point the
 # worker at a current-generation backend (e.g. the PandExo parity harness in
-# validation/pandexo_parity/).
+# tests/parity/).
 PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", "")
 # Minimal synphot CDBS assembled for this tool: phoenix grid symlinked from
 # RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.

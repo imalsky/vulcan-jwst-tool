@@ -459,7 +459,7 @@ split-layout backends (`JWST_TOOL_PANDEIA_PSF_DIR`/job `psf_dir`,
 VERSION_DATA in the release gate + cache fingerprint). The shipped 3.0 pin
 is untouched (re-validated: all 7 modes green on picaso_base).
 
-Harness: `validation/pandexo_parity/` — a standalone PandExo worker
+Harness: `tests/parity/` — a standalone PandExo worker
 (job/result JSON, same pattern as pandeia_worker), a driver that runs BOTH
 noise paths on the SAME 2026.2 engine (estimator vs estimator, engine
 calibration cancels), and a report generator. Committed artifacts:

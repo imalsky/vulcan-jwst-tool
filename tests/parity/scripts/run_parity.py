@@ -20,11 +20,15 @@ Required environment (all loud, no defaults -- machine paths stay out of git):
   JWST_TOOL_PANDEIA_PSF_DIR  extracted pandeia_psfs-2026.2-jwst tree
   JWST_TOOL_DATA_DIR         directory whose cdbs/ holds the phoenix grid,
                              calspec Vega, and comp/nonhst bandpasses
-  JWST_TOOL_OUTPUT_DIR       separate cache/output root for parity runs
+  JWST_TOOL_OUTPUT_DIR       the tool's own worker noise cache (model_cache /
+                             noise_cache); unrelated to the parity artifacts
 
-Usage: python validation/pandexo_parity/run_parity.py
-Writes raw per-pixel results under $JWST_TOOL_OUTPUT_DIR/pandexo_parity/ and
-the committed artifacts REPORT.md + parity_summary.json next to this script.
+Usage: python tests/parity/run_parity.py
+Everything parity lives in THIS directory (tests/parity/): the raw per-run
+JSON (git-ignored, see .gitignore) is written here alongside the committed
+artifacts (parity_summary.json, REPORT.md, the figures). The tool's Pandeia
+noise cache still goes under JWST_TOOL_OUTPUT_DIR (that is the app's cache,
+not a parity output).
 """
 import json
 import os
@@ -34,8 +38,9 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-REPO = HERE.parent.parent
+HERE = Path(__file__).resolve().parent        # tests/parity/scripts
+OUTPUTS = HERE.parent / "outputs"             # raw JSON + parity_summary.json
+REPO = HERE.parents[2]                         # scripts -> parity -> tests -> repo
 sys.path.insert(0, str(REPO / "src"))
 
 for var in ("JWST_TOOL_PANDEIA_PYTHON", "JWST_TOOL_PANDEIA_REFDATA",
@@ -243,7 +248,9 @@ def compare_mode(key: str, ours: dict, px: dict) -> dict:
 
 
 def main():
-    out_root = Path(os.environ["JWST_TOOL_OUTPUT_DIR"]) / "pandexo_parity"
+    # raw per-run JSON goes in tests/parity/outputs/ (git-ignored there,
+    # alongside the committed parity_summary.json and REPORT.md)
+    out_root = OUTPUTS
     out_root.mkdir(parents=True, exist_ok=True)
     keys = list(PANDEXO_MODES)
     summary = {"stars": {}, "config": dict(
@@ -263,10 +270,10 @@ def main():
             "provenance_pandexo": px.get("__provenance__"),
             "modes": rows,
         }
-        (HERE / "parity_summary.json").write_text(
+        (OUTPUTS / "parity_summary.json").write_text(
             json.dumps(summary, indent=1))
         print(f"=== {sname}: done ===", flush=True)
-    print(f"summary -> {HERE / 'parity_summary.json'}")
+    print(f"summary -> {OUTPUTS / 'parity_summary.json'}")
 
 
 if __name__ == "__main__":
