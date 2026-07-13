@@ -1,0 +1,94 @@
+name: full-stack-smoke
+
+# Cross-repository integration smoke test. The fast `tests` workflow is
+# numpy-only and installs NO vulcan-retrieval / VULCAN-JAX stack, so it cannot
+# catch a broken jax-vulcan <-> vulcan-retrieval integration (e.g. a released
+# vulcan-jax that is missing the live-T(P) condensation builder). This job
+# installs the WHOLE stack from the current HEADs of all three sibling repos and
+# exercises the condensation path end-to-end:
+#
+#   fresh env
+#   -> install jax-vulcan HEAD (VULCAN-JAX)
+#   -> install vulcan-retrieval HEAD
+#   -> install vulcan-jwst-tool HEAD
+#   -> assert vulcan_jax.conden exposes make_conden_spec + build_conden_profile
+#   -> build + solve a small live-T(P) S8 condensation model (isothermal AND
+#      Guillot) and assert finite output + nonzero S8 condensate
+#
+# It is deliberately OUT of the fast Python-version matrix: it is slow
+# (SNCHO-network compile + two condensing solves) and runs on a schedule or on
+# demand only. It needs no GPU, no HITRAN downloads, and no pandeia backend --
+# the condensation solve is chemistry-only (const_mix init, photo off, no RT).
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 06:00 UTC. Catches drift in any of the three HEADs.
+    - cron: "0 6 * * 1"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout vulcan-jwst-tool (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: vulcan-jwst-tool
+
+      # The clone directory name "VULCAN-JAX" is load-bearing (the GitHub repo is
+      # named jax-vulcan); vulcan-retrieval's config/validate_env resolve it by
+      # that path under VULCAN_PROJECT_ROOT.
+      - name: Checkout jax-vulcan HEAD (as VULCAN-JAX)
+        uses: actions/checkout@v4
+        with:
+          repository: imalsky/jax-vulcan
+          path: VULCAN-JAX
+
+      - name: Checkout vulcan-retrieval HEAD
+        uses: actions/checkout@v4
+        with:
+          repository: imalsky/vulcan-retrieval
+          path: vulcan-retrieval
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the full stack (editable, --no-deps for the siblings)
+        run: |
+          python -m pip install --upgrade pip
+          pip install "jax>=0.6.2" "numpy>=1.26" "scipy>=1.12" "exojax==2.2.3" pytest
+          pip install --no-deps -e ./VULCAN-JAX
+          pip install --no-deps -e ./vulcan-retrieval
+          pip install --no-deps -e ./vulcan-jwst-tool
+
+      - name: Capability probe -- the missing-builder guard
+        # Hard gate: a released/installed vulcan-jax that predates the on-graph
+        # condensation builder fails HERE, regardless of its version string.
+        run: |
+          python - <<'PY'
+          from vulcan_jax import conden
+          required = ("make_conden_spec", "build_conden_profile")
+          missing = [n for n in required if not hasattr(conden, n)]
+          assert not missing, f"vulcan_jax.conden is missing {missing} -- live-T(P) condensation support absent"
+          import vulcan_jax
+          print(f"vulcan-jax {vulcan_jax.__version__}: conden API present ({', '.join(required)})")
+          PY
+
+      - name: Confirm jwst-tool imports against the installed retrieval
+        run: |
+          python -c "import jwst_tool; print('vulcan-jwst-tool', jwst_tool.__version__, 'imports against installed vulcan-retrieval')"
+
+      - name: Build + solve a live-T(P) S8 condensation model (finite + nonzero condensate)
+        working-directory: vulcan-retrieval
+        env:
+          # PROJECT_ROOT is the directory CONTAINING the checkouts (they are
+          # siblings under the workspace); config.py resolves the tracked
+          # data/cm24_wasp39b marker under it and auto-selects the SNCHO network.
+          VULCAN_PROJECT_ROOT: ${{ github.workspace }}
+          JAX_PLATFORM_NAME: cpu
+        run: |
+          python -m pytest tests/test_condensation_live_tp.py -q -rs -o addopts="" -p no:cacheprovider | tee smoke.log
+          # pytest exits 0 when every test SKIPS (e.g. the stack failed to import),
+          # which would be a false green. Require at least one real pass.
+          grep -Eq "[1-9][0-9]* passed" smoke.log || { echo "::error::condensation smoke ran no tests (all skipped) -- the full stack did not build a condensation model"; exit 1; }

@@ -15,9 +15,11 @@
   `data/` = INPUTS (minimal synphot cdbs; env `JWST_TOOL_DATA_DIR` overrides),
   `output/` = GENERATED model_cache/ + noise_cache/ (env `JWST_TOOL_OUTPUT_DIR`).
   A site-packages install must set both env vars.
-- The Pandeia noise backend runs in its OWN conda env (pandeia.engine 3.0 via
-  `picaso_base`): `JWST_TOOL_PANDEIA_PYTHON` + `JWST_TOOL_PANDEIA_REFDATA` are
-  machine-specific; `noise.run_pandeia` refuses loudly if missing.
+- The Pandeia noise backend runs in its OWN conda env: `JWST_TOOL_PANDEIA_PYTHON`
+  + `JWST_TOOL_PANDEIA_REFDATA` are machine-specific; `noise.run_pandeia` refuses
+  loudly if missing. DEFAULT engine is 2026.2 (`pandeia_2026` env); the pinned 3.0
+  (`picaso_base`) is the `legacy` backend only — see the "Backend DEFAULT" bullet
+  below.
 - `data/cdbs/grid/phoenix` is a symlink to an external picaso tree; dangling on other
   machines (the pandeia preflight fails loudly). Do not replace it with a copy.
 - `forward._VERSION` is the cache-buster for model_cache spectra (v5 = 2026-07-11
