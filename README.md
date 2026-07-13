@@ -83,6 +83,13 @@ upgraded backend, re-run one reference star and compare noise and group
 selection, and re-check the G395H degenerate-pixel counter
 (`n_pix_degenerate_dropped`).
 
+The worker also runs current-generation backends: point
+`JWST_TOOL_PANDEIA_PYTHON`/`JWST_TOOL_PANDEIA_REFDATA` at a matched 2026.x
+pair and set `JWST_TOOL_PANDEIA_PSF_DIR` to the split PSF library that
+newer pandeia_data releases ship separately. The PandExo parity harness
+(`validation/pandexo_parity/`) exercises exactly this path on engine
+2026.2.
+
 ## Noise model and scope
 
 The uncertainty calculation is designed to reproduce PandExo-style planning
@@ -93,6 +100,14 @@ in-transit/out-of-transit depth measurement and the final spectral binning.
 One count-space measurement operator bins the noise, the model spectrum, and
 the Jacobians, so the quoted variance always belongs to the same estimator
 as the forecast model.
+
+Instrument configurations pin the TSO conventions PandExo uses rather than
+pandeia's generic point-source defaults: rapid time-series readout patterns
+(NRSRAPID, NISRAPID, RAPID, FASTR1), PandExo's extraction apertures and sky
+annuli per instrument, the ecliptic/medium sky background, and
+saturation-driven group selection (only NIRCam carries a hard 100-group
+cap, matching PandExo). The 2026-07-12 parity run measured the cost of
+leaving these implicit at 8 to 20 percent in extracted flux.
 
 The tool provides the same minimum-noise-floor choices as PandExo:
 
@@ -217,15 +232,32 @@ Poisson count-space and matched-filter amplitude-variance closures. One
 opt-in slow test (`JWST_TOOL_RUN_SLOW=1`) closes an autodiff Jacobian row
 against finite differences of the full forward model.
 
+**PandExo parity (measured 2026-07-12,
+`validation/pandexo_parity/REPORT.md`).** Every instrument mode was run
+through both this tool's worker and current PandExo (master, pinned commit)
+on the same Pandeia 2026.2 engine and reference data, for a moderate star, a
+bright star, and a saturation edge case, with no noise floor. Result:
+configuration, wavelength grids, extracted count rates (0.99 to 1.02),
+group selection (within one group), integration timing (within 1 percent),
+and saturation masking all match. The remaining difference is the noise
+model itself and it is one-sided: this tool propagates pandeia's full
+extracted noise (correlated ramp noise, background, dark, IPC), while
+PandExo's default "fml" calculation is an analytic ramp formula close to
+pure photon noise. This tool's sigmas are therefore conservative relative
+to PandExo, by roughly 7 to 12 percent for NIRSpec, NIRISS, and NIRCam and
+by 35 to 48 percent for MIRI LRS, margins quantified per mode in the
+report. Published achieved-versus-PandExo ratios (COMPASS G395H 1.05 to
+1.12; MIRI LRS roughly 1.15 above random-noise simulations) fall on the
+same side. Uncertainties are labeled pandeia-extracted-noise forecasts,
+never PandExo-identical output.
+
 Pending release gates, tracked explicitly rather than assumed:
 
-- **PandExo parity.** The random-noise path uses Pandeia's extracted
-  one-integration noise in a box-transit approximation. It has not yet been
-  verified mode-by-mode against current PandExo output, so results should be
-  described as Pandeia-extracted-noise approximations, not as
-  PandExo-equivalent precision. A parity matrix (per mode, bright and
-  moderate stars, saturation edge cases, no-floor comparison of grids,
-  groups, timing, and uncertainties) is the acceptance test for that claim.
+- **Exact in/out propagation.** The box-transit formula uses the
+  out-of-transit flux and noise for both sides (documented symmetric
+  approximation, conservative by about depth/2); exact separate in-transit
+  propagation remains open, bounded at about +0.5 percent sigma at 1
+  percent depth.
 - **Physics sensitivity ladders** (heavy, scheduled on HPC): spectral
   resolution convergence of binned depths and Jacobians, top-pressure and
   extended-chemistry ladder, air versus H2/He broadening A/B

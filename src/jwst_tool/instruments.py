@@ -89,6 +89,13 @@ PICASO_PYTHON = os.environ.get(
 PANDEIA_REFDATA = os.environ.get(
     "JWST_TOOL_PANDEIA_REFDATA",
     "/Users/imalsky/Documents/Important_Docs/JWST_CYCLE5/picaso_ian/data/pandeia_data-3.0rc3")
+# pandeia_data >= 2026 splits the PSF library out of the refdata tree and the
+# engine reads it from $PSF_DIR. Optional here: empty means the refdata tree
+# carries its own PSFs (the 3.0-era layout); when set it is passed through to
+# the worker, preflighted, and joins the cache key. Only needed to point the
+# worker at a current-generation backend (e.g. the PandExo parity harness in
+# validation/pandexo_parity/).
+PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", "")
 # Minimal synphot CDBS assembled for this tool: phoenix grid symlinked from
 # RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
@@ -115,48 +122,92 @@ _COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#008300",
 # long-term source; this static table is the pinned-backend equivalent.)
 PANDEXO_NGROUP_MAX = {"nircam": 100}
 
+# For every other instrument PandExo's optimizer is effectively unbounded
+# (its max_ngroup table reads 65535 for nirspec/miri/niriss): SATURATION
+# picks the ramp, not a registry cap. The old self-imposed caps (BOTS 90,
+# SOSS 30) bound before the saturation optimum on moderate stars (G395H on a
+# Ks=10.7 star wants ngroup~125 with NRSRAPID) and made the tool's ramps --
+# and therefore its sigmas and efficiencies -- silently diverge from
+# PandExo/ETC output (2026-07-12 parity harness finding).
+PANDEXO_UNBOUNDED_NGROUP = 65535
+
+# Extraction strategy + sky background: pinned to PandExo's TSO conventions
+# (its reference templates: NIRSpec specapphot 0.7" aperture / [0.75, 1.5]"
+# annulus, NIRCam 0.4"/[0.5, 1.5]", MIRI 0.6"/[1.0, 2.8]", background
+# "ecliptic" at "background_level" "medium" -- BOTH background keys are
+# required together, the engine resolves <background>_<level>.fits), NOT
+# pandeia's generic point-source defaults (0.3" apertures, "minzodi").
+# The 2026-07-12 parity harness measured the default-strategy
+# mismatch at 8-20% in extracted flux (mode-dependent), which propagated
+# straight into sigma. The tool's stated benchmark is PandExo-style planning
+# noise, so the extraction must match that benchmark's convention.
 # wl_min/wl_max: the usable science bandpass we bin over (intersected with the
 # forward model's 1-15 um coverage; NIRISS SOSS order 1 nominally reaches 0.85 um
 # but the model band starts at 1.0 um -- the H2-H2 CIA table's short edge).
+#
+# readout_pattern is pinned EXPLICITLY on every mode (2026-07-12 PandExo
+# parity work): the TSO patterns real time-series programs use -- NRSRAPID
+# (BOTS), NISRAPID (SOSS), RAPID (NIRCam grism), FASTR1 (MIRI LRS) -- which
+# are also PandExo's choices. Inheriting build_default_calc's default was a
+# latent config drift: the engine default for BOTS is the frame-averaged
+# "nrs" pattern (~3.6 s groups vs NRSRAPID's 0.902 s), and defaults change
+# between engine releases. Never leave readout_pattern implicit on a new mode.
 MODES = {
     "nirspec_prism": dict(
         label="NIRSpec PRISM",
         instrument="nirspec", mode="bots",
         config=dict(instrument=dict(disperser="prism", filter="clear"),
-                    detector=dict(subarray="sub512")),
+                    detector=dict(subarray="sub512",
+                                  readout_pattern="nrsrapid")),
+        strategy=dict(aperture_size=0.7, sky_annulus=[0.75, 1.5]),
+        background="ecliptic", background_level="medium",
         wl_min=0.6, wl_max=5.25,
-        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2,
+        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
     ),
     "nirspec_g395h": dict(
         label="NIRSpec G395H",
         instrument="nirspec", mode="bots",
         config=dict(instrument=dict(disperser="g395h", filter="f290lp"),
-                    detector=dict(subarray="sub2048")),
+                    detector=dict(subarray="sub2048",
+                                  readout_pattern="nrsrapid")),
+        strategy=dict(aperture_size=0.7, sky_annulus=[0.75, 1.5]),
+        background="ecliptic", background_level="medium",
         wl_min=2.87, wl_max=5.18,
-        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2,
+        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
     ),
     "nirspec_g235h": dict(
         label="NIRSpec G235H",
         instrument="nirspec", mode="bots",
         config=dict(instrument=dict(disperser="g235h", filter="f170lp"),
-                    detector=dict(subarray="sub2048")),
+                    detector=dict(subarray="sub2048",
+                                  readout_pattern="nrsrapid")),
+        strategy=dict(aperture_size=0.7, sky_annulus=[0.75, 1.5]),
+        background="ecliptic", background_level="medium",
         wl_min=1.66, wl_max=3.07,
-        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2, ngroup_max=90,
+        floor_ppm=15.0, noise_infl=1.0, ngroup_min=2,
+        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
     ),
     "niriss_soss": dict(
         label="NIRISS SOSS (ord 1)",
         instrument="niriss", mode="soss",
         config=dict(instrument=dict(filter="clear", disperser="gr700xd"),
-                    detector=dict(subarray="substrip256")),
+                    detector=dict(subarray="substrip256",
+                                  readout_pattern="nisrapid")),
         strategy=dict(order=1),
+        background="ecliptic", background_level="medium",
         wl_min=0.85, wl_max=2.8,
-        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2, ngroup_max=30,
+        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2,
+        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
     ),
     "nircam_f322w2": dict(
         label="NIRCam F322W2",
         instrument="nircam", mode="ssgrism",
         config=dict(instrument=dict(filter="f322w2", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
+        strategy=dict(aperture_size=0.4, sky_annulus=[0.5, 1.5]),
+        background="ecliptic", background_level="medium",
         wl_min=2.45, wl_max=3.95,
         floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=100,
     ),
@@ -165,15 +216,21 @@ MODES = {
         instrument="nircam", mode="ssgrism",
         config=dict(instrument=dict(filter="f444w", disperser="grismr"),
                     detector=dict(subarray="subgrism64", readout_pattern="rapid")),
+        strategy=dict(aperture_size=0.4, sky_annulus=[0.5, 1.5]),
+        background="ecliptic", background_level="medium",
         wl_min=3.9, wl_max=4.95,
         floor_ppm=25.0, noise_infl=1.0, ngroup_min=2, ngroup_max=100,
     ),
     "miri_lrs": dict(
         label="MIRI LRS (slitless)",
         instrument="miri", mode="lrsslitless",
-        config=dict(detector=dict(subarray="slitlessprism")),
+        config=dict(detector=dict(subarray="slitlessprism",
+                                  readout_pattern="fastr1")),
+        strategy=dict(aperture_size=0.6, sky_annulus=[1.0, 2.8]),
+        background="ecliptic", background_level="medium",
         wl_min=5.0, wl_max=12.0,
-        floor_ppm=40.0, noise_infl=1.0, ngroup_min=5, ngroup_max=300,
+        floor_ppm=40.0, noise_infl=1.0, ngroup_min=5,
+        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
     ),
 }
 

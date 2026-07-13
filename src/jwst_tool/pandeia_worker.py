@@ -65,6 +65,17 @@ def _make_calc(build_default_calc, m, star):
     calc["configuration"]["detector"]["nexp"] = 1
     for k, v in (m.get("strategy") or {}).items():
         calc["strategy"][k] = v
+    # sky background model (pandeia's default is "minzodi"/"benchmark"); the
+    # registry pins PandExo's TSO convention ("ecliptic" at "medium"). BOTH
+    # keys are required together -- the engine resolves them to one canned
+    # file (<background>_<level>.fits) and fails on a partial pair.
+    if m.get("background"):
+        calc["background"] = m["background"]
+        if not m.get("background_level"):
+            raise ValueError(
+                f"mode {m['key']}: background={m['background']!r} without "
+                "background_level -- the engine needs both (e.g. 'medium')")
+        calc["background_level"] = m["background_level"]
     calc["scene"][0]["spectrum"]["sed"] = {
         "sed_type": "phoenix", "teff": float(star["teff"]),
         "log_g": float(star["log_g"]), "metallicity": float(star["metallicity"])}
@@ -228,10 +239,11 @@ def _release(version):
 
 
 def _refdata_version(refdata):
-    """Best-available refdata version: the VERSION file (newer pandeia_data),
-    else VERSION_PSF's first line (3.0-era trees have only that), else the
-    pandeia_data-<ver> directory name. Returns (version|None, source)."""
-    for name in ("VERSION", "VERSION_PSF"):
+    """Best-available refdata version: the VERSION file (some pandeia_data
+    releases), VERSION_DATA (the 2026+ split data trees), else VERSION_PSF's
+    first line (3.0-era trees have only that), else the pandeia_data-<ver>
+    directory name. Returns (version|None, source)."""
+    for name in ("VERSION", "VERSION_DATA", "VERSION_PSF"):
         p = os.path.join(refdata, name)
         if os.path.isfile(p):
             with open(p) as f:
@@ -273,6 +285,14 @@ def _preflight(job):
     problems = []
     if not os.path.isdir(job["refdata"]):
         problems.append(f"pandeia_refdata does not exist: {job['refdata']}")
+    psf_dir = job.get("psf_dir")
+    if psf_dir:
+        # split-layout (pandeia_data >= 2026) PSF library; must be an intact
+        # tree, not just an existing directory
+        if not os.path.isfile(os.path.join(psf_dir, "VERSION_PSF")):
+            problems.append(
+                f"PSF_DIR has no VERSION_PSF file: {psf_dir} (point "
+                "JWST_TOOL_PANDEIA_PSF_DIR at the extracted pandeia_psfs tree)")
     cdbs = job["cdbs"]
     if not os.path.isdir(cdbs):
         problems.append(f"PYSYN_CDBS does not exist: {cdbs}")
@@ -302,6 +322,8 @@ def main():
     _preflight(job)
     os.environ["pandeia_refdata"] = job["refdata"]
     os.environ["PYSYN_CDBS"] = job["cdbs"]
+    if job.get("psf_dir"):
+        os.environ["PSF_DIR"] = job["psf_dir"]
     import warnings as _w
     _w.filterwarnings("ignore")
     # synphot's default vega_file is an ssb.stsci.edu URL: point it at the

@@ -33,6 +33,28 @@
   2026-07-12, rationale + upgrade checklist in README "Known limits" and
   instruments.py). Do not upgrade casually; on upgrade re-check
   `n_pix_degenerate_dropped` and re-baseline sigma/ngroup on one star.
+  The worker ALSO runs 2026-generation backends (split refdata layout):
+  set `JWST_TOOL_PANDEIA_PSF_DIR` for the separate PSF library (optional
+  `psf_dir` in the job, preflighted, part of the cache key when set) and
+  note the NIRCam mode rename ssgrism→lw_tsgrism (parity harness patches
+  the job; the registry stays on the pinned 3.0 name).
+- **TSO instrument configs are pinned EXPLICITLY (2026-07-12 parity run)**:
+  readout_pattern on every mode (NRSRAPID/NISRAPID/RAPID/FASTR1 — engine
+  defaults are the WRONG, non-TSO patterns and drift between releases),
+  PandExo's extraction strategy (apertures/sky annuli), and
+  background="ecliptic" + background_level="medium" (BOTH keys or the
+  engine fails). ngroup_max follows PandExo policy: NIRCam hard-capped at
+  100, everything else saturation-limited (PANDEXO_UNBOUNDED_NGROUP).
+  Leaving any of these implicit cost 8–20% in extracted flux and picked
+  frame-averaged BOTS ramps. Never add a mode without all of them.
+- **PandExo parity is MEASURED, not pending** (`validation/pandexo_parity/`,
+  REPORT.md committed): config/grid/flux/ngroup/timing parity achieved on
+  engine 2026.2 both sides; the residual sigma gap is the NOISE MODEL
+  (pandeia full extracted noise vs PandExo's analytic fml ≈ photon-only):
+  ours conservative by ~7–12% (NIR) / ~35–48% (MIRI LRS). NEVER label
+  sigmas "PandExo-identical"; they are pandeia-extracted-noise forecasts.
+  Re-run: run_parity.py (5 env vars, loud) then make_report.py;
+  PARITY_REUSE_PANDEXO=1 reuses the PandExo side when its job is unchanged.
 - Star normalization is band-integrated **2MASS Ks vegamag** (synphot
   `2mass,ks` + local CALSPEC Vega in `data/cdbs/calspec/`), NOT the retired
   monochromatic at_lambda/666.7 Jy shortcut (mis-scaled 0.4–3.1% by Teff). The

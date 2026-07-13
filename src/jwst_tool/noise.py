@@ -73,12 +73,19 @@ def backend_fingerprint() -> dict:
                 engine = r.stdout.strip().splitlines()[-1]
         except Exception:
             pass
-    ref = Path(ins.PANDEIA_REFDATA)
     refver = []
-    for name in ("VERSION", "VERSION_PSF"):
-        f = ref / name
-        if f.exists():
-            refver.append(f"{name}:{hashlib.sha1(f.read_bytes()).hexdigest()[:12]}")
+    for root, names in ((Path(ins.PANDEIA_REFDATA),
+                         ("VERSION", "VERSION_DATA", "VERSION_PSF")),
+                        (Path(ins.PANDEIA_PSF_DIR) if ins.PANDEIA_PSF_DIR
+                         else None, ("VERSION_PSF",))):
+        if root is None:
+            continue
+        for name in names:
+            f = root / name
+            if f.exists():
+                refver.append(
+                    f"{name}:{hashlib.sha1(f.read_bytes()).hexdigest()[:12]}")
+    ref = Path(ins.PANDEIA_REFDATA)
     _BACKEND_FINGERPRINT = {
         "engine_version": engine,
         "refdata_name": ref.name,
@@ -94,10 +101,19 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         modes.append({
             "key": key, "instrument": m["instrument"], "mode": m["mode"],
             "config": m.get("config", {}), "strategy": m.get("strategy", {}),
+            "background": m.get("background"),
+            "background_level": m.get("background_level"),
             "ngroup_min": m["ngroup_min"], "ngroup_max": m["ngroup_max"],
         })
+    job_extra = {}
+    if ins.PANDEIA_PSF_DIR:
+        # split-layout (2026+) PSF library: passed to the worker and part of
+        # the cache key; absent entirely under the 3.0-era combined layout so
+        # existing cache keys are untouched
+        job_extra["psf_dir"] = ins.PANDEIA_PSF_DIR
     return {
         "refdata": ins.PANDEIA_REFDATA, "cdbs": ins.PYSYN_CDBS,
+        **job_extra,
         "backend": backend_fingerprint(),
         "star": {k: float(star[k]) for k in ("teff", "log_g", "metallicity", "ks_mag")},
         "sat_limit": float(sat_limit),

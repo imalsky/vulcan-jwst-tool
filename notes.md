@@ -447,3 +447,53 @@ current head (they targeted the pre-v9 code).
 
 **Tests 79 → 86** (+7 strict-grid-validation): `python -m pytest tests -q`,
 numpy-only, all green (86 passed, 1 slow test skipped by default).
+
+## v13: 2026-07-12 PandExo parity gate: measured, with three config fixes
+
+The audit's headline pending gate — mode-by-mode numerical parity against
+current PandExo on the current Pandeia — is now MEASURED, not pending.
+Infrastructure: `pandeia_2026` conda env (pandeia.engine 2026.2 +
+pandeia_data-2026.2-jwst + 4.2 GB PSF library from STScI Box, PandExo
+master @1af4c797 which itself pins engine 2026.2); additive tool support for
+split-layout backends (`JWST_TOOL_PANDEIA_PSF_DIR`/job `psf_dir`,
+VERSION_DATA in the release gate + cache fingerprint). The shipped 3.0 pin
+is untouched (re-validated: all 7 modes green on picaso_base).
+
+Harness: `validation/pandexo_parity/` — a standalone PandExo worker
+(job/result JSON, same pattern as pandeia_worker), a driver that runs BOTH
+noise paths on the SAME 2026.2 engine (estimator vs estimator, engine
+calibration cancels), and a report generator. Committed artifacts:
+REPORT.md + parity_summary.json. Matrix: 7 modes × {Ks=10.663 W39-like,
+Ks=8.5 bright, PRISM saturation edge}, no floor, native grids.
+
+THREE REAL DEFECTS the harness caught in our registry (all fixed):
+1. **readout_pattern was never pinned** — BOTS inherited the engine default
+   frame-averaged "nrs" pattern (~3.6 s groups) instead of NRSRAPID
+   (0.902 s); same class of drift for SOSS/MIRI. All modes now pin the TSO
+   patterns (NRSRAPID/NISRAPID/RAPID/FASTR1).
+2. **Self-imposed ngroup caps (BOTS 90, SOSS 30) bound before the
+   saturation optimum** (G395H@W39 wants ~125 groups) — now PandExo policy:
+   NIRCam 100 hard, others saturation-limited.
+3. **Extraction strategy + background were pandeia point-source defaults**
+   (0.3" apertures, minzodi) vs PandExo's TSO conventions (0.7"/0.4"/0.6"
+   apertures, ecliptic+medium — BOTH background keys required). Cost of the
+   mismatch: 8–20% extracted flux. All noise caches self-bust (job dicts
+   changed).
+
+RESULT (REPORT.md): wavelength grids identical pixel-for-pixel; flux ratios
+0.99–1.02; ngroup within ±1 (floor-vs-round); t_int within 1%; saturation
+masking equivalent (bright PRISM: our 265 usable pixels = PandExo's
+unsaturated subset; ours says UNUSABLE loudly, PandExo runs ngroup=1 with a
+caution flag). Residual sigma ratio ours/PandExo ≈ 1.06–1.12 (NIR),
+1.35–1.48 (MIRI LRS) — fully attributed to the NOISE MODEL: PandExo's
+default "fml" analytic ramp variance is ~1.01–1.12× photon, pandeia's full
+extracted noise (correlated ramp/read, background, dark, IPC) is
+~1.13–1.5× photon (NIR) and background/detector-dominated for MIRI; the
+excess ratio reproduces the sigma ratio (G395H: 1.220/1.014 = 1.203 ≈
+1.108²). Ours is one-sided CONSERVATIVE, and the published
+achieved-vs-PandExo ratios (COMPASS 1.05–1.12, MIRI ~1.15+) sit between
+the two models. Claim policy (README + CLAUDE.md): configuration/timing/
+extraction parity may be claimed; sigmas are pandeia-extracted-noise
+forecasts, never "PandExo-identical".
+
+Suite stays 86 green; README noise/backends/validation sections updated.
