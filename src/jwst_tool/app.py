@@ -5,7 +5,7 @@ directly:  streamlit run src/jwst_tool/app.py  (from the repo root).
 
 Pipeline per run: VULCAN-JAX photochemistry -> ExoJax transmission spectrum
 (local subprocess, disk-cached; ~1.5-2 min at the default "fast" fidelity) ->
-Pandeia ETC noise per instrument mode (picaso_base subprocess, disk-cached) ->
+Pandeia ETC noise per instrument mode (subprocess in its own conda env, disk-cached) ->
 science-goal scoring per mode. Two goal types: DETECT a molecule (nested-model
 delta-chi2 significance) or CONSTRAIN a parameter (Fisher forecast from the
 autodiff Jacobian, vs a target precision). Planets beyond WASP-39b come from
@@ -638,7 +638,7 @@ def compute():
     if have_cache:
         etc = noise_mod.run_pandeia(job)
     else:
-        with st.status("Running Pandeia ETC (STScI engine, picaso_base env) …",
+        with st.status(f"Running Pandeia ETC ({ins.BACKEND_STATUS.split(' /')[0]}) …",
                        expanded=True) as status:
             bar = st.progress(0.0, text="starting the ETC …")
             box = st.empty()

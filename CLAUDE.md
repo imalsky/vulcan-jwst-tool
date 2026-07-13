@@ -29,15 +29,19 @@
   release-match gate (worker refuses a mismatched pair) + `__provenance__`
   block (exact engine/refdata/python versions) in every result/cache file
   (noise caches stale again; model cache `_VERSION=5` NOT).
-- Pandeia stays PINNED at engine 3.0 + pandeia_data-3.0rc3 (dated decision
-  2026-07-12, rationale + upgrade checklist in README "Known limits" and
-  instruments.py). Do not upgrade casually; on upgrade re-check
-  `n_pix_degenerate_dropped` and re-baseline sigma/ngroup on one star.
-  The worker ALSO runs 2026-generation backends (split refdata layout):
-  set `JWST_TOOL_PANDEIA_PSF_DIR` for the separate PSF library (optional
-  `psf_dir` in the job, preflighted, part of the cache key when set) and
-  note the NIRCam mode rename ssgrism→lw_tsgrism (parity harness patches
-  the job; the registry stays on the pinned 3.0 name).
+- **Backend DEFAULT is "current" = Pandeia 2026.2** (2026-07-13, was pinned
+  3.0). `JWST_TOOL_BACKEND` selects `current` (default: engine 2026.2 +
+  pandeia_data-2026.2-jwst, validated vs PandExo in tests/parity/) or `legacy`
+  (pinned 3.0 + 3.0rc3, reproducibility only); the two default path sets live
+  in `instruments._BACKENDS`, and the explicit JWST_TOOL_PANDEIA_* env vars
+  override per-path. Switching backends self-invalidates caches (engine +
+  refdata in every cache key). The current backend uses the split refdata
+  layout (`JWST_TOOL_PANDEIA_PSF_DIR` for the separate PSF library; `psf_dir`
+  in the job, preflighted). NIRCam mode rename ssgrism→lw_tsgrism is a
+  2026-engine thing the parity harness patches; the registry keeps the 3.0
+  name (build_default_calc maps it). On any backend change re-check
+  `n_pix_degenerate_dropped` (the 3.0rc3 red-edge pileup is fixed in 2026.2 —
+  the degenerate mask drops 0 there).
 - **TSO instrument configs are pinned EXPLICITLY (2026-07-12 parity run)**:
   readout_pattern on every mode (NRSRAPID/NISRAPID/RAPID/FASTR1 — engine
   defaults are the WRONG, non-TSO patterns and drift between releases),
@@ -146,10 +150,11 @@
   (not a single eigenvector's max component); the nuisance score is pinned
   invariant under an arbitrary nonsingular remix of the rows, not just per-row
   rescaling (re-audit V2, item 3/5 tightening).
-- **LEGACY backend label**: `instruments.BACKEND_STATUS` must stay on every
-  user-facing surface (GUI captions, README) while the Pandeia 3.0 pin
-  stands -- an internally consistent but obsolete calibration must not
-  present as current-ETC output.
+- **Backend label**: `instruments.BACKEND_STATUS` (backend-selected string)
+  must stay on every user-facing surface (GUI captions, README). It now reads
+  positively for the default current 2026.2 backend and as a LEGACY warning
+  when `JWST_TOOL_BACKEND=legacy` -- a 3.0 run must never present as
+  current-ETC output.
 - **σ_detect labeling**: it is a *conditional matched-template S/N*, never a
   retrieval detection. `sigma_detect_proj` additionally profiles T-P + lnR0
   Jacobian directions. Keep the GUI/README wording honest.

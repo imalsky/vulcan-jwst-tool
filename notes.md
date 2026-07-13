@@ -584,3 +584,25 @@ Four user-directed changes to the tool's forward-model parameters
 Tests: fast suite 96 -> 103 (+7 `test_forward_params.py`, pure-Python gating).
 Retrieval suite re-run green (vulcan_chem guard change is neutral for
 use_condense=False).
+
+## v14: 2026-07-13 backend default -> current Pandeia 2026.2
+
+Made the CURRENT backend (pandeia.engine 2026.2 + pandeia_data-2026.2-jwst,
+the STScI JWST 5.1 release validated vs PandExo in tests/parity/) the DEFAULT,
+retiring the pinned-3.0 default to an explicit reproducibility option
+(2026-07-13 recheck item 3: a new user following the standard path was getting
+legacy-calibration output). `JWST_TOOL_BACKEND` = "current" (default) |
+"legacy"; the two default path sets live in `instruments._BACKENDS`, and the
+explicit JWST_TOOL_PANDEIA_{PYTHON,REFDATA,PSF_DIR} env vars override per-path.
+`BACKEND_STATUS` reads positively for current, LEGACY-warning for legacy; the
+GUI caption + run-status line use it. Verified: pure-default (no env vars)
+resolves to 2026.2 and runs end-to-end with the tool's own repo CDBS (2mass_ks
++ CALSPEC Vega + phoenix serve both backends); legacy still resolves to 3.0;
+unknown backend raises. 2026.2 data (30 MB refdata + 4.3 GB PSFs) already
+downloaded to pandeia_2026_refdata/. Suite 105 green, AppTest clean.
+
+Also cleared the recheck's P2 doc/API items: 3d/4 in/out coefficient (was
+mislabelled d/2), PRISM parity wording (34-50% policy, not the 6-12% band),
+detection_significance + n_transits fail-fast validation, stale
+noise.py-"pending"/README-0.7.0 text, and an evidence-uncertainty caveat in
+vulcan-retrieval evidence_report (support-fraction err is not total sigma(logZ)).

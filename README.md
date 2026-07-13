@@ -58,37 +58,42 @@ are instant.
 ## Backend configuration
 
 The Pandeia engine runs in its own conda environment and is deliberately not
-a package dependency. Four environment variables, resolved in
-`src/jwst_tool/instruments.py` with loud failures:
+a package dependency.
 
-- `JWST_TOOL_PANDEIA_PYTHON`: python of an environment providing
-  pandeia.engine 3.0.
-- `JWST_TOOL_PANDEIA_REFDATA`: the matching `pandeia_data-3.0rc3` reference
-  tree.
+**Backend status: CURRENT (default).** The tool defaults to pandeia.engine
+2026.2 with pandeia_data-2026.2-jwst -- the STScI JWST 5.1 release, the pair
+validated mode by mode against current PandExo (`tests/parity/`). So a new
+user gets current-ETC calibration, and proposal-planning output is
+current by default. Set `JWST_TOOL_BACKEND=legacy` to select the pinned
+pandeia 3.0 + pandeia_data-3.0rc3 pair instead; it is retained only as an
+explicit reproducibility backend. The worker refuses to run a mismatched
+engine/refdata pair (the STScI same-release rule), and every result and cache
+file records the exact engine, refdata, and worker versions in a
+`__provenance__` block hashed into the cache key, so switching backends
+invalidates caches automatically.
+
+Environment variables, resolved in `src/jwst_tool/instruments.py` with loud
+failures:
+
+- `JWST_TOOL_BACKEND`: `current` (default, pandeia 2026.2) or `legacy`
+  (pinned 3.0). Selects the default paths below.
+- `JWST_TOOL_PANDEIA_PYTHON`: python of a conda env providing the selected
+  pandeia.engine (overrides the backend default).
+- `JWST_TOOL_PANDEIA_REFDATA`: the matching `pandeia_data-*` reference tree.
+- `JWST_TOOL_PANDEIA_PSF_DIR`: the split PSF library (pandeia_data >= 2026
+  ships PSFs separately; set for the current backend, empty for 3.0-era).
 - `JWST_TOOL_DATA_DIR`: input data root (minimal synphot CDBS tree); defaults
-  to this repository's `data/` in an editable checkout.
+  to this repository's `data/` in an editable checkout. The same CDBS
+  (phoenix grid, CALSPEC Vega, 2MASS Ks bandpass) serves both backends.
 - `JWST_TOOL_OUTPUT_DIR`: generated cache root; defaults to this repository's
   `output/`.
 
-**Backend status: LEGACY.** The tool is pinned to the matched pair
-pandeia.engine 3.0 with pandeia_data-3.0rc3 (decision dated 2026-07-12).
-Current STScI ETC releases are newer. The pinned pair is internally
-consistent, and the worker refuses to run a mismatched engine/refdata pair
-(the STScI same-release rule), but results are legacy-calibration forecasts
-and are labeled as such in the GUI. Every result and cache file records the
-exact engine version, refdata version, and worker version in a
-`__provenance__` block, and the versions are hashed into every cache key, so
-a backend upgrade invalidates caches automatically. Before trusting an
-upgraded backend, re-run one reference star and compare noise and group
-selection, and re-check the G395H degenerate-pixel counter
-(`n_pix_degenerate_dropped`).
-
-The worker also runs current-generation backends: point
-`JWST_TOOL_PANDEIA_PYTHON`/`JWST_TOOL_PANDEIA_REFDATA` at a matched 2026.x
-pair and set `JWST_TOOL_PANDEIA_PSF_DIR` to the split PSF library that
-newer pandeia_data releases ship separately. The PandExo parity harness
-(`tests/parity/`) exercises exactly this path on engine
-2026.2.
+Current-backend data (one-time download, ~4.3 GB): pandeia.engine 2026.2 via
+`pip install pandeia.engine==2026.2` into its own env, plus the JWST reference
+data (`pandeia-data-v2026p2-jwst`, ~15 MiB) and PSF library
+(`pandeia-psfs-v2026p2-jwst`, ~4 GiB) from the STScI Pandeia distribution.
+Point `JWST_TOOL_PANDEIA_REFDATA`/`JWST_TOOL_PANDEIA_PSF_DIR` at the extracted
+trees if they are not at the built-in default location.
 
 ## Noise model and scope
 

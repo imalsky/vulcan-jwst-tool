@@ -63,39 +63,49 @@ MODEL_CACHE = OUTPUT_DIR / "model_cache"
 NOISE_CACHE = OUTPUT_DIR / "noise_cache"
 
 # Pandeia backend environment (the real STScI ETC engine, same as PandExo's core).
-# pandeia.engine 2026.1 in the base env rejects the on-disk 3.0rc3 refdata, so the
-# worker runs in picaso_base (pandeia 3.0), which matches it. Both paths are
-# machine-specific; override via env vars on any other machine / install
-# (noise.run_pandeia refuses loudly if the python is missing).
+# The worker runs in its own conda env (pandeia has heavy deps); noise.run_pandeia
+# refuses loudly if the python is missing.
 #
-# DECISION 2026-07-12: stay on the matched pair engine 3.0 + pandeia_data-3.0rc3
-# (current STScI release is 2026.2 = ETC 5.1, six JWST releases newer). The pair
-# is internally consistent (the worker gates on the STScI same-release rule) and
-# every result records it in "__provenance__"; upgrading is a data-download +
-# env change, not a code change. Before trusting forecasts from an upgraded
-# backend: re-run one reference star and compare sigma/ngroup, and check the
-# G395H degenerate-pixel counter (n_pix_degenerate_dropped) — the 3.0rc3
-# red-edge grid artifact's fix status in newer refdata is unverified. Caches
-# self-invalidate on upgrade (engine+refdata are in every cache key).
-# Every user-facing surface (GUI caption, README) must carry this label until
-# the backend is upgraded and re-validated -- an internally consistent but
-# obsolete calibration must not present itself as current-ETC output.
-BACKEND_STATUS = ("LEGACY Pandeia 3.0 / pandeia_data-3.0rc3 forecast "
-                  "(pinned 2026-07-12; current STScI ETC releases are newer)")
+# BACKEND SELECTION (JWST_TOOL_BACKEND, 2026-07-13): DEFAULT is "current" --
+# pandeia.engine 2026.2 + pandeia_data-2026.2-jwst, the STScI JWST 5.1 release,
+# the pair validated mode-by-mode against current PandExo (tests/parity/). This
+# is what a new user gets, so proposal-planning output is current-ETC by
+# default. "legacy" selects the pinned pandeia 3.0 + pandeia_data-3.0rc3 pair,
+# retained ONLY as an explicit reproducibility backend. Every result records the
+# exact engine/refdata versions in "__provenance__", and the versions are in
+# every cache key (switching backends self-invalidates caches). The two default
+# path sets are machine-specific; the explicit JWST_TOOL_PANDEIA_{PYTHON,REFDATA,
+# PSF_DIR} env vars override any of them per-path on another machine.
+_BACKENDS = {
+    "current": dict(
+        python="/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/bin/python",
+        refdata="/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
+        psf="/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_psfs-2026.2-jwst",
+        status="Pandeia 2026.2 / pandeia_data-2026.2-jwst (current STScI JWST "
+               "5.1 release; validated vs PandExo in tests/parity/)"),
+    "legacy": dict(
+        python="/opt/homebrew/Caskroom/miniforge/base/envs/picaso_base/bin/python",
+        refdata="/Users/imalsky/Documents/Important_Docs/JWST_CYCLE5/picaso_ian/data/pandeia_data-3.0rc3",
+        psf="",
+        status="LEGACY Pandeia 3.0 / pandeia_data-3.0rc3 (pinned reproducibility "
+               "backend; older than the current STScI ETC -- set "
+               "JWST_TOOL_BACKEND=current for current-ETC output)"),
+}
+JWST_TOOL_BACKEND = os.environ.get("JWST_TOOL_BACKEND", "current").lower()
+if JWST_TOOL_BACKEND not in _BACKENDS:
+    raise RuntimeError(
+        f"JWST_TOOL_BACKEND={JWST_TOOL_BACKEND!r} unknown; choose 'current' "
+        f"(Pandeia 2026.2, default) or 'legacy' (pinned 3.0).")
+_BE = _BACKENDS[JWST_TOOL_BACKEND]
+BACKEND_STATUS = _BE["status"]
 
-PICASO_PYTHON = os.environ.get(
-    "JWST_TOOL_PANDEIA_PYTHON",
-    "/opt/homebrew/Caskroom/miniforge/base/envs/picaso_base/bin/python")
-PANDEIA_REFDATA = os.environ.get(
-    "JWST_TOOL_PANDEIA_REFDATA",
-    "/Users/imalsky/Documents/Important_Docs/JWST_CYCLE5/picaso_ian/data/pandeia_data-3.0rc3")
+PICASO_PYTHON = os.environ.get("JWST_TOOL_PANDEIA_PYTHON", _BE["python"])
+PANDEIA_REFDATA = os.environ.get("JWST_TOOL_PANDEIA_REFDATA", _BE["refdata"])
 # pandeia_data >= 2026 splits the PSF library out of the refdata tree and the
-# engine reads it from $PSF_DIR. Optional here: empty means the refdata tree
-# carries its own PSFs (the 3.0-era layout); when set it is passed through to
-# the worker, preflighted, and joins the cache key. Only needed to point the
-# worker at a current-generation backend (e.g. the PandExo parity harness in
-# tests/parity/).
-PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", "")
+# engine reads it from $PSF_DIR (the "current" backend sets it; the 3.0-era
+# "legacy" tree carries its own PSFs, so it is empty there). When set it is
+# passed through to the worker, preflighted, and joins the cache key.
+PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", _BE["psf"])
 # Minimal synphot CDBS assembled for this tool: phoenix grid symlinked from
 # RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
