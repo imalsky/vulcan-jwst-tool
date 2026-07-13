@@ -77,7 +77,13 @@ def main():
       "NIRSpec/MIRI traces (MIRI LRS matches to ~0.15%), larger for the curved "
       "NIRISS SOSS order-1 trace and the saturating low-R PRISM. The tool "
       "integrates over bins, so the per-pixel jitter averages out; the "
-      "systematic is what enters the noise.")
+      "systematic is what enters the noise. The narrow downward spikes in this "
+      "tool's flux are STELLAR ABSORPTION LINES in Pandeia's PHOENIX spectrum "
+      "(hydrogen recombination -- e.g. Brackett-α 4.052 μm, Pfund-δ 3.297 μm "
+      "-- plus molecular bands on cool stars, so they multiply on cooler "
+      "targets: 9 lines at 6250 K, 193 at 4500 K); PandExo's separately-loaded "
+      "stellar spectrum smooths them. They are physically real, cancel in the "
+      "in/out transit-depth ratio, and wash out in binning.")
     w("")
     w("Columns: sigma ratio = (this tool's per-pixel transit-depth sigma) / "
       "(PandExo's), median [5th, 95th percentile] over matched pixels. "

@@ -201,6 +201,12 @@ def fig_extracted_flux(summary, out_root, mode="nirspec_g395h",
                  f"{STAR_LABEL[star]} star\n(the ETC engine product, "
                  "Pandeia 2026.2 both sides; wavelength grid bit-identical)")
     ax.legend(frameon=False, fontsize=9.5)
+    ax.annotate("narrow dips = stellar absorption lines in this tool's\n"
+                "PHOENIX spectrum (e.g. Br-α 4.05, Pf-δ 3.30 μm); PandExo's\n"
+                "separate stellar spectrum smooths them. They cancel in the\n"
+                "transit-depth ratio and wash out in binning.",
+                xy=(0.985, 0.97), xycoords="axes fraction", ha="right",
+                va="top", fontsize=7.6, color=INK2)
     _style(ax)
     axr = axes[1]
     axr.plot(wl_pair, ratio, color="#c3c2bd", lw=0.6, alpha=0.9, zorder=2,
