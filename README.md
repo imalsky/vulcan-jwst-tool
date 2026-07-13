@@ -193,9 +193,11 @@ validated and cache-keyed:
   Composition: metallicity (exact elemental scaling about the 10x solar
   baseline), delta ln(C/O). Vertical mixing: a constant Kzz. Photochemistry
   on/off, photolysis zenith angle, diurnal averaging factor, molecular
-  diffusion on/off, stellar UV spectrum. Condensation (rainout / cold-trap)
-  is available for the isothermal profile only and without a Fisher forecast
-  (see Known limitations), off by default.
+  diffusion on/off, stellar UV spectrum. Condensation (S8 rainout on this
+  network) works with both the isothermal and Guillot profiles — the
+  saturation curves, growth terms, and cold-trap index are rebuilt on-graph
+  from the live T(P) — but requires molecular diffusion and excludes a
+  Fisher forecast (see Known limitations); off by default.
 - **ExoJAX radiative-transfer inputs.** The opacity molecule set, H2/He
   Rayleigh scattering, an optional power-law cloud deck, and the
   line-broadening perturber (terrestrial air or H2/He, cache-keyed; molecules
@@ -203,12 +205,13 @@ validated and cache-keyed:
 - **System / target.** Radii, gravity, orbital distance, transit duration,
   host star.
 
-The WASP-39 b GCM T-P and GCM-scaled Kzz baselines are retired from the tool
-(isothermal / Guillot and constant Kzz only); they remain in the backend for
-the validated closure test and scripted reproduction. Two fidelity tiers
-("fast" and "high") trade grid resolution for runtime at identical physics.
-Out-of-window temperature profiles and non-converged chemistry solves raise
-errors; nothing is clipped or silently carried.
+The WASP-39 b GCM T-P and GCM-scaled Kzz baseline modes were REMOVED
+(2026-07-13): every planet, including WASP-39 b, uses an isothermal
+structural baseline with the explicit isothermal / Guillot profile evaluated
+on-graph, and a constant Kzz. No GCM profile is ever silently substituted.
+Two fidelity tiers ("fast" and "high") trade grid resolution for runtime at
+identical physics. Out-of-window temperature profiles and non-converged
+chemistry solves raise errors; nothing is clipped or silently carried.
 
 ## Planets
 
@@ -290,12 +293,17 @@ Pending release gates, tracked explicitly rather than assumed:
 - The box-transit depth-error formula neglects ingress/egress and
   limb-darkening covariance; there is no time-domain light-curve tier.
 - All planets use an isothermal or Guillot T-P and a constant Kzz; the
-  WASP-39 b GCM baselines are retired from the tool for now.
-- Condensation is gated to the isothermal profile with no Fisher forecast: its
-  saturation tables are frozen at the structural temperature (which equals the
-  chemistry temperature only when isothermal), and the derivative through a
-  condensing steady state is not validated. It is off by default; a first
-  production use should be spot-checked against a direct VULCAN run.
+  WASP-39 b GCM baseline modes were removed (no GCM profile is silently
+  substituted).
+- Condensation is the SNCHO network's S8 -> S8_l_s channel only (H2O/NH3
+  condensation would need a network carrying those condensate species). The
+  condensation arrays follow the live T-P on-graph, so isothermal and Guillot
+  are both supported; molecular diffusion must be on (it supplies the growth
+  term), and it excludes a Fisher forecast because the active-condensation
+  layers and cold-trap index change discretely with temperature. Runs use the
+  upstream-VULCAN methodology of a condensation window followed by a
+  fix-species pin to reach a certified steady state. It is off by default; a
+  first production use should be spot-checked against a direct VULCAN run.
 - Registry values are literature planning defaults; edit them for proposals.
 
 ## Repository layout

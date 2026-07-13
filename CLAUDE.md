@@ -181,27 +181,33 @@
   experimental. detect/fisher/transits-to-target consume the stored
   `cov`/`slope_rows`; "conservative" adds per-segment slope nuisances.
   Kernel presets are stated assumptions, never calibrated covariances.
-- **Parameter scope (2026-07-12)**: the GUI offers ONLY isothermal / Guillot
-  T-P and constant Kzz. The WASP-39 b GCM `baseline` T-P and `scale` Kzz modes
-  are RETIRED from the GUI but stay accepted by `forward.canonical_params`
-  (the `test_closure.py` slow test + scripted reproduction drive them
-  directly) — do not rip them out. GUI reorganized into five clearly-labeled
-  sections: 🪐 Planet & star, 🧪 VULCAN chemistry (T-P, composition, Kzz,
-  photochem, condensation), 🌈 ExoJAX RT (opacity/scattering/clouds/
-  broadening), 🎯 Science goal (goal, fidelity, Fisher), 🔭 Instrument & noise
-  (modes, transits, saturation, noise model). Verified with Streamlit
-  `AppTest` (`session_state['intro_ack']=True` skips the how-it-works gate).
-- **Condensation (`use_condense`, VULCAN)**: OFF by default, GATED HARD in
-  `canonical_params` to tp_mode=='isothermal' AND empty `fisher_params` — the
-  saturation tables are frozen at the structural T (== chemistry T only when
-  isothermal) and the jvp through a condensing state is unvalidated (see the
-  [[adjoint_dropped_terms_audit]] pin subtleties). The engine wrapper
-  `retrieval_framework.forward.vulcan_chem.build_chem_model` still refuses
-  `use_condense` UNLESS the forward runner sets
-  `profile['_condense_validated_isothermal']=True` (retrieval never sets it,
-  so its refusal is unchanged). Bumps `forward._VERSION` (6). A real
-  condensation forward spectrum needs one spot-check on the chemistry stack
-  before production — NOT locally validated.
+- **Parameter scope (2026-07-13)**: ONLY explicit isothermal / Guillot T-P
+  and constant Kzz exist — the WASP-39 b GCM `baseline` T-P mode, `scale` Kzz
+  mode, and `has_gcm_baseline` were REMOVED end-to-end (canonical_params
+  raises on them; defaults are isothermal/const; every planet including W39b
+  gets an isothermal structural baseline; no GCM profile is ever silently
+  substituted). The slow `test_closure.py` FD test now drives `T_iso`
+  (same single-scalar theta[3] design the retired `dT` had). GUI is organized
+  into five clearly-labeled sections: 🪐 Planet & star, 🧪 VULCAN chemistry
+  (T-P, composition, Kzz, photochem, condensation), 🌈 ExoJAX RT
+  (opacity/scattering/clouds/broadening), 🎯 Science goal (goal, fidelity,
+  Fisher), 🔭 Instrument & noise (modes, transits, saturation, noise model).
+  Verified with Streamlit `AppTest` (`session_state['intro_ack']=True` skips
+  the how-it-works gate).
+- **Condensation (`use_condense`, VULCAN)**: OFF by default. Supported for
+  BOTH isothermal and Guillot T-P — the engine (`vulcan_chem._prep`) rebuilds
+  every condensation array on-graph from the live T(P) via
+  `vulcan_jax.conden.build_conden_profile`, so the old
+  `_condense_validated_isothermal` escape hatch is GONE (never reintroduce
+  it). On the SNCHO network the one channel is S8 -> S8_l_s;
+  `forward.CONDEN_CFG` wires the full config (condense_sp/non_gas_sp/
+  r_p/rho_p + the master-faithful conden-window + fix_species pin — the
+  pre-v7 checkbox set only use_condense and condensed NOTHING). Gated in
+  `canonical_params` to use_moldiff=True (Dg is the molecular-diffusion
+  coefficient) and empty `fisher_params` (active-layer set + cold-trap index
+  are discrete in T; jvp validated only away from switches — see
+  vulcan-retrieval tests/test_condensation_live_tp.py). Bumps
+  `forward._VERSION` (7).
 - Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX
   needed). One env-gated slow test (`JWST_TOOL_RUN_SLOW=1`) FD-closes a
   Jacobian row with 3 real forward runs — Isaac schedules it, never run it

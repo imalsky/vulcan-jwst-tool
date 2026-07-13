@@ -112,7 +112,7 @@ st.caption(f"**{ins.BACKEND_STATUS}** — every result records the exact "
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 
 # default target precision per parameter (display units: dex / K / ln-units)
-_TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.30, "dT": 50.0,
+_TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
                    "log_kappa": 0.30, "log_gamma": 0.30}
 
@@ -205,8 +205,8 @@ with st.sidebar:
             format_func={"isothermal": "Isothermal",
                          "guillot": "Guillot (2010)"}.get,
             help="Sets the temperature the chemistry AND the radiative transfer "
-                 "see. (The WASP-39b GCM profile is retired from the tool for "
-                 "now — isothermal / Guillot only.)")
+                 "see. Explicit profiles only (the WASP-39b GCM profile was "
+                 "removed — isothermal / Guillot).")
         tp_kwargs = {}
         if tp_mode == "isothermal":
             tp_kwargs["T_iso"] = st.slider("T_iso (K)", 400.0, 2500.0,
@@ -235,7 +235,7 @@ with st.sidebar:
                         key=K("dco"))
 
     with st.expander("Vertical mixing (K_zz)"):
-        # constant K_zz only (the WASP-39b GCM K_zz profile is retired for now)
+        # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
         kzz_mode = "const"
         log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
                             key=_k("kzz"),
@@ -265,24 +265,26 @@ with st.sidebar:
                  "(sets the homopause; matters high up).")
 
     with st.expander("Condensation (rainout / cold-trap)"):
-        _iso = tp_mode == "isothermal"
         use_condense = st.checkbox(
             "Enable condensation", value=False, key=_k("conden"),
-            disabled=not _iso,
-            help="VULCAN condensation of condensible species (H₂O and others "
-                 "on cool atmospheres). Its saturation tables are frozen at "
-                 "the structural temperature, so it is supported ONLY with the "
-                 "isothermal T-P (structural T == chemistry T) and NOT with a "
-                 "Fisher forecast (the jvp through a condensing state is "
-                 "unvalidated). OFF by default.")
-        if not _iso:
-            st.caption("Condensation needs the **isothermal** T-P profile "
-                       "(saturation tables are baked at a single temperature). "
-                       "Switch T-P to isothermal to enable it.")
+            disabled=not use_moldiff,
+            help="VULCAN condensation. On this (SNCHO) network the one "
+                 "condensation channel is S₈ → S₈(s) — sulfur rainout on cool "
+                 "atmospheres (H₂O/NH₃ condensation would need a different "
+                 "network). The saturation curves, growth terms, and cold-trap "
+                 "index are rebuilt on-graph from the live T-P, so isothermal "
+                 "AND Guillot profiles are supported. Requires molecular "
+                 "diffusion (the growth term). Not combinable with a Fisher "
+                 "forecast. OFF by default.")
+        if not use_moldiff:
+            st.caption("Condensation needs **molecular diffusion** ON (its "
+                       "growth term is the species' molecular-diffusion "
+                       "coefficient). Enable it above to allow condensation.")
         elif use_condense:
-            st.caption("Isothermal only, and the Fisher forecast is "
-                       "disabled while condensation is on. First production "
-                       "use should be spot-checked against a direct VULCAN run.")
+            st.caption("S₈ rainout active (isothermal or Guillot T-P). The "
+                       "Fisher forecast is disabled while condensation is on. "
+                       "First production use should be spot-checked against a "
+                       "direct VULCAN run.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -403,12 +405,14 @@ with st.sidebar:
             "from d(spectrum)/d(parameter), computed by autodiff through the "
             "full chemistry+RT chain. No MCMC, no priors.")
         if use_condense:
-            # the jvp through a condensing steady state is unvalidated
-            # (canonical_params rejects use_condense + any Fisher param)
+            # the active-condensation layer set / cold-trap index are discrete
+            # in T (canonical_params rejects use_condense + any Fisher param)
             fisher_params = []
             st.info("The Fisher forecast is unavailable while condensation is "
-                    "on: the derivative through a condensing steady state is "
-                    "not validated. Turn condensation off to forecast "
+                    "on: the active-condensation layers and cold-trap index "
+                    "change discretely with temperature, so the derivative "
+                    "through a condensing steady state is only validated away "
+                    "from those switches. Turn condensation off to forecast "
                     "parameter constraints.")
         elif goal == "constrain":
             fisher_extra = st.multiselect(

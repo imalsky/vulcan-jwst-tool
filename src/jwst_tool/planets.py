@@ -13,10 +13,10 @@ planet identity injected through the existing hooks --
     noise     : star dict -> pandeia phoenix SED + Ks normalization
     timing    : t14_hr -> in/out-of-transit integration split
 
-Only WASP-39b carries a GCM T-P + Kzz baseline (the Tsai et al. 2023 evening
-terminator file baked into the VULCAN cfg). Every other planet uses an
-isothermal structural baseline at its equilibrium temperature and a
-user-chosen isothermal / Guillot T-P on-graph, with a constant Kzz.
+Every planet (including WASP-39b) uses an isothermal structural baseline at a
+representative temperature and a user-chosen isothermal / Guillot T-P
+evaluated on-graph, with a constant Kzz. The WASP-39b GCM T-P/Kzz baseline
+modes were removed 2026-07-13 (no GCM profile is ever silently substituted).
 
 Values are literature defaults for PLANNING (all editable in the GUI):
 WASP-39b Mancini+2018/Tsai+2023; HD 189733b Addison+2019; HD 209458b
@@ -46,9 +46,8 @@ PLANETS = {
         rstar_rsun=0.932, rp_rjup=1.279, gs_cgs=422.0,
         orbit_au=0.04828, teq_k=1120.0, t14_hr=2.80,
         sflux="sflux-W39b_Tsai2023.txt",
-        has_gcm_baseline=True,
-        note="The validated baseline (Tsai et al. 2023 setup): GCM T-P + Kzz "
-             "profiles available, JWST ERS SO2 story.",
+        note="The validated system (Tsai et al. 2023 setup): JWST ERS SO2 "
+             "story.",
     ),
     "hd189733b": dict(
         label="HD 189733 b",
@@ -56,7 +55,6 @@ PLANETS = {
         rstar_rsun=0.756, rp_rjup=1.138, gs_cgs=2190.0,
         orbit_au=0.0313, teq_k=1200.0, t14_hr=1.80,
         sflux="sflux-HD189_Moses11.txt",
-        has_gcm_baseline=False,
         note="Very bright host (Ks = 5.5) with a high-gravity planet: expect "
              "most modes to saturate and small spectral features.",
     ),
@@ -66,7 +64,6 @@ PLANETS = {
         rstar_rsun=1.155, rp_rjup=1.359, gs_cgs=930.0,
         orbit_au=0.0475, teq_k=1450.0, t14_hr=3.07,
         sflux="Gueymard_solar.txt",
-        has_gcm_baseline=False,
         note="The classic inflated hot Jupiter (G0V host; solar UV spectrum, "
              "same proxy the VULCAN HD209 config uses).",
     ),
@@ -76,7 +73,6 @@ PLANETS = {
         rstar_rsun=0.67, rp_rjup=0.94, gs_cgs=270.0,
         orbit_au=0.0553, teq_k=740.0, t14_hr=2.74,
         sflux="sflux-epseri.txt",
-        has_gcm_baseline=False,
         note="Warm Neptune-mass super-puff: very low gravity means huge "
              "spectral features (K6V host; eps Eri UV proxy).",
     ),

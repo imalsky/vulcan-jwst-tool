@@ -606,3 +606,64 @@ mislabelled d/2), PRISM parity wording (34-50% policy, not the 6-12% band),
 detection_significance + n_transits fail-fast validation, stale
 noise.py-"pending"/README-0.7.0 text, and an evidence-uncertainty caveat in
 vulcan-retrieval evidence_report (support-fraction err is not total sigma(logZ)).
+
+## v16: 2026-07-13 live-T(P) condensation + GCM special cases removed (forward v7)
+
+Condensation now follows the live temperature profile end-to-end. The engine
+(vulcan-retrieval `vulcan_chem`) rebuilds every T/structure-dependent
+condensation array on-graph per proposal via the new
+`vulcan_jax.conden.make_conden_spec` / `build_conden_profile` split
+(saturation number densities, Dg growth terms from the live Dzz, H2O/NH3
+relax inputs, NH3 cold-trap argmin, fix-species sat-mix rows), splicing them
+into the ProfileVars carry the runner reads each step. The
+`_condense_validated_isothermal` escape hatch and the engine's
+NotImplementedError are gone; genuinely unsupported configs still raise
+(moldiff off, empty/inert condense_sp, use_sat_surfaceH2O).
+
+Tool changes (forward `_VERSION` 6 -> 7, all cached spectra stale):
+
+1. GCM special cases REMOVED: `tp_mode="baseline"`, `kzz_mode="scale"`, and
+   `planets.has_gcm_baseline` are gone; canonical_params raises on both modes
+   (defaults now isothermal/const). Every planet including WASP-39b gets an
+   isothermal structural baseline; the explicit isothermal/Guillot profile is
+   evaluated on-graph for chemistry AND RT. The pre-v7 combination
+   W39b + tp_mode=isothermal + use_condense was silently WRONG (saturation
+   tables at the GCM structural T, chemistry at T_iso) -- that class of bug
+   is now structurally impossible. `test_closure.py`'s slow FD test migrated
+   dT -> T_iso (same single-scalar theta[3] design).
+2. Condensation allowed for isothermal AND Guillot; requires use_moldiff
+   (the growth term IS the molecular-diffusion coefficient -- with it off
+   every rate is silently zero); still excludes Fisher (active-layer set +
+   cold-trap index are discrete in T; jvp==FD validated away from switches in
+   vulcan-retrieval tests/test_condensation_live_tp.py, NOT across Fisher
+   corners).
+3. The condensation channel is now actually wired: pre-v7 the checkbox set
+   only `use_condense=True` while `condense_sp` stayed `[]`, so NOTHING
+   condensed (the SNCHO network's one condensation reaction S8 -> S8_l_s was
+   never activated). `forward.CONDEN_CFG` now configures
+   condense_sp=["S8"], non_gas_sp=["S8_l_s"], r_p/rho_p (rainout-sized 50 um
+   orthorhombic-sulfur particles; smaller aerosol radii make the growth term
+   stiffer than Ros2 can resolve to convergence), and the master-faithful
+   conden-window + fix_species pin -- WHOLE-COLUMN
+   (fix_species_from_coldtrap_lev=False; the cold-trap argmin degenerates on
+   isothermal columns and leaves the gas unpinned) -- so condensing solves
+   actually CONVERGE. Without the pin the steady state is transport-limited
+   (the upper S8 reservoir drains through the condensation front on the Kzz
+   timescale, ~1e9 s, while dt stays capped at the front's condensation
+   timescale). Certified-convergence knobs, each measured in the retrieval
+   test: mtol_conv=1e-15 (glacial N2->NH3 drift at ~6e-19 VMR gates longdy
+   forever at the 1e-20 default), conver_ignore extended with the trace
+   sulfur allotropes S/S2/S3/S4 (re-equilibrate against pinned S8 on >=1e15 s
+   cold-top timescales; none is an RT molecule), and trun_min =
+   stop_conden_time (certification may never fire before the window + pin
+   complete, else a half-rained S8 column gets certified). Verified
+   end-to-end: WASP-107b + Guillot (631-1092 K) + condensation + photo runs
+   the full chemistry->RT pipeline and converges via the normal longdy gate
+   (cached e5fa4eb877ffd753, v7). Known limit: a COLD (<~450 K) no-photo
+   column has no reachable longdy steady state at all (well-mixed CO2 creeps
+   toward thermochemical equilibrium on >=1e17 s -- the quench regime; the
+   retrieval test integrates such columns to a physical runtime cap
+   instead); such a corner in the tool exhausts count_max and raises loudly.
+
+Suite: test_forward_params.py rewritten (GCM modes raise; Guillot+conden
+accepted; moldiff gate; CONDEN_CFG wired; default tp_mode isothermal).

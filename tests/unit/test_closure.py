@@ -85,8 +85,10 @@ def test_matched_filter_amplitude_variance_closure():
                            "(~5-10 min, JAX required); set JWST_TOOL_RUN_SLOW=1")
 def test_jacobian_row_matches_finite_difference():
     """One cached warm-started-jvp Jacobian row against a central finite
-    difference of two cold re-solved forward models. dT (baseline T-P shift)
-    keeps both FD runs on the single-stage chemistry path (met=10x, dco=0).
+    difference of two cold re-solved forward models. T_iso (isothermal T-P)
+    keeps both FD runs on the single-stage chemistry path (met=10x, dco=0);
+    it replaced the removed GCM-baseline dT shift 2026-07-13 (same
+    single-scalar theta[3] slot, same FD design).
 
     Agreement gate is deliberately loose: 'fast' quality certifies chemistry
     at yconv 1e-2, and the FD endpoints re-converge cold while the jvp rides
@@ -97,18 +99,19 @@ def test_jacobian_row_matches_finite_difference():
     def quiet(_s):
         return None
 
-    base = dict(planet="wasp39b", quality="fast", tp_mode="baseline",
-                fisher_params=["dT"], use_photo=True)
+    T0 = 1100.0
+    base = dict(planet="wasp39b", quality="fast", tp_mode="isothermal",
+                T_iso=T0, fisher_params=["T_iso"], use_photo=True)
     if forward.load_result(base) is None:
         forward.run_model(base, log=quiet)
     m0 = forward.load_result(base)
     names = [str(x) for x in m0["jac_names"]]
-    row = np.asarray(m0["jac"][names.index("dT")])
+    row = np.asarray(m0["jac"][names.index("T_iso")])
 
     h = 2.0                                          # K, small vs T ~ 1000 K
     d = {}
     for s, tag in ((+h, "p"), (-h, "m")):
-        p = dict(base, dT=float(s), fisher_params=[])
+        p = dict(base, T_iso=T0 + float(s), fisher_params=[])
         if forward.load_result(p) is None:
             forward.run_model(p, log=quiet)
         d[tag] = np.asarray(forward.load_result(p)["depth"])

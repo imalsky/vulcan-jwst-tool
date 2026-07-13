@@ -13,10 +13,12 @@ Two faces:
 Planets: every system in ``planets.PLANETS`` (plus "custom") runs on the same
 validated W39b SNCHO machinery -- the planet identity (gravity, radius, star,
 orbit, UV spectrum) is injected via cfg_overrides for the chemistry and via
-profile rp_cm/gs_cgs/rstar_cm for the RT. Only WASP-39b has the GCM T-P + Kzz
-baseline; other planets get an isothermal structural baseline at a
-representative temperature and MUST use the isothermal / Guillot T-P modes
-(canonical_params rejects "baseline" and GCM-scaled Kzz for them, loudly).
+profile rp_cm/gs_cgs/rstar_cm for the RT. EVERY planet (including WASP-39b)
+gets an isothermal structural baseline at a representative temperature; the
+requested T-P profile is evaluated on-graph and drives the chemistry AND the
+RT. The WASP-39b GCM T-P/Kzz special cases were REMOVED (2026-07-13): no
+tp_mode="baseline", no GCM-scaled Kzz, no has_gcm_baseline branches -- a GCM
+profile is never silently substituted.
 
 Quality tiers (the GUI's fidelity switch; "fast" is the default):
     fast  nz=100, yconv 1e-2 (VULCAN master default), nu_pts=4000, 40 layers
@@ -25,19 +27,12 @@ Quality tiers (the GUI's fidelity switch; "fast" is the default):
 Atmosphere-structure knobs (all consumed by the same validated pipeline hooks the
 retrieval framework uses):
 
-    T-P profile (tp_mode). The GUI offers only "isothermal" and "guillot";
-    "baseline" stays accepted by canonical_params for the validated W39b
-    closure test and scripted reproducibility, but is not exposed in the tool:
-      "isothermal"  T(P) = T_iso                                  (tp_eval hook)
+    T-P profile (tp_mode) -- explicit profiles only, both on-graph tp_eval hooks:
+      "isothermal"  T(P) = T_iso
       "guillot"     ExoJax atmprof_Guillot(Tirr, Tint, log10 kappa, log10 gamma)
-                    with f=0.25 and the planet's surface gravity  (tp_eval hook)
-      "baseline"    WASP-39b GCM T(P) + uniform shift dT (backend only, not in
-                    the GUI)                                       (tp_eval=None)
-    Kzz. The GUI offers only "const"; "scale" stays backend-accepted (W39b GCM
-    reproducibility) but is not exposed:
-      kzz_mode "const"  constant Kzz = kzz_const cm^2/s (cfg_overrides
-                        Kzz_prof="const"), further x kzz_x if given
-      kzz_mode "scale"  baseline GCM Kzz profile x kzz_x (backend only)
+                    with f=0.25 and the planet's surface gravity
+    Kzz: kzz_mode "const" only -- constant Kzz = kzz_const cm^2/s (cfg_overrides
+      Kzz_prof="const"), further x kzz_x if given.
     Composition:
       met_x_solar  metallicity in x solar -> lnZ = ln(met/10) about the 10x baseline
       dco          Delta ln(C/O) carbon-enrichment proxy
@@ -47,12 +42,22 @@ retrieval framework uses):
       sl_angle_deg  photolysis zenith angle (deg; 83 = Tsai 2023 terminator slant)
       f_diurnal     diurnal photolysis factor (1.0 = permanent dayside)
       use_moldiff   molecular diffusion on/off (homopause)
-      use_condense  condensation (rainout / cold-trap) on/off. OFF by default
-                    and gated to isothermal T-P with NO Fisher forecast: the
-                    saturation tables are frozen at the structural T (== the
-                    chemistry T only when isothermal), and the jvp through a
-                    condensing steady state is unvalidated. canonical_params
-                    raises for any other combination.
+      use_condense  condensation on/off. OFF by default. Supported for BOTH
+                    isothermal and Guillot T-P: the condensation arrays
+                    (saturation curves, growth terms, cold-trap index) are
+                    rebuilt ON-GRAPH from the live T(P) per solve
+                    (vulcan_jax.conden.build_conden_profile via the engine's
+                    _prep). On the SNCHO network the one condensation channel
+                    is S8 -> S8_l_s (sulfur rainout; H2O/NH3 condensation
+                    would need a network carrying H2O_l_s/NH3_l_s). Requires
+                    use_moldiff=True (the growth term IS the molecular-
+                    diffusion coefficient). Still NOT combinable with a
+                    Fisher forecast: the active-condensation layer set and
+                    cold-trap index are discrete in T, so Fisher derivatives
+                    through a condensing state stay disabled until the jvp
+                    validation is extended to production corners
+                    (vulcan-retrieval tests/test_condensation_live_tp.py
+                    validates jvp==FD away from those switches).
       use_rayleigh  H2/He Rayleigh scattering (ON by default from v4; v3 lacked it)
       cloud_on + log_kappa_cloud + alpha_cloud
                     ExoJax power-law cloud deck (fixed in the Fisher forecast)
@@ -95,10 +100,15 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 6   # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 7   # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
                # broadening knob in the RT; v6: use_condense knob in the cache
-               # key -- all pre-v6 spectra are stale)
+               # key; v7: GCM baseline/scale modes REMOVED -- every planet on
+               # an isothermal structural baseline -- and condensation rebuilt
+               # on-graph from the live T-P with the S8 channel actually
+               # activated (condense_sp was previously empty, so pre-v7
+               # "condensation on" spectra condensed nothing) -- all pre-v7
+               # spectra are stale)
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -123,23 +133,75 @@ T_WINDOW = (320.0, 2980.0)
 # Parameters that can be freed in the Fisher forecast, per tp_mode.
 CHEM_PARAM_NAMES = ["lnZ", "dlnCO", "lnKzz"]
 TP_PARAM_NAMES = {
-    "baseline": ["dT"],
     "isothermal": ["T_iso"],
     "guillot": ["Tirr", "Tint", "log_kappa", "log_gamma"],
 }
 # Display units + friendly names for the GUI's constraint table / science goals.
 PARAM_UNITS = {"lnZ": "dex(Z)", "dlnCO": "ln(C/O)", "lnKzz": "dex(Kzz)",
-               "dT": "K", "T_iso": "K", "Tirr": "K", "Tint": "K",
+               "T_iso": "K", "Tirr": "K", "Tint": "K",
                "log_kappa": "dex", "log_gamma": "dex"}
 PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
-                "lnKzz": "Vertical mixing (Kzz)", "dT": "T-P shift ΔT",
+                "lnKzz": "Vertical mixing (Kzz)",
                 "T_iso": "Isothermal T", "Tirr": "Guillot T_irr",
                 "Tint": "Guillot T_int", "log_kappa": "Guillot log κ_IR",
                 "log_gamma": "Guillot log γ"}
 
+# VULCAN condensation channel on the SNCHO network: its one condensation
+# reaction is S8 -> S8_l_s (H2O/NH3 condensation is NOT available on this
+# network -- no H2O_l_s/NH3_l_s species; enabling it would need a different
+# network). Particle properties: rainout-sized 50 um orthorhombic-sulfur
+# particles (rho = 2.07 g/cm^3; r_p matches the shipped cfgs' H2O_l_s value)
+# -- smaller aerosol radii make the growth term stiffer than Ros2 can resolve
+# to convergence (dt gets capped at the condensation-front timescale).
+# Convergence methodology is upstream VULCAN's conden-window + fix_species
+# pin: condensation runs on [start_conden_time, stop_conden_time], then S8 +
+# S8_l_s are pinned WHOLE-COLUMN (from_coldtrap_lev=False -- the cold-trap
+# argmin degenerates on isothermal columns) and the rest of the chemistry
+# converges. Without the pin the steady state is transport-limited (the
+# upper S8 reservoir drains through the condensation front on the Kzz
+# timescale ~1e9 s while dt stays capped) and every solve would exhaust
+# count_max. Caveat, documented: on planets too hot to condense, enabling
+# condensation still pins S8/S8_l_s at their t = stop_conden_time transient.
+CONDEN_CFG = {
+    "use_condense": True,
+    "condense_sp": ["S8"],
+    "non_gas_sp": ["S8_l_s"],
+    "r_p": {"S8_l_s": 5.0e-3},
+    "rho_p": {"S8_l_s": 2.07},
+    "use_relax": [],
+    "use_settling": False,
+    "fix_species": ["S8", "S8_l_s"],
+    "fix_species_from_coldtrap_lev": False,
+    "start_conden_time": 0.0,
+    "stop_conden_time": 1.0e6,
+    # Convergence mixing-ratio floor for cold (condensing) atmospheres: at
+    # the 1e-20 default, kinetically-glacial trace species (e.g. NH3 forming
+    # from N2 at ~400 K, drifting at ~1e-18 VMR) gate longdy forever. 1e-15
+    # is still orders below any RT-relevant abundance.
+    "mtol_conv": 1.0e-15,
+    # Default heavy-hydrocarbon conver_ignore list + the trace sulfur
+    # allotropes: against a pinned S8 they re-equilibrate on cold-top thermal
+    # timescales measured at >=1e15 s (physically unreachable), at abundances
+    # far below RT relevance -- none is an RT molecule; the observable sulfur
+    # species (SO2, H2S, SO) STAY in the gate. Measured in vulcan-retrieval
+    # tests/test_condensation_live_tp.py.
+    "conver_ignore": ["C6H6", "C2H2", "C6H5", "C2H", "C2H4", "C2H5", "C2H6",
+                      "C3H2", "C3H3", "C4H5", "CH2NH", "CH3NH2", "H2CCO",
+                      "S", "S2", "S3", "S4"],
+    # Bound certification from below so the conden window + pin always
+    # complete before the convergence gate may fire (the certified S8 state
+    # is the deterministic end-of-window rainout).
+    "trun_min": 1.0e6,
+}
+
 
 def canonical_params(params: dict) -> dict:
-    tp_mode = str(params.get("tp_mode", "baseline"))
+    tp_mode = str(params.get("tp_mode", "isothermal"))
+    if tp_mode not in TP_PARAM_NAMES:
+        raise ValueError(
+            f"unknown tp_mode {tp_mode!r} (choose from {list(TP_PARAM_NAMES)}). "
+            "The WASP-39b GCM 'baseline' mode was removed -- use an explicit "
+            "isothermal or Guillot profile.")
     planet = str(params.get("planet", "wasp39b"))
     if planet not in planets.PLANETS and planet != "custom":
         raise ValueError(f"unknown planet {planet!r}")
@@ -161,11 +223,10 @@ def canonical_params(params: dict) -> dict:
         "sflux": sflux,
         "met_x_solar": round(float(params.get("met_x_solar", 10.0)), 4),
         "dco": round(float(params.get("dco", 0.0)), 4),
-        "kzz_mode": str(params.get("kzz_mode", "scale")),
+        "kzz_mode": str(params.get("kzz_mode", "const")),
         "kzz_x": round(float(params.get("kzz_x", 1.0)), 4),
         "kzz_const": round(float(params.get("kzz_const", 1.0e9)), 1),
         "tp_mode": tp_mode,
-        "dT": round(float(params.get("dT", 0.0)), 2),
         "T_iso": round(float(params.get("T_iso", 1100.0)), 2),
         "Tirr": round(float(params.get("Tirr", 1560.0)), 2),
         "Tint": round(float(params.get("Tint", 100.0)), 2),
@@ -177,12 +238,12 @@ def canonical_params(params: dict) -> dict:
         "sl_angle_deg": round(float(params.get("sl_angle_deg", 83.0)), 1),
         "f_diurnal": round(float(params.get("f_diurnal", 1.0)), 3),
         "use_moldiff": bool(params.get("use_moldiff", True)),
-        # VULCAN condensation (rainout / cold-trap of condensible species).
-        # OFF by default. Gated hard below to the ONLY self-consistent regime:
-        # isothermal T-P (so the structural T the saturation tables are baked
-        # at equals the on-graph chemistry T) and NO Fisher forecast (the
-        # forward-mode jvp through a condensing steady state carries
-        # condensation-pin subtleties that are not validated here).
+        # VULCAN condensation (S8 rainout on the SNCHO network). OFF by
+        # default. Supported for isothermal AND Guillot T-P -- the engine
+        # rebuilds the condensation arrays on-graph from the live T(P).
+        # Requires use_moldiff (growth term) and NO Fisher forecast (the
+        # active-layer set / cold-trap index are discrete in T); both are
+        # validated below.
         "use_condense": bool(params.get("use_condense", False)),
         # RT physics: Rayleigh is known zero-parameter physics, ON by default
         # (v3 and earlier ran without it -- that biased the <1.5 um slope);
@@ -218,23 +279,22 @@ def canonical_params(params: dict) -> dict:
             "(config.py run-profile notes). Enable photochemistry or clear "
             "the Fisher parameter list.")
     if cp["use_condense"]:
-        # condensation saturation/growth tables are frozen at the structural
-        # T-P. Only isothermal keeps structural T == on-graph chemistry T, so
-        # the tables are evaluated at the conditions they were built for.
-        if cp["tp_mode"] != "isothermal":
+        if not cp["use_moldiff"]:
             raise ValueError(
-                "condensation (use_condense) is supported only with the "
-                "isothermal T-P profile: its saturation tables are baked at "
-                "the structural temperature, which equals the chemistry "
-                f"temperature only when isothermal (got tp_mode={cp['tp_mode']!r}). "
-                "Use isothermal, or turn condensation off.")
+                "condensation (use_condense) requires molecular diffusion "
+                "(use_moldiff): the condensation growth term IS the species' "
+                "molecular-diffusion coefficient, so with it off every "
+                "condensation rate would silently be zero. Enable molecular "
+                "diffusion, or turn condensation off.")
         if cp["fisher_params"]:
             raise ValueError(
                 "condensation (use_condense) cannot be combined with a Fisher "
-                "forecast: the forward-mode jvp through a condensing steady "
-                "state carries condensation-pin terms that are not validated "
-                "here. Clear the Fisher parameter list, or turn condensation "
-                "off.")
+                "forecast: the active-condensation layer set and cold-trap "
+                "index are discrete in temperature, so the forward-mode jvp "
+                "through a condensing steady state is only validated away "
+                "from those switches (not across the production Fisher "
+                "corners). Clear the Fisher parameter list, or turn "
+                "condensation off.")
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
@@ -242,22 +302,15 @@ def canonical_params(params: dict) -> dict:
         cp["log_kappa_cloud"] = 0.0
         cp["alpha_cloud"] = 0.0
     # drop fields inert for the chosen modes so they don't fragment the cache
-    if tp_mode != "baseline":
-        cp["dT"] = 0.0
     if tp_mode != "isothermal":
         cp["T_iso"] = 0.0
     if tp_mode != "guillot":
         cp["Tirr"] = cp["Tint"] = cp["log_kappa"] = cp["log_gamma"] = 0.0
     if cp["kzz_mode"] != "const":
-        cp["kzz_const"] = 0.0
-    # GCM-tied modes exist only for the planet whose profiles are baked in (W39b).
-    gcm = planets.PLANETS.get(planet, {}).get("has_gcm_baseline", False)
-    if tp_mode == "baseline" and not gcm:
-        raise ValueError(f"tp_mode='baseline' (GCM T-P profile) is only available "
-                         f"for WASP-39b, not {planet!r} -- use isothermal or guillot")
-    if cp["kzz_mode"] == "scale" and not gcm:
-        raise ValueError(f"kzz_mode='scale' (GCM Kzz profile) is only available "
-                         f"for WASP-39b, not {planet!r} -- use kzz_mode='const'")
+        raise ValueError(
+            f"unknown kzz_mode {cp['kzz_mode']!r}: only 'const' is supported. "
+            "The WASP-39b GCM-scaled 'scale' mode was removed -- pass an "
+            "explicit kzz_const.")
     bad = set(cp["fisher_params"]) - set(CHEM_PARAM_NAMES + TP_PARAM_NAMES[tp_mode])
     if bad:
         raise ValueError(f"fisher_params {sorted(bad)} not available for tp_mode={tp_mode}")
@@ -290,14 +343,11 @@ def load_result(params: dict):
 def _build_tp(cp: dict, gs_cgs: float):
     """(tp_eval, n_tp, tp_values, theta_names) for the chosen T-P mode.
 
-    tp_eval(tp_params, p_bar) is pure JAX (differentiable); None for baseline mode
-    (where the runner's own validated uniform-shift knob theta[3]=dT is used).
+    tp_eval(tp_params, p_bar) is pure JAX (differentiable) for every mode.
     """
     import jax.numpy as jnp
 
     mode = cp["tp_mode"]
-    if mode == "baseline":
-        return None, 0, [cp["dT"]], CHEM_PARAM_NAMES + ["dT"]
     if mode == "isothermal":
         def tp_eval(tp, p_bar):
             return jnp.zeros_like(jnp.asarray(p_bar)) + tp[0]
@@ -399,33 +449,26 @@ def run_model(params: dict, log=print) -> Path:
         "use_moldiff": cp["use_moldiff"],
     }
     if cp["use_condense"]:
-        # canonical_params has already confirmed the self-consistent regime
-        # (isothermal, no Fisher). Turn condensation on in the chemistry and
-        # authorize the engine's condensation path for this run via an
-        # explicit profile flag (vulcan_chem otherwise refuses use_condense to
-        # protect the T-varying retrieval).
-        ovr["use_condense"] = True
-        profile["_condense_validated_isothermal"] = True
+        # canonical_params confirmed moldiff on + no Fisher. The engine
+        # rebuilds the condensation arrays on-graph from the live T(P) per
+        # solve, so isothermal and Guillot are both self-consistent; the
+        # channel config (S8 -> S8_l_s + particle properties) is CONDEN_CFG.
+        ovr.update(CONDEN_CFG)
     if cp["use_photo"]:                  # photolysis geometry/averaging knobs
         ovr["sl_angle"] = float(np.deg2rad(cp["sl_angle_deg"]))
         ovr["f_diurnal"] = cp["f_diurnal"]
-    gcm = planets.PLANETS.get(cp["planet"], {}).get("has_gcm_baseline", False)
-    if not gcm:
-        # No baked GCM T-P/Kzz for this planet: isothermal structural baseline
-        # at a representative temperature (the on-graph tp_eval replaces T for
-        # the chemistry+RT; the structure sets the hydrostatic grid + EQ init),
-        # constant Kzz. canonical_params already rejected baseline/scale modes.
-        T_struct = (cp["T_iso"] if cp["tp_mode"] == "isothermal"
-                    else cp["Tirr"] / np.sqrt(2.0))   # ~equilibrium T at f=0.25
-        ovr.update({"atm_type": "isothermal", "Tiso": float(T_struct),
-                    "Kzz_prof": "const", "const_Kzz": cp["kzz_const"]})
-        log(f"[fwd] planet {cp['planet']}: isothermal structural baseline "
-            f"{T_struct:.0f} K, const Kzz {cp['kzz_const']:.1e} cm2/s, "
-            f"UV = {cp['sflux']}")
-    elif cp["kzz_mode"] == "const":
-        # constant eddy-diffusion profile via the same cfg_overrides hook the
-        # fisher_zco tiers use; lnKzz (theta[2]) still multiplies it on-graph.
-        ovr.update({"Kzz_prof": "const", "const_Kzz": cp["kzz_const"]})
+    # Isothermal structural baseline for EVERY planet (including WASP-39b; the
+    # GCM structural baseline was removed): the on-graph tp_eval supplies the
+    # actual T(P) for chemistry+RT, the structural profile only sets the
+    # hydrostatic grid + EQ init. Constant Kzz; lnKzz (theta[2]) still
+    # multiplies it on-graph.
+    T_struct = (cp["T_iso"] if cp["tp_mode"] == "isothermal"
+                else cp["Tirr"] / np.sqrt(2.0))   # ~equilibrium T at f=0.25
+    ovr.update({"atm_type": "isothermal", "Tiso": float(T_struct),
+                "Kzz_prof": "const", "const_Kzz": cp["kzz_const"]})
+    log(f"[fwd] planet {cp['planet']}: isothermal structural baseline "
+        f"{T_struct:.0f} K, const Kzz {cp['kzz_const']:.1e} cm2/s, "
+        f"UV = {cp['sflux']}")
     profile["cfg_overrides"] = ovr
 
     t0 = time.time()
@@ -435,10 +478,7 @@ def run_model(params: dict, log=print) -> Path:
     log(f"[fwd] chemistry ready in {time.time()-t0:.0f} s")
 
     # --- T-P validity: REJECT (never clip) out-of-window profiles ------------
-    if tp_eval is not None:
-        T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(chem.p_bar)))
-    else:
-        T_check = np.asarray(chem.T_base) + cp["dT"]
+    T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(chem.p_bar)))
     tmin, tmax = float(T_check.min()), float(T_check.max())
     if tmin < T_WINDOW[0] or tmax > T_WINDOW[1]:
         raise RuntimeError(
@@ -461,8 +501,6 @@ def run_model(params: dict, log=print) -> Path:
     p_art_j = jnp.asarray(rt.p_art_bar)
 
     def art_T(th):
-        if tp_eval is None:
-            return to_art(jnp.asarray(chem.T_base) + th[3])
         return tp_eval(th[3:], p_art_j)
 
     # ExoJax power-law retrieval cloud [log10 kappac0 (cm^2/g at 3.5 um), alphac];
