@@ -396,3 +396,54 @@ that repo's CLAUDE.md / notes.
 
 **Tests 76 → 79** (+3 flux-weighted-LSF): `python -m pytest tests -q`,
 numpy-only, all green (79 passed, 1 slow test skipped by default).
+
+## v12: 2026-07-12 maximal adversarial re-audit response (grid validation, retirement)
+
+Response to the superseding maximal adversarial re-audit (report dated
+2026-07-12, tests 2026-07-13 UTC). The audit ran against main head 67ef1be,
+FOUR commits behind local main: its Errors 1-5 (cumulative-integral interp,
+Fisher unit rank, nuisance basis scaling, quadrature/R-scaled floor, flat
+depth-space LSF) were already fixed in 0f31753 / 6706934 / 26a65f0 (v9-v11).
+All five were re-verified against the current head with the audit's own
+reproducers before this pass: linear cell average exact to float64 (the
+audit's "exact 0.0102" reference is itself an arithmetic slip; the true value
+is 0.0103 and the code returns it exactly), Fisher sigmas/rank invariant
+under a 24-decade unit rescale, nuisance score invariant under row rescaling
+and invertible remixes, 20 ppm floor exactly 20 ppm at every R_bin and
+transit count, flux-weighted LSF within ~1.4 ppm of the brute-force count
+ratio where the flat blur erred by ~98 ppm.
+
+**ERROR 7 (the one confirmed outstanding code defect) — invalid wavelength
+grids degraded silently: FIXED.** `binning` now validates loudly at every
+entry point: non-finite wavelengths/weights/model values raise (never
+argsort-parked and dropped); median pixel spacing uses strictly POSITIVE gaps
+(`_positive_gap_median`), so exact-duplicate wavelengths are flagged
+degenerate even on duplicate-majority grids (all-gaps median collapsed to 0
+and disabled the mask entirely — the audit's reproducer); bin edges must be
+finite/ascending; `build_operator` raises with a per-criterion exclusion
+breakdown when no usable pixel survives, instead of returning an empty
+operator that failed later with a bare numpy min/max error;
+`detect.evaluate_mode` raises when saturation + degeneracy exclude every
+pixel; `smooth_to_native_r` rejects non-finite weights. Duplicate policy
+documented on `build_operator`: exact duplicates carry zero spectral support,
+are flagged by `degenerate_wl_mask`, and are excluded + COUNTED via
+n_pix_degenerate.
+
+**ERROR 6 — divergent public monorepo (vulcan_exojax_run): RETIRED for
+real.** The standalone repos were already the authoritative source (the
+2026-07-11 restructure), but the public monorepo still carried installable
+stale package copies. Its README now carries a deprecation notice pointing
+to the standalone repos at exact SHAs and the repo is archived (read-only).
+
+**Docs:** README qualifies the derivative claim (machine-precision AD of the
+discretized, tolerance-converged model — not physical exactness), states the
+LSF count-ratio form, and lists grid validation in the test coverage;
+CLAUDE.md gains the strict-grid-validation invariant.
+
+**Not adopted from the audit:** its "exact result 0.0102" for the E1
+reproducer (arithmetic slip, see above), and its claimed 5.86/7.67-sigma
+nuisance failures and rank-1-vs-2 Fisher flip, which do not reproduce on the
+current head (they targeted the pre-v9 code).
+
+**Tests 79 → 86** (+7 strict-grid-validation): `python -m pytest tests -q`,
+numpy-only, all green (86 passed, 1 slow test skipped by default).

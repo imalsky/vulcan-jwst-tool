@@ -61,18 +61,50 @@ SEGMENT_GAP_FACTOR = 20.0
 DEGENERATE_WL_FRAC = 0.02
 
 
+def _validate_wl(wl, name: str) -> np.ndarray:
+    """Loud wavelength-grid validation (2026-07-12 re-audit, item 7): a NaN or
+    infinite wavelength is an upstream data error, never a sample to drop
+    silently -- np.argsort would park NaNs at the end and every gap statistic
+    downstream would be poisoned or silently truncated. Returns float array."""
+    wl = np.asarray(wl, float)
+    if wl.size == 0:
+        raise ValueError(f"{name}: empty wavelength array")
+    bad = ~np.isfinite(wl)
+    if bad.any():
+        raise ValueError(
+            f"{name}: {int(bad.sum())}/{wl.size} non-finite wavelength(s) "
+            f"(first at index {int(np.argmax(bad))}) -- fix the upstream "
+            "grid; invalid samples are never silently dropped")
+    return wl
+
+
+def _positive_gap_median(gaps: np.ndarray) -> float:
+    """Median pixel spacing over STRICTLY POSITIVE gaps. Duplicate wavelengths
+    contribute zero-width gaps; including them made the median collapse to 0
+    on duplicate-majority grids, which silently disabled both the degenerate
+    mask (`local < 0.02*0` is never true) and the segment splitter
+    (2026-07-12 re-audit, item 7). Returns 0.0 when every gap is zero."""
+    pos = gaps[gaps > 0.0]
+    return float(np.median(pos)) if pos.size else 0.0
+
+
 def degenerate_wl_mask(wl_pix: np.ndarray) -> np.ndarray:
     """True for pixels on a degenerate wavelength solution (see above).
-    Returned in the INPUT pixel order."""
-    wl_pix = np.asarray(wl_pix, float)
+    Returned in the INPUT pixel order. Exact-duplicate wavelengths are always
+    degenerate (zero local spacing = zero spectral support); a grid whose
+    every pixel is duplicated comes back all-True, never all-False."""
+    wl_pix = _validate_wl(wl_pix, "degenerate_wl_mask: wl_pix")
     order = np.argsort(wl_pix)
     wl_s = wl_pix[order]
     if wl_s.size < 3:
         return np.zeros(wl_pix.size, bool)
     gaps = np.diff(wl_s)
+    med = _positive_gap_median(gaps)
+    if med == 0.0:                       # every pixel shares one wavelength
+        return np.ones(wl_pix.size, bool)
     local = np.minimum(np.concatenate([[gaps[0]], gaps]),
                        np.concatenate([gaps, [gaps[-1]]]))
-    bad_sorted = local < DEGENERATE_WL_FRAC * np.median(gaps)
+    bad_sorted = local < DEGENERATE_WL_FRAC * med
     bad = np.zeros(wl_pix.size, bool)
     bad[order] = bad_sorted
     return bad
@@ -87,12 +119,15 @@ def segment_ids(wl_pix: np.ndarray) -> np.ndarray:
     segment gets its own calibration-offset nuisance in the detection score
     and the Fisher forecasts (Moran+2023 / Madhusudhan+2023-style NRS1/NRS2
     steps of tens of ppm are universal in real G395H fits)."""
-    wl_pix = np.asarray(wl_pix, float)
+    wl_pix = _validate_wl(wl_pix, "segment_ids: wl_pix")
     order = np.argsort(wl_pix)
     if wl_pix.size < 2:
         return np.zeros(wl_pix.size, int)
     gaps = np.diff(wl_pix[order])
-    split = gaps > SEGMENT_GAP_FACTOR * np.median(gaps)
+    med = _positive_gap_median(gaps)
+    if med == 0.0:                       # all-duplicate grid: one segment
+        return np.zeros(wl_pix.size, int)
+    split = gaps > SEGMENT_GAP_FACTOR * med
     seg_sorted = np.concatenate([[0], np.cumsum(split)])
     seg = np.empty(wl_pix.size, int)
     seg[order] = seg_sorted
@@ -150,8 +185,7 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
     inside the band. The working band extends 5 sigma beyond [band_lo, band_hi]
     so one-sided kernels never touch the returned region.
     """
-    wl = np.asarray(wl_model, float)
-    yv = np.asarray(y, float)
+    wl, yv = _validate_model(wl_model, y, "smooth_to_native_r")
     lnw = np.log(wl)
     x_lo, x_hi = np.log(band_lo), np.log(band_hi)
     in_band = (wl_r >= band_lo) & (wl_r <= band_hi)
@@ -193,6 +227,12 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
         Fg = np.ones_like(yg)
     else:
         wv = np.asarray(weight, float)
+        if wv.shape != wl.shape or not np.all(np.isfinite(wv)) \
+                or np.any(wv < 0.0):
+            raise ValueError(
+                "smooth_to_native_r: weight (stellar flux on the model grid) "
+                "must match wl_model's shape and be finite and >= 0 -- a NaN "
+                "weight silently corrupts the count-ratio blur")
         icf = _pl_antideriv(edges, lnw, wv, _pl_cumint(lnw, wv))
         Fg = np.maximum(np.diff(icf) / widths, 0.0)
         fmax = float(Fg.max()) if Fg.size else 0.0
@@ -233,13 +273,24 @@ def build_operator(wl_pix: np.ndarray, w_pix: np.ndarray, edges: np.ndarray,
     """Build the count-space measurement operator for one mode.
 
     wl_pix, w_pix : Pandeia pixel wavelengths (any order) and weights
-                    (extracted stellar count rates); w_pix must be > 0.
-    edges         : final bin edges (ascending).
+                    (extracted stellar count rates). Weights must be finite
+                    and >= 0; a zero-weight pixel is excluded from the
+                    estimator (it carries no counts), a negative or non-finite
+                    weight raises (upstream extraction error, never sanitized).
+    edges         : final bin edges (finite, strictly ascending, >= 2).
     wl_lo, wl_hi  : model wavelength span; pixel cells are clipped to it and
                     pixels whose cell falls outside are dropped (their model
                     expectation is undefined) -- from BOTH model and noise,
                     so the two stay the same estimator.
     valid         : optional per-pixel bool mask (e.g. saturation exclusion).
+
+    Duplicate-wavelength policy: an exact-duplicate pixel has a zero-width
+    cell (no wavelength support), so it drops out of the estimator here; such
+    pixels are degenerate-wavelength pixels and callers exclude + COUNT them
+    via degenerate_wl_mask (surfaced as n_pix_degenerate) -- that is the loud
+    channel, not this operator. An operator left with NO usable pixel raises
+    with the per-criterion exclusion breakdown (2026-07-12 re-audit, item 7)
+    instead of returning an empty object that fails downstream.
 
     Returns dict:
       keep     (n_bins,)  bins with >=1 usable pixel
@@ -249,8 +300,28 @@ def build_operator(wl_pix: np.ndarray, w_pix: np.ndarray, edges: np.ndarray,
                           full-length per-pixel arrays; the operator selects)
       pix_w, cell_lo, cell_hi (n_use,), pix_bin (n_use,) index into kept bins
     """
-    wl_pix = np.asarray(wl_pix, float)
+    wl_pix = _validate_wl(wl_pix, "build_operator: wl_pix")
     w_pix = np.asarray(w_pix, float)
+    if w_pix.shape != wl_pix.shape:
+        raise ValueError(f"build_operator: w_pix shape {w_pix.shape} != "
+                         f"wl_pix shape {wl_pix.shape}")
+    if not np.all(np.isfinite(w_pix)) or np.any(w_pix < 0.0):
+        raise ValueError(
+            "build_operator: pixel weights (extracted count rates) must be "
+            "finite and >= 0 -- got "
+            f"{int((~np.isfinite(w_pix)).sum())} non-finite / "
+            f"{int((w_pix < 0.0).sum())} negative value(s); fix the worker "
+            "output, invalid weights are never silently dropped")
+    edges = np.asarray(edges, float)
+    if edges.ndim != 1 or edges.size < 2 or not np.all(np.isfinite(edges)) \
+            or np.any(np.diff(edges) <= 0.0):
+        raise ValueError("build_operator: bin edges must be a 1-D, finite, "
+                         f"strictly ascending array of >= 2 values, got "
+                         f"shape {edges.shape}")
+    if valid is not None and np.asarray(valid).shape != wl_pix.shape:
+        raise ValueError(f"build_operator: valid mask shape "
+                         f"{np.asarray(valid).shape} != wl_pix shape "
+                         f"{wl_pix.shape}")
     order = np.argsort(wl_pix)
     wl_s = wl_pix[order]
     lo_s, hi_s = _pixel_cells(wl_s)
@@ -263,6 +334,18 @@ def build_operator(wl_pix: np.ndarray, w_pix: np.ndarray, edges: np.ndarray,
     bin_raw = np.digitize(wl_s, edges) - 1
     nb = len(edges) - 1
     ok &= (bin_raw >= 0) & (bin_raw < nb)
+    if not ok.any():
+        raise ValueError(
+            "build_operator: no usable pixel survives -- of "
+            f"{wl_pix.size} input pixels, "
+            f"{int((hi_s <= lo_s).sum())} have zero-width cells after "
+            f"clipping to the model span [{wl_lo:g}, {wl_hi:g}] (duplicate "
+            "wavelengths or no model overlap), "
+            f"{int((w_pix[order] <= 0).sum())} have zero weight, "
+            f"{int((~np.asarray(valid, bool)[order]).sum()) if valid is not None else 0} "
+            "are masked invalid, and the rest fall outside the bin edges "
+            f"[{edges[0]:g}, {edges[-1]:g}]. Check the mode/model wavelength "
+            "overlap and the requested binning")
 
     idx = order[ok]
     bins = bin_raw[ok]
@@ -301,6 +384,26 @@ def bin_counts(op: dict, flag_pix: np.ndarray) -> np.ndarray:
     """Plain per-kept-bin sum of a per-pixel count/flag (e.g. saturation)."""
     v = np.asarray(flag_pix, float)[op["pix_idx"]]
     return _wsum(op, v)
+
+
+def _validate_model(wl: np.ndarray, y: np.ndarray, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """Model-grid validation for the piecewise-linear integrators: strictly
+    ascending finite wavelengths (what _pl_antideriv's searchsorted assumes)
+    and finite values. A NaN model value would propagate NaN into every bin
+    it touches -- raise instead (repo loud-errors rule)."""
+    wl = _validate_wl(wl, f"{name}: wl_model")
+    if wl.size < 2 or np.any(np.diff(wl) <= 0.0):
+        raise ValueError(f"{name}: model wavelength grid must be strictly "
+                         "ascending with >= 2 points (duplicates or "
+                         "descending runs are upstream errors)")
+    y = np.asarray(y, float)
+    if y.shape != wl.shape:
+        raise ValueError(f"{name}: model value shape {y.shape} != wavelength "
+                         f"shape {wl.shape}")
+    if not np.all(np.isfinite(y)):
+        raise ValueError(f"{name}: {int((~np.isfinite(y)).sum())} non-finite "
+                         "model value(s) -- fix the upstream model")
+    return wl, y
 
 
 def _pl_cumint(x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -346,8 +449,7 @@ def bin_model(op: dict, wl_model: np.ndarray, y_model: np.ndarray) -> np.ndarray
     Jacobian is the operator applied to each Jacobian row. Exact for a constant
     model (constant-depth conservation) AND, via the exact piecewise-quadratic
     antiderivative, for any pixel cell whose edges fall between model nodes."""
-    wl = np.asarray(wl_model, float)
-    y = np.asarray(y_model, float)
+    wl, y = _validate_model(wl_model, y_model, "bin_model")
     icum = _pl_cumint(wl, y)
     ia = _pl_antideriv(op["cell_lo"], wl, y, icum)
     ib = _pl_antideriv(op["cell_hi"], wl, y, icum)

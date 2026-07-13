@@ -297,3 +297,107 @@ def test_degenerate_wavelength_pixels_flagged():
     t = np.linspace(0, 1, 800)
     wl_smooth = 5.0 + np.cumsum(0.001 * (1 + 4 * t))
     assert not binning.degenerate_wl_mask(wl_smooth).any()
+
+
+# --- strict grid validation (2026-07-12 re-audit, item 7) ---------------------
+# Invalid wavelength grids used to degrade silently: NaNs were argsort-parked
+# and dropped, duplicate-majority grids zeroed the median gap (disabling the
+# degenerate mask entirely), and an all-invalid operator came back empty and
+# only failed later with a non-actionable numpy error. All of these must raise
+# loudly at the entry point, and exact duplicates must count as degenerate.
+
+def test_exact_duplicates_are_degenerate():
+    """Duplicate-majority grid (the audit's reproducer): the zero-gap pixels
+    must be flagged even though the ALL-gap median is zero."""
+    wl = np.array([1.0, 1.0, 1.0, 1.0, 2.0, 3.0])
+    bad = binning.degenerate_wl_mask(wl)
+    assert bad[:4].all()          # zero spectral support
+    assert not bad[4:].any()      # the real pixels survive
+    # fully-duplicated grid: everything degenerate, never all-False
+    assert binning.degenerate_wl_mask(np.full(10, 2.5)).all()
+
+
+def test_duplicates_do_not_split_segments():
+    wl = np.array([1.0, 1.0, 1.0, 1.0, 1.001, 1.002])
+    assert (binning.segment_ids(wl) == 0).all()
+    # all-duplicate grid: one segment, no crash on a zero median gap
+    assert (binning.segment_ids(np.full(5, 2.0)) == 0).all()
+
+
+def test_nonfinite_wavelengths_raise_everywhere():
+    wl_nan = np.array([1.0, np.nan, 1.2])
+    wl_inf = np.array([1.0, np.inf, 1.2])
+    w = np.ones(3)
+    edges = np.array([0.9, 1.3])
+    for bad in (wl_nan, wl_inf):
+        with pytest.raises(ValueError, match="non-finite"):
+            binning.degenerate_wl_mask(bad)
+        with pytest.raises(ValueError, match="non-finite"):
+            binning.segment_ids(bad)
+        with pytest.raises(ValueError, match="non-finite"):
+            binning.build_operator(bad, w, edges)
+
+
+def test_invalid_weights_and_edges_raise():
+    wl = np.linspace(1.0, 2.0, 10)
+    w = np.ones(10)
+    edges = np.array([1.0, 1.5, 2.0])
+    with pytest.raises(ValueError, match="weights"):
+        binning.build_operator(wl, np.where(np.arange(10) == 3, np.nan, w), edges)
+    with pytest.raises(ValueError, match="weights"):
+        binning.build_operator(wl, np.where(np.arange(10) == 3, -1.0, w), edges)
+    with pytest.raises(ValueError, match="shape"):
+        binning.build_operator(wl, np.ones(9), edges)
+    for bad_edges in (np.array([2.0, 1.0]),          # descending
+                      np.array([1.5]),               # single edge
+                      np.array([1.0, np.nan, 2.0]),  # non-finite
+                      np.array([1.0, 1.0, 2.0])):    # zero-width bin
+        with pytest.raises(ValueError, match="edges"):
+            binning.build_operator(wl, w, bad_edges)
+    with pytest.raises(ValueError, match="valid mask"):
+        binning.build_operator(wl, w, edges, valid=np.ones(9, bool))
+
+
+def test_all_invalid_operator_raises_actionably():
+    wl = np.linspace(1.0, 2.0, 10)
+    edges = np.array([1.0, 1.5, 2.0])
+    # every pixel zero-weight
+    with pytest.raises(ValueError, match="no usable pixel"):
+        binning.build_operator(wl, np.zeros(10), edges)
+    # every pixel masked invalid
+    with pytest.raises(ValueError, match="no usable pixel"):
+        binning.build_operator(wl, np.ones(10), edges, valid=np.zeros(10, bool))
+    # no overlap between pixels and bin edges
+    with pytest.raises(ValueError, match="no usable pixel"):
+        binning.build_operator(wl, np.ones(10), np.array([5.0, 6.0]))
+
+
+def test_bin_model_rejects_bad_model_grids():
+    wl = np.linspace(1.0, 2.0, 10)
+    op = binning.build_operator(wl, np.ones(10), np.array([1.0, 1.5, 2.0]),
+                                wl_lo=0.9, wl_hi=2.1)
+    good_wl = np.linspace(0.9, 2.1, 50)
+    good_y = np.full(50, 0.01)
+    with pytest.raises(ValueError, match="ascending"):
+        binning.bin_model(op, good_wl[::-1], good_y)
+    dup = good_wl.copy()
+    dup[10] = dup[9]
+    with pytest.raises(ValueError, match="ascending"):
+        binning.bin_model(op, dup, good_y)
+    with pytest.raises(ValueError, match="non-finite model value"):
+        binning.bin_model(op, good_wl,
+                          np.where(np.arange(50) == 7, np.nan, good_y))
+
+
+def test_smooth_rejects_bad_weight():
+    wl = np.geomspace(1.0, 1.4, 400)
+    y = np.full(400, 0.01)
+    wl_r = np.array([1.0, 1.4])
+    r = np.array([50.0, 50.0])
+    bad_w = np.ones(400)
+    bad_w[5] = np.nan
+    with pytest.raises(ValueError, match="weight"):
+        binning.smooth_to_native_r(wl, y, wl_r, r, 1.05, 1.35, weight=bad_w)
+    with pytest.raises(ValueError, match="weight"):
+        binning.smooth_to_native_r(wl, y, wl_r, r, 1.05, 1.35,
+                                   weight=np.ones(399))

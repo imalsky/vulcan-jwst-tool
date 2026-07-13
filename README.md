@@ -16,13 +16,16 @@ goal types are supported:
   spectrum with one molecule's opacity removed, with calibration nuisances
   profiled out. This is conditional on the assumed atmospheric state and
   upper-bounds any retrieval detection; it is labeled accordingly throughout.
-- **Constrain a parameter.** A Fisher-information forecast built from exact
-  parameter derivatives of the spectrum, computed by automatic
+- **Constrain a parameter.** A Fisher-information forecast built from
+  parameter derivatives of the spectrum computed by automatic
   differentiation through the converged chemistry and radiative transfer
   (one warm-started forward-mode JVP per parameter, not finite differences).
-  Forecast uncertainties are local Cramer-Rao lower bounds under the stated
-  noise model, marginalized over calibration nuisances; they are not
-  posterior widths.
+  These are machine-precision derivatives of the discretized,
+  tolerance-converged numerical model, not a claim of exactness for the
+  underlying physics; an opt-in test closes a Jacobian row against finite
+  differences of the full stack. Forecast uncertainties are local
+  Cramer-Rao lower bounds under the stated noise model, marginalized over
+  calibration nuisances; they are not posterior widths.
 
 ## Installation
 
@@ -194,7 +197,9 @@ NIRSpec PRISM, G395H, and G235H (BOTS); NIRISS SOSS order 1; NIRCam F322W2
 and F444W (grism time series); MIRI LRS slitless. A mode with no unsaturated
 pixels at its shortest ramp is reported unusable with its saturation
 numbers. Models are convolved to the instrument's native resolving power
-where the binning approaches it (MIRI LRS, PRISM); degenerate-wavelength
+where the binning approaches it (MIRI LRS, PRISM), as the stellar-flux-
+weighted count ratio the instrument actually measures (the LSF acts on in-
+and out-of-transit counts, not on the depth directly); degenerate-wavelength
 reference-data pixels are excluded and counted.
 
 ## Validation status
@@ -202,7 +207,9 @@ reference-data pixels are excluded and counted.
 Current test suite: `python -m pytest tests -q` (numpy-only; no Pandeia or
 JAX required). It covers the binning operator (conservation, Monte Carlo
 estimator closure, Jacobian linearity, segment splitting, native-R
-smoothing), floor semantics (none/constant/table, edge extension, hard-max
+smoothing), strict input-grid validation (non-finite wavelengths, duplicate
+and duplicate-majority grids, zero-support operators all raise loudly
+instead of degrading), floor semantics (none/constant/table, edge extension, hard-max
 behavior, R-independence, multi-transit approach to the floor, invalid-input
 rejection), the scale-invariance regressions for Fisher rank and nuisance
 projection, scenario covariance properties, rank-aware Fisher behavior, and

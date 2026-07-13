@@ -268,6 +268,13 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     # them and report the count (binning.DEGENERATE_WL_FRAC rationale).
     degen = binning.degenerate_wl_mask(wl_pix)
     usable = (n_full_sat == 0) & ~degen
+    if not usable.any():
+        raise ValueError(
+            f"{mode_key}: no usable pixels -- all {wl_pix.size} are fully "
+            f"saturated ({int((n_full_sat > 0).sum())}) or wavelength-"
+            f"degenerate ({int(degen.sum())}). Reduce ngroup / pick a "
+            "fainter-star configuration, or check the worker's wavelength "
+            "grid")
 
     lo = max(m["wl_min"], float(wl_model.min()), float(wl_pix[usable].min()))
     hi = min(m["wl_max"], float(wl_model.max()), float(wl_pix[usable].max()))

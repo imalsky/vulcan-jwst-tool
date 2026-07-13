@@ -53,6 +53,16 @@
   import-time guard refuses any mode above its cap and the worker clamps its
   selected ramp via `pandeia_worker._clamp_ngroup`. Never raise a NIRCam mode
   above 100 without a matching PandExo/Pandeia change.
+- **Strict grid validation (2026-07-12 re-audit, item 7)**: `binning` raises
+  on non-finite wavelengths/weights/model values, non-ascending model grids,
+  and bad bin edges — NEVER silently drops invalid samples. Median pixel
+  spacing is computed over strictly POSITIVE gaps (`_positive_gap_median`);
+  exact-duplicate wavelengths are degenerate pixels (zero spectral support),
+  flagged by `degenerate_wl_mask` even on duplicate-majority grids. An
+  operator left with zero usable pixels raises with a per-criterion exclusion
+  breakdown; `detect.evaluate_mode` raises when saturation+degeneracy exclude
+  every pixel. Regression tests: the "strict grid validation" block in
+  `test_binning.py`.
 - **Detector-segment offsets**: `binning.segment_ids` splits the pixel grid at
   wavelength gaps (NRS1|NRS2). One depth-offset nuisance per segment is
   profiled in BOTH `detect.detection_significance` and `fisher.mode_forecast`/
