@@ -67,11 +67,10 @@ def main():
       "the same 80% saturation target; the only freedom left is rounding to an "
       "integer group count (e.g. G395H 124 vs 125). Integration time and "
       "integration count then follow deterministically from that one-group "
-      "choice. The one off-diagonal case is PRISM on the two BRIGHT stars, "
-      "where it is SATURATED (unusable) -- both tools flag it, this tool "
-      "floors at ngroup=2 while PandExo drops to ngroup=1; on the faint star "
-      "PRISM is unsaturated and lands on the diagonal. Saturated points are "
-      "drawn hollow in the figure.")
+      "choice. Only VALID configurations are compared: PRISM saturates on the "
+      "two bright stars (both tools flag it; this tool floors at ngroup=2 "
+      "while PandExo drops to ngroup=1) and is excluded there, and is compared "
+      "on the faint star where it is unsaturated and matches (ngroup 20/20).")
     w("- **Extracted flux agrees to a systematic ~0.3%** (binned median 0.997 "
       "for G395H), with per-pixel scatter from the two tools' independent "
       "extraction of the same 2D calculation -- photon-level for the smooth "

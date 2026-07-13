@@ -103,17 +103,18 @@ def fig_config_parity(summary):
             for key in MODES:
                 if key not in rows:
                     continue
+                # skip saturated (unusable) configs entirely -- only VALID
+                # configurations are a meaningful parity comparison. PRISM
+                # saturates on the bright stars and is dropped there; it is
+                # shown from the faint star, where it is usable.
+                if rows[key].get("sat_frac_ours", 0.0) > SAT_LIMIT:
+                    continue
                 x, y = rows[key][kx], rows[key][ky]
                 xs.append(x)
                 ys.append(y)
-                # a saturated mode (sat_frac_ours > limit) is not a valid
-                # config -- draw it HOLLOW so its off-diagonal ramp reads as
-                # "unusable here", not a parity miss (PRISM on the bright stars)
-                sat = rows[key].get("sat_frac_ours", 0.0) > SAT_LIMIT
                 ax.scatter(x, y, s=46, marker=STAR_MARK[star],
-                           facecolor="none" if sat else MCOL[key],
-                           edgecolor=MCOL[key] if sat else "white",
-                           linewidth=1.3 if sat else 0.7, zorder=3)
+                           color=MCOL[key], edgecolor="white", linewidth=0.7,
+                           zorder=3)
         lo = min(xs + ys) * 0.7
         hi = max(xs + ys) * 1.4
         ax.plot([lo, hi], [lo, hi], color=INK2, lw=1.0, ls="--", zorder=1)
@@ -133,23 +134,19 @@ def fig_config_parity(summary):
     star_handles = [Line2D([], [], marker=STAR_MARK[s], ls="", color=INK2,
                            markeredgecolor="white", label=STAR_LABEL[s])
                     for s in STAR_MARK]
-    line_handle = [
-        Line2D([], [], color=INK2, ls="--", label="1:1 parity"),
-        Line2D([], [], marker="o", ls="", markerfacecolor="none",
-               markeredgecolor=INK2, label="hollow = saturated (unusable)"),
-    ]
+    line_handle = [Line2D([], [], color=INK2, ls="--", label="1:1 parity")]
     fig.legend(handles=mode_handles + star_handles + line_handle,
                loc="lower center", ncol=6, frameon=False, fontsize=8.5,
-               bbox_to_anchor=(0.5, 0.005))
+               bbox_to_anchor=(0.5, 0.01))
     fig.suptitle("Configuration & timing parity: this tool vs current PandExo "
                  "on the same Pandeia 2026.2 engine", fontsize=11.5, y=0.99)
-    fig.text(0.5, 0.90, "Config + wavelength grid bit-identical (max |Δλ| = 0); "
-             "groups agree to ≤1 (integer rounding of the same 80% saturation "
-             "target), timing follows. HOLLOW = saturated/unusable (PRISM on "
-             "the bright stars, ngroup floor 2 vs 1); PRISM is on-diagonal on "
-             "the faint star where it is usable.", ha="center", fontsize=8.2,
+    fig.text(0.5, 0.91, "Valid configurations only (saturated/unusable configs "
+             "are excluded). Config + wavelength grid are bit-identical "
+             "(max |Δλ| = 0); groups are independently optimized and agree to "
+             "≤1 (integer rounding of the same 80% saturation target); "
+             "integration time and count follow.", ha="center", fontsize=8.2,
              color=INK2, wrap=True)
-    fig.tight_layout(rect=[0, 0.17, 1, 0.86])
+    fig.tight_layout(rect=[0, 0.15, 1, 0.87])
     out = FIGS / "parity_config_timing.png"
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
