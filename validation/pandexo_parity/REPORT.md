@@ -2,23 +2,14 @@
 
 Generated 2026-07-12 by `run_parity.py` + `make_report.py` in this directory.
 
-## Figures (`figures/`, regenerate with `make_parity_plots.py`)
-
-- **fig1_config_timing_parity.png** — selected groups, integration time, and
-  integration count, this tool vs PandExo, on the 1:1 line (log-log). Every
-  mode/star lands on the diagonal except PRISM's known group floor
-  (ngroup_min=2 vs PandExo's 1 on a bright star).
-- **fig2_perwavelength_g395h.png** — G395H per-wavelength overlays: extracted
-  stellar count rate (ratio ~1.000) and per-pixel depth uncertainty (the
-  consistent ~1.11x conservative offset), each with a ratio strip.
-- **fig3_noise_model_attribution.png** — per-integration variance over pure
-  photon counts, this tool (full Pandeia extracted noise) vs PandExo (analytic
-  fml). This is the whole residual: config is matched, the noise MODEL differs.
-- **fig4_sigma_ratio_summary.png** — depth-uncertainty ratio per mode, both
-  stars, with 5th-95th-percentile spread. One-sided and conservative;
-  MIRI LRS largest (background/detector-dominated).
-
 Both sides run on the SAME current Pandeia backend, so every difference below is an ESTIMATOR/policy difference, not an engine calibration difference. PandExo is current master (commit in the provenance block). Configuration: constant transit depth 0.01, transit duration 2.8036 h, equal out-of-transit baseline, saturation limit 80%, no noise floor, native (R=None) grids.
+
+## Figures (regenerate with `make_parity_plots.py`)
+
+These show the quantities that match 1:1 -- the parity result. The depth-uncertainty difference (a noise-model difference, not a configuration one) is quantified in the tables and Findings below, not plotted.
+
+- **parity_config_timing.png** -- selected groups, integration time, and integration count, this tool vs PandExo, on the 1:1 line (log-log). Every mode/star lands on the diagonal except PRISM's known group floor (ngroup_min=2 vs PandExo's 1 on a bright star).
+- **parity_extracted_flux.png** -- G395H extracted stellar count rate, per-wavelength overlay with a ratio strip. The curves coincide (median ratio ~0.997); the grids are pixel-for-pixel identical.
 
 Columns: sigma ratio = (this tool's per-pixel transit-depth sigma) / (PandExo's), median [5th, 95th percentile] over matched pixels. 'matched' uses PandExo's integration counts in the tool formula (isolates the noise model); 'policy' uses the tool's own floor(T/t_int) counts (adds the integration-counting policy). flux ratio compares extracted stellar count rates (engine parity; expect 1.0000).
 

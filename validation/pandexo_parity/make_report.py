@@ -34,6 +34,21 @@ def main():
       "equal out-of-transit baseline, saturation limit "
       f"{cfg['sat_limit']:.0%}, no noise floor, native (R=None) grids.")
     w("")
+    w("## Figures (regenerate with `make_parity_plots.py`)")
+    w("")
+    w("These show the quantities that match 1:1 -- the parity result. The "
+      "depth-uncertainty difference (a noise-model difference, not a "
+      "configuration one) is quantified in the tables and Findings below, "
+      "not plotted.")
+    w("")
+    w("- **parity_config_timing.png** -- selected groups, integration time, "
+      "and integration count, this tool vs PandExo, on the 1:1 line "
+      "(log-log). Every mode/star lands on the diagonal except PRISM's known "
+      "group floor (ngroup_min=2 vs PandExo's 1 on a bright star).")
+    w("- **parity_extracted_flux.png** -- G395H extracted stellar count rate, "
+      "per-wavelength overlay with a ratio strip. The curves coincide "
+      "(median ratio ~0.997); the grids are pixel-for-pixel identical.")
+    w("")
     w("Columns: sigma ratio = (this tool's per-pixel transit-depth sigma) / "
       "(PandExo's), median [5th, 95th percentile] over matched pixels. "
       "'matched' uses PandExo's integration counts in the tool formula "

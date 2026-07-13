@@ -106,7 +106,7 @@ st.caption(
     "floor — not a full time-series systematics forecast; treat mode rankings "
     "as more robust than absolute ppm."
 )
-st.caption(f"⚠️ **{ins.BACKEND_STATUS}** — every result records the exact "
+st.caption(f"**{ins.BACKEND_STATUS}** — every result records the exact "
            "engine + refdata versions in its provenance block.")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
@@ -139,7 +139,7 @@ def K(name: str) -> str:
 
 
 with st.sidebar:
-    st.markdown("### 🪐 Planet & star")
+    st.markdown("### Planet & star")
     st.caption("The target system (physical identity + host star). Defines the "
                "object; the atmosphere model is set in the sections below.")
     planet_key = st.selectbox(
@@ -193,7 +193,7 @@ with st.sidebar:
                                   "spectral type. Drives photolysis (SO2, CH4 …).")
 
     teq = float(pdef["teq_k"])
-    st.markdown("### 🧪 VULCAN chemistry")
+    st.markdown("### VULCAN chemistry")
     st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward model "
                "(composition + transport + photochemistry → steady-state "
                "abundances). The T-P profile is shared: it also sets the "
@@ -280,12 +280,12 @@ with st.sidebar:
                        "(saturation tables are baked at a single temperature). "
                        "Switch T-P to isothermal to enable it.")
         elif use_condense:
-            st.caption("⚠️ Isothermal only, and the Fisher forecast is "
+            st.caption("Isothermal only, and the Fisher forecast is "
                        "disabled while condensation is on. First production "
                        "use should be spot-checked against a direct VULCAN run.")
 
     st.divider()
-    st.markdown("### 🌈 ExoJAX radiative transfer")
+    st.markdown("### ExoJAX radiative transfer")
     st.caption("Turns the VULCAN abundances (at the same T-P) into the "
                "transmission spectrum. Opacity set, scattering, clouds, and "
                "line broadening.")
@@ -333,7 +333,7 @@ with st.sidebar:
                                        if m in extra_mols]
 
     st.divider()
-    st.markdown("### 🎯 Science goal")
+    st.markdown("### Science goal")
     st.caption("What this observation should achieve, and the forecast "
                "settings. These do NOT change the underlying spectrum.")
 
@@ -430,7 +430,7 @@ with st.sidebar:
                 default=["lnZ", "dlnCO", "lnKzz"]) if (do_fisher and use_photo) else []
 
     st.divider()
-    st.markdown("### 🔭 Instrument & noise")
+    st.markdown("### Instrument & noise")
     st.caption("The JWST measurement itself: which modes, how many transits, "
                "detector saturation, and the Pandeia/PandExo noise model. "
                "Independent of the atmosphere physics above.")
