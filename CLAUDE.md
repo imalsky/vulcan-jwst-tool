@@ -191,30 +191,35 @@
   substituted). The slow `test_closure.py` FD test now drives `T_iso`
   (same single-scalar theta[3] design the retired `dT` had). GUI is organized
   into five clearly-labeled sections: 🪐 Planet & star, 🧪 VULCAN chemistry
-  (T-P, composition, Kzz, photochem, condensation), 🌈 ExoJAX RT
-  (opacity/scattering/clouds/broadening), 🎯 Science goal (goal, fidelity,
-  Fisher), 🔭 Instrument & noise (modes, transits, saturation, noise model).
-  Verified with Streamlit `AppTest` (`session_state['intro_ack']=True` skips
-  the how-it-works gate).
-- **Condensation (`use_condense`, VULCAN)**: OFF by default. Supported for
-  BOTH isothermal and Guillot T-P — the engine (`vulcan_chem._prep`) rebuilds
-  every condensation array on-graph from the live T(P) via
-  `vulcan_jax.conden.build_conden_profile`, so the old
-  `_condense_validated_isothermal` escape hatch is GONE (never reintroduce
-  it). On the SNCHO network the one channel is S8 -> S8_l_s;
-  `forward.CONDEN_CFG` wires the full config (condense_sp/non_gas_sp/
-  r_p/rho_p + the master-faithful conden-window + fix_species pin — the
-  pre-v7 checkbox set only use_condense and condensed NOTHING). Gated in
-  `canonical_params` to use_moldiff=True (Dg is the molecular-diffusion
-  coefficient) and empty `fisher_params` (active-layer set + cold-trap index
-  are discrete in T; jvp validated only away from switches — see
-  vulcan-retrieval tests/test_condensation_live_tp.py). Bumps
-  `forward._VERSION` (7).
+  (T-P, composition, Kzz, photochem; condensation is a why-not note), 🌈
+  ExoJAX RT (opacity/scattering/clouds/broadening), 🎯 Science goal (goal,
+  fidelity, Fisher), 🔭 Instrument & noise (modes, transits, saturation,
+  noise model). Verified with Streamlit `AppTest`
+  (`session_state['intro_ack']=True` skips the how-it-works gate).
+- **Condensation is REMOVED as an option (2026-07-14).** `use_condense` is no
+  longer a parameter; `canonical_params` RAISES on a truthy `use_condense`
+  (do not re-add a silent path), `CONDEN_CFG` is gone, and the GUI shows a
+  read-only "why it's not offered" note instead of a checkbox. Why: a
+  condensing VULCAN column reaches steady state only via a condensation
+  window + whole-column fix-species pin that freezes the condensed reservoir
+  (S8 / S8_l_s) at a step-sequence-dependent transient, which is not reliably
+  differentiable (forward-mode jvp vs FD ~0.91) and switches discretely in T
+  — unusable for this tool's Fisher forecast. The open-system smooth-rainout
+  replacement that tried to fix this was measured B0C NO-GO and is preserved
+  on the sibling repos' `research/smooth-rainout-fisher` branch (+ tag
+  `smooth-rainout-b0c-no-go-2026-07-14`), NOT on main and NOT here. For
+  aerosol opacity the Fisher-compatible route is a differentiable ExoJAX
+  cloud (the power-law `cloud_on` deck is already wired; freeing it or adding
+  a gray deck as a Fisher parameter is the recommended future addition —
+  never re-introduce condensation as the answer). `forward._VERSION` bumped
+  to 8 (use_condense dropped from the cache key). The engine's live-T(P)
+  `vulcan_chem._prep` condensation rebuild still exists in the sibling
+  retrieval repo for forward-model use; this tool simply does not expose it.
 - Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX
   needed). One env-gated slow test (`JWST_TOOL_RUN_SLOW=1`) FD-closes a
   Jacobian row with 3 real forward runs — Isaac schedules it, never run it
-  unprompted. `test_forward_params.py` pins the condensation/T-P/Kzz gating
-  (pure Python, no stack).
+  unprompted. `test_forward_params.py` pins the condensation-unsupported /
+  T-P / Kzz gating (pure Python, no stack).
 - **σ_detect terminology is settled** (2026-07-12 sweep): "conditional
   template S/N" everywhere user-facing (chart header/axis, pyproject
   description, __init__, README) — never reintroduce bare "detection

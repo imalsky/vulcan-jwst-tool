@@ -1,11 +1,12 @@
 """Pure-Python validation of forward.canonical_params (no chemistry stack).
 
-Covers the 2026-07-13 parameter-scope changes: the WASP-39b GCM special cases
+Covers the parameter-scope contract: the WASP-39b GCM special cases
 (tp_mode='baseline', kzz_mode='scale', has_gcm_baseline) are REMOVED — only
 explicit isothermal/Guillot profiles with constant Kzz exist — and
-condensation is supported for BOTH T-P modes (arrays rebuilt on-graph from
-the live temperature), gated on molecular diffusion and still exclusive with
-a Fisher forecast.
+condensation is REMOVED as an option (2026-07-14): use_condense is no longer
+a parameter and a truthy request raises, because a condensing VULCAN column
+is not reliably differentiable through its window+fix-species pin and so
+cannot enter the Fisher forecast this tool is built around.
 """
 import pytest
 
@@ -19,40 +20,33 @@ def _p(**kw):
     return base
 
 
-def test_condensation_off_by_default():
-    assert forward.canonical_params(_p())["use_condense"] is False
+def test_condensation_not_a_parameter():
+    # use_condense is no longer part of the canonical parameter set
+    assert "use_condense" not in forward.canonical_params(_p())
 
 
-def test_condensation_ok_isothermal_no_fisher():
-    cp = forward.canonical_params(_p(use_condense=True))
-    assert cp["use_condense"] is True
+def test_condensation_requested_raises():
+    # a truthy use_condense is refused loudly, in every T-P mode and
+    # regardless of moldiff / fisher (condensation is simply not offered)
+    for extra in (dict(),
+                  dict(use_moldiff=True),
+                  dict(use_moldiff=False),
+                  dict(fisher_params=["lnZ"]),
+                  dict(tp_mode="guillot", Tirr=1560.0)):
+        with pytest.raises(ValueError, match="condensation .* not supported"):
+            forward.canonical_params(_p(use_condense=True, **extra))
 
 
-def test_condensation_ok_guillot():
-    # live-T rebuild makes Guillot condensation self-consistent
-    cp = forward.canonical_params(_p(tp_mode="guillot", Tirr=1560.0,
-                                     use_condense=True))
-    assert cp["use_condense"] is True and cp["tp_mode"] == "guillot"
+def test_condensation_false_is_harmless():
+    # an explicit falsy use_condense (leftover config) is not an error and
+    # does not leak into the canonical params
+    cp = forward.canonical_params(_p(use_condense=False))
+    assert "use_condense" not in cp
 
 
-def test_condensation_rejected_without_moldiff():
-    # the growth term IS the molecular-diffusion coefficient
-    with pytest.raises(ValueError, match="molecular diffusion"):
-        forward.canonical_params(_p(use_condense=True, use_moldiff=False))
-
-
-def test_condensation_rejected_with_fisher():
-    with pytest.raises(ValueError, match="Fisher"):
-        forward.canonical_params(_p(use_condense=True, fisher_params=["lnZ"]))
-    with pytest.raises(ValueError, match="Fisher"):
-        forward.canonical_params(_p(use_condense=True, fisher_params=["T_iso"]))
-
-
-def test_version_bumped_for_condense_cachebust():
-    # a condensing spectrum must never collide with a non-condensing cache key
-    on = forward.params_key(_p(use_condense=True))
-    off = forward.params_key(_p(use_condense=False))
-    assert on != off
+def test_conden_cfg_constant_is_gone():
+    # the S8 condensation config constant was removed with the option
+    assert not hasattr(forward, "CONDEN_CFG")
 
 
 def test_gcm_baseline_and_scale_are_removed():
@@ -68,20 +62,6 @@ def test_gcm_baseline_and_scale_are_removed():
 def test_default_tp_mode_is_isothermal():
     # the old default was the removed GCM baseline; it must now be explicit
     assert forward.canonical_params(dict(planet="wasp39b"))["tp_mode"] == "isothermal"
-
-
-def test_conden_cfg_channel_is_wired():
-    # enabling condensation must configure an ACTIVE channel (the pre-v7 bug:
-    # use_condense=True with condense_sp=[] condensed nothing, silently)
-    assert forward.CONDEN_CFG["condense_sp"] == ["S8"]
-    assert forward.CONDEN_CFG["non_gas_sp"] == ["S8_l_s"]
-    assert forward.CONDEN_CFG["r_p"]["S8_l_s"] > 0
-    assert forward.CONDEN_CFG["rho_p"]["S8_l_s"] > 0
-    # conden-window + whole-column fix pin: the upstream methodology that
-    # makes condensing solves converge (transport-limited otherwise)
-    assert forward.CONDEN_CFG["fix_species"] == ["S8", "S8_l_s"]
-    assert forward.CONDEN_CFG["fix_species_from_coldtrap_lev"] is False
-    assert forward.CONDEN_CFG["stop_conden_time"] > 0
 
 
 def test_isothermal_guillot_const_are_accepted():

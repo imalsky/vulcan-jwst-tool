@@ -42,29 +42,39 @@ retrieval framework uses):
       sl_angle_deg  photolysis zenith angle (deg; 83 = Tsai 2023 terminator slant)
       f_diurnal     diurnal photolysis factor (1.0 = permanent dayside)
       use_moldiff   molecular diffusion on/off (homopause)
-      use_condense  condensation on/off. OFF by default. Supported for BOTH
-                    isothermal and Guillot T-P: the condensation arrays
-                    (saturation curves, growth terms, cold-trap index) are
-                    rebuilt ON-GRAPH from the live T(P) per solve
-                    (vulcan_jax.conden.build_conden_profile via the engine's
-                    _prep). On the SNCHO network the one condensation channel
-                    is S8 -> S8_l_s (sulfur rainout; H2O/NH3 condensation
-                    would need a network carrying H2O_l_s/NH3_l_s). Requires
-                    use_moldiff=True (the growth term IS the molecular-
-                    diffusion coefficient). Still NOT combinable with a
-                    Fisher forecast: the active-condensation layer set and
-                    cold-trap index are discrete in T, so Fisher derivatives
-                    through a condensing state stay disabled until the jvp
-                    validation is extended to production corners
-                    (vulcan-retrieval tests/test_condensation_live_tp.py
-                    validates jvp==FD away from those switches).
       use_rayleigh  H2/He Rayleigh scattering (ON by default from v4; v3 lacked it)
       cloud_on + log_kappa_cloud + alpha_cloud
-                    ExoJax power-law cloud deck (fixed in the Fisher forecast)
+                    ExoJax power-law cloud deck (currently fixed, not a Fisher
+                    parameter -- see the aerosol-opacity note below)
       extra_mols    opt-in RT molecules beyond the base 5 (C2H2/H2S/HCN/NH3)
 
 Any T-P that leaves the modelable premodit window [320, 2980] K on either grid is
 REJECTED with a clear error (never clipped) -- same rule as the retrieval.
+
+Condensation is intentionally UNSUPPORTED. `canonical_params` raises on a
+truthy ``use_condense``. Why it is hard in VULCAN: a condensing column only
+reaches a steady state via a condensation WINDOW followed by a whole-column
+fix-species PIN that freezes the condensed reservoir (on the SNCHO network,
+S8 / S8_l_s) at its end-of-window transient. That pinned state is
+step-sequence-dependent, so the model is not reliably differentiable through
+it -- the forward-mode jvp disagrees with finite differences at O(1) (~0.91
+relative, measured) -- and the active-condensation layer set and cold-trap
+index are DISCRETE in temperature. Those are exactly the smooth derivatives a
+Fisher forecast needs, so condensation cannot enter the Fisher path. An
+open-system "smooth rainout" replacement built to restore differentiability
+(a true flux-balanced steady state) was prototyped and measured NO-GO -- it
+could not reach strict cold certification / flux balance within its sanctioned
+gate. That campaign is preserved on the ``research/smooth-rainout-fisher``
+branch (+ tag ``smooth-rainout-b0c-no-go-2026-07-14``) of the sibling repos,
+not shipped here.
+
+Aerosol opacity, the Fisher-compatible way: represent clouds/haze as a
+DIFFERENTIABLE opacity rather than as chemistry. The ExoJax power-law cloud
+deck (``cloud_on`` + ``log_kappa_cloud`` + ``alpha_cloud``) is already wired
+into the RT and is smooth in its parameters; freeing those (or adding a gray
+deck) as Fisher parameters would let an aerosol term enter the forecast
+directly -- a natural future addition, and the recommended path instead of
+condensation.
 
 Fisher machinery: with ``fisher_params`` set, the runner also computes the
 spectrum Jacobian d(depth)/d(param) with one warm-started forward-mode jvp per
@@ -100,15 +110,14 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 7   # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 8   # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
                # broadening knob in the RT; v6: use_condense knob in the cache
                # key; v7: GCM baseline/scale modes REMOVED -- every planet on
-               # an isothermal structural baseline -- and condensation rebuilt
-               # on-graph from the live T-P with the S8 channel actually
-               # activated (condense_sp was previously empty, so pre-v7
-               # "condensation on" spectra condensed nothing) -- all pre-v7
-               # spectra are stale)
+               # an isothermal structural baseline; v8: condensation REMOVED as
+               # an option -- use_condense is no longer a parameter (raises if
+               # requested), so the cache key changes and pre-v8 spectra are
+               # stale)
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -145,55 +154,6 @@ PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
                 "T_iso": "Isothermal T", "Tirr": "Guillot T_irr",
                 "Tint": "Guillot T_int", "log_kappa": "Guillot log κ_IR",
                 "log_gamma": "Guillot log γ"}
-
-# VULCAN condensation channel on the SNCHO network: its one condensation
-# reaction is S8 -> S8_l_s (H2O/NH3 condensation is NOT available on this
-# network -- no H2O_l_s/NH3_l_s species; enabling it would need a different
-# network). Particle properties: rainout-sized 50 um orthorhombic-sulfur
-# particles (rho = 2.07 g/cm^3; r_p matches the shipped cfgs' H2O_l_s value)
-# -- smaller aerosol radii make the growth term stiffer than Ros2 can resolve
-# to convergence (dt gets capped at the condensation-front timescale).
-# Convergence methodology is upstream VULCAN's conden-window + fix_species
-# pin: condensation runs on [start_conden_time, stop_conden_time], then S8 +
-# S8_l_s are pinned WHOLE-COLUMN (from_coldtrap_lev=False -- the cold-trap
-# argmin degenerates on isothermal columns) and the rest of the chemistry
-# converges. Without the pin the steady state is transport-limited (the
-# upper S8 reservoir drains through the condensation front on the Kzz
-# timescale ~1e9 s while dt stays capped) and every solve would exhaust
-# count_max. Caveat, documented: on planets too hot to condense, enabling
-# condensation still pins S8/S8_l_s at their t = stop_conden_time transient.
-CONDEN_CFG = {
-    "use_condense": True,
-    "condense_sp": ["S8"],
-    "non_gas_sp": ["S8_l_s"],
-    "r_p": {"S8_l_s": 5.0e-3},
-    "rho_p": {"S8_l_s": 2.07},
-    "use_relax": [],
-    "use_settling": False,
-    "fix_species": ["S8", "S8_l_s"],
-    "fix_species_from_coldtrap_lev": False,
-    "start_conden_time": 0.0,
-    "stop_conden_time": 1.0e6,
-    # Convergence mixing-ratio floor for cold (condensing) atmospheres: at
-    # the 1e-20 default, kinetically-glacial trace species (e.g. NH3 forming
-    # from N2 at ~400 K, drifting at ~1e-18 VMR) gate longdy forever. 1e-15
-    # is still orders below any RT-relevant abundance.
-    "mtol_conv": 1.0e-15,
-    # Default heavy-hydrocarbon conver_ignore list + the trace sulfur
-    # allotropes: against a pinned S8 they re-equilibrate on cold-top thermal
-    # timescales measured at >=1e15 s (physically unreachable), at abundances
-    # far below RT relevance -- none is an RT molecule; the observable sulfur
-    # species (SO2, H2S, SO) STAY in the gate. Measured in vulcan-retrieval
-    # tests/test_condensation_live_tp.py.
-    "conver_ignore": ["C6H6", "C2H2", "C6H5", "C2H", "C2H4", "C2H5", "C2H6",
-                      "C3H2", "C3H3", "C4H5", "CH2NH", "CH3NH2", "H2CCO",
-                      "S", "S2", "S3", "S4"],
-    # Bound certification from below so the conden window + pin always
-    # complete before the convergence gate may fire (the certified S8 state
-    # is the deterministic end-of-window rainout).
-    "trun_min": 1.0e6,
-}
-
 
 def canonical_params(params: dict) -> dict:
     tp_mode = str(params.get("tp_mode", "isothermal"))
@@ -238,13 +198,6 @@ def canonical_params(params: dict) -> dict:
         "sl_angle_deg": round(float(params.get("sl_angle_deg", 83.0)), 1),
         "f_diurnal": round(float(params.get("f_diurnal", 1.0)), 3),
         "use_moldiff": bool(params.get("use_moldiff", True)),
-        # VULCAN condensation (S8 rainout on the SNCHO network). OFF by
-        # default. Supported for isothermal AND Guillot T-P -- the engine
-        # rebuilds the condensation arrays on-graph from the live T(P).
-        # Requires use_moldiff (growth term) and NO Fisher forecast (the
-        # active-layer set / cold-trap index are discrete in T); both are
-        # validated below.
-        "use_condense": bool(params.get("use_condense", False)),
         # RT physics: Rayleigh is known zero-parameter physics, ON by default
         # (v3 and earlier ran without it -- that biased the <1.5 um slope);
         # the cloud deck is the ExoJax power-law retrieval cloud, OFF by default.
@@ -278,23 +231,24 @@ def canonical_params(params: dict) -> dict:
             "steady-state jvp is validated only in the photo-on regime "
             "(config.py run-profile notes). Enable photochemistry or clear "
             "the Fisher parameter list.")
-    if cp["use_condense"]:
-        if not cp["use_moldiff"]:
-            raise ValueError(
-                "condensation (use_condense) requires molecular diffusion "
-                "(use_moldiff): the condensation growth term IS the species' "
-                "molecular-diffusion coefficient, so with it off every "
-                "condensation rate would silently be zero. Enable molecular "
-                "diffusion, or turn condensation off.")
-        if cp["fisher_params"]:
-            raise ValueError(
-                "condensation (use_condense) cannot be combined with a Fisher "
-                "forecast: the active-condensation layer set and cold-trap "
-                "index are discrete in temperature, so the forward-mode jvp "
-                "through a condensing steady state is only validated away "
-                "from those switches (not across the production Fisher "
-                "corners). Clear the Fisher parameter list, or turn "
-                "condensation off.")
+    if params.get("use_condense"):
+        # Condensation is intentionally UNSUPPORTED (loud, no silent ignore).
+        # A condensing VULCAN column reaches steady state only via a window +
+        # whole-column fix-species pin that freezes the condensed reservoir at
+        # a step-sequence-dependent transient, which is not reliably
+        # differentiable (jvp vs FD ~0.91) and switches discretely in T --
+        # unusable for the Fisher forecast this tool is built around. The
+        # open-system smooth-rainout replacement was measured NO-GO (see the
+        # module docstring / research/smooth-rainout-fisher branch). For
+        # aerosol opacity use the differentiable ExoJax cloud deck instead.
+        raise ValueError(
+            "condensation (use_condense) is not supported: VULCAN reaches a "
+            "condensing steady state only with a window + fix-species pin "
+            "whose frozen reservoir is not reliably differentiable (jvp vs "
+            "FD ~0.91) and switches discretely in temperature, so it cannot "
+            "enter the Fisher forecast. The open-system smooth-rainout "
+            "replacement was measured NO-GO. Represent aerosols with the "
+            "differentiable ExoJax cloud deck (cloud_on) instead.")
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
@@ -448,12 +402,6 @@ def run_model(params: dict, log=print) -> Path:
         "sflux_file": f"atm/stellar_flux/{cp['sflux']}",
         "use_moldiff": cp["use_moldiff"],
     }
-    if cp["use_condense"]:
-        # canonical_params confirmed moldiff on + no Fisher. The engine
-        # rebuilds the condensation arrays on-graph from the live T(P) per
-        # solve, so isothermal and Guillot are both self-consistent; the
-        # channel config (S8 -> S8_l_s + particle properties) is CONDEN_CFG.
-        ovr.update(CONDEN_CFG)
     if cp["use_photo"]:                  # photolysis geometry/averaging knobs
         ovr["sl_angle"] = float(np.deg2rad(cp["sl_angle_deg"]))
         ovr["f_diurnal"] = cp["f_diurnal"]

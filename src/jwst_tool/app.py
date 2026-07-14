@@ -264,27 +264,21 @@ with st.sidebar:
             help="Species-dependent molecular diffusion competing with Kzz "
                  "(sets the homopause; matters high up).")
 
-    with st.expander("Condensation (rainout / cold-trap)"):
-        use_condense = st.checkbox(
-            "Enable condensation", value=False, key=_k("conden"),
-            disabled=not use_moldiff,
-            help="VULCAN condensation. On this (SNCHO) network the one "
-                 "condensation channel is S₈ → S₈(s) — sulfur rainout on cool "
-                 "atmospheres (H₂O/NH₃ condensation would need a different "
-                 "network). The saturation curves, growth terms, and cold-trap "
-                 "index are rebuilt on-graph from the live T-P, so isothermal "
-                 "AND Guillot profiles are supported. Requires molecular "
-                 "diffusion (the growth term). Not combinable with a Fisher "
-                 "forecast. OFF by default.")
-        if not use_moldiff:
-            st.caption("Condensation needs **molecular diffusion** ON (its "
-                       "growth term is the species' molecular-diffusion "
-                       "coefficient). Enable it above to allow condensation.")
-        elif use_condense:
-            st.caption("S₈ rainout active (isothermal or Guillot T-P). The "
-                       "Fisher forecast is disabled while condensation is on. "
-                       "First production use should be spot-checked against a "
-                       "direct VULCAN run.")
+    with st.expander("Condensation (not offered — why)"):
+        st.caption(
+            "Condensation is intentionally not available. VULCAN reaches a "
+            "condensing steady state only with a condensation window plus a "
+            "whole-column fix-species pin that freezes the condensed reservoir "
+            "(S₈ / S₈(s) on this network) at a transient state. That pinned "
+            "state depends on the exact accepted-step sequence, so it is not "
+            "reliably differentiable — forward-mode and finite-difference "
+            "derivatives disagree by ~90% — and the active-condensation layers "
+            "and cold-trap level switch discretely with temperature, exactly "
+            "the smooth derivatives this tool's Fisher forecast needs. An "
+            "open-system \"smooth rainout\" replacement built to fix that was "
+            "measured NO-GO (it could not reach a strict flux-balanced steady "
+            "state within its gate). For aerosol / haze opacity, use the "
+            "differentiable ExoJAX **cloud deck** below instead.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -358,11 +352,6 @@ with st.sidebar:
             if not use_photo:
                 st.warning("Parameter constraints use the Fisher forecast, "
                            "which needs photochemistry ON (VULCAN section).")
-            if use_condense:
-                st.warning("Parameter constraints use the Fisher forecast, "
-                           "which is disabled while condensation is on "
-                           "(VULCAN section). Use the 'detect' goal, or turn "
-                           "condensation off.")
             goal_param = st.selectbox(
                 "Constrain parameter", avail_free, key=K(f"gp_{tp_mode}"),
                 format_func=lambda n: f"{forward.PARAM_LABELS[n]} ({n})",
@@ -404,17 +393,7 @@ with st.sidebar:
             "observation — a linearized retrieval (Cramér–Rao bound) built "
             "from d(spectrum)/d(parameter), computed by autodiff through the "
             "full chemistry+RT chain. No MCMC, no priors.")
-        if use_condense:
-            # the active-condensation layer set / cold-trap index are discrete
-            # in T (canonical_params rejects use_condense + any Fisher param)
-            fisher_params = []
-            st.info("The Fisher forecast is unavailable while condensation is "
-                    "on: the active-condensation layers and cold-trap index "
-                    "change discretely with temperature, so the derivative "
-                    "through a condensing steady state is only validated away "
-                    "from those switches. Turn condensation off to forecast "
-                    "parameter constraints.")
-        elif goal == "constrain":
+        if goal == "constrain":
             fisher_extra = st.multiselect(
                 "Jointly free parameters", avail_free,
                 default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
@@ -555,7 +534,6 @@ params = dict(planet=planet_key, quality=quality,
               tp_mode=tp_mode, fisher_params=fisher_params,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
-              use_condense=use_condense,
               use_rayleigh=use_rayleigh, broadening=broadening,
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,

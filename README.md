@@ -196,11 +196,10 @@ validated and cache-keyed:
   Composition: metallicity (exact elemental scaling about the 10x solar
   baseline), delta ln(C/O). Vertical mixing: a constant Kzz. Photochemistry
   on/off, photolysis zenith angle, diurnal averaging factor, molecular
-  diffusion on/off, stellar UV spectrum. Condensation (S8 rainout on this
-  network) works with both the isothermal and Guillot profiles — the
-  saturation curves, growth terms, and cold-trap index are rebuilt on-graph
-  from the live T(P) — but requires molecular diffusion and excludes a
-  Fisher forecast (see Known limitations); off by default.
+  diffusion on/off, stellar UV spectrum. Condensation is not offered (it is
+  not reliably differentiable in VULCAN, so it cannot enter the Fisher
+  forecast — see Known limitations); for aerosol opacity use the
+  differentiable ExoJAX cloud deck instead.
 - **ExoJAX radiative-transfer inputs.** The opacity molecule set, H2/He
   Rayleigh scattering, an optional power-law cloud deck, and the
   line-broadening perturber (terrestrial air or H2/He, cache-keyed; molecules
@@ -298,15 +297,22 @@ Pending release gates, tracked explicitly rather than assumed:
 - All planets use an isothermal or Guillot T-P and a constant Kzz; the
   WASP-39 b GCM baseline modes were removed (no GCM profile is silently
   substituted).
-- Condensation is the SNCHO network's S8 -> S8_l_s channel only (H2O/NH3
-  condensation would need a network carrying those condensate species). The
-  condensation arrays follow the live T-P on-graph, so isothermal and Guillot
-  are both supported; molecular diffusion must be on (it supplies the growth
-  term), and it excludes a Fisher forecast because the active-condensation
-  layers and cold-trap index change discretely with temperature. Runs use the
-  upstream-VULCAN methodology of a condensation window followed by a
-  fix-species pin to reach a certified steady state. It is off by default; a
-  first production use should be spot-checked against a direct VULCAN run.
+- Condensation is intentionally not offered. VULCAN reaches a condensing
+  steady state only via a condensation window followed by a whole-column
+  fix-species pin that freezes the condensed reservoir (S8 / S8_l_s on the
+  SNCHO network) at a step-sequence-dependent transient. That state is not
+  reliably differentiable — the forward-mode Jacobian disagrees with finite
+  differences by ~90% — and the active-condensation layers and cold-trap
+  level switch discretely with temperature, so condensation cannot enter the
+  Fisher forecast this tool is built around. An open-system "smooth rainout"
+  replacement built to restore differentiability was measured NO-GO (it could
+  not reach a strict flux-balanced steady state within its gate); that
+  campaign is preserved on the `research/smooth-rainout-fisher` branch of the
+  sibling repos, not shipped here. Requesting condensation
+  (`use_condense=True`) raises. For aerosol / haze opacity, the
+  Fisher-compatible route is a **differentiable ExoJAX cloud** — the existing
+  power-law cloud deck is already wired into the RT; freeing its parameters
+  (or adding a gray deck) as Fisher parameters is a natural future addition.
 - Registry values are literature planning defaults; edit them for proposals.
 
 ## Repository layout
