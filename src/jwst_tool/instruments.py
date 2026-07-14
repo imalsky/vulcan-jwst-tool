@@ -73,14 +73,18 @@ NOISE_CACHE = OUTPUT_DIR / "noise_cache"
 # default. "legacy" selects the pinned pandeia 3.0 + pandeia_data-3.0rc3 pair,
 # retained ONLY as an explicit reproducibility backend. Every result records the
 # exact engine/refdata versions in "__provenance__", and the versions are in
-# every cache key (switching backends self-invalidates caches). The two default
-# path sets are machine-specific; the explicit JWST_TOOL_PANDEIA_{PYTHON,REFDATA,
-# PSF_DIR} env vars override any of them per-path on another machine.
+# every cache key (switching backends self-invalidates caches). "current"'s
+# refdata/psf default under DATA_DIR (data/pandeia_data-2026.2-jwst,
+# data/pandeia_psfs-2026.2-jwst -- one-time download, see README), so it is
+# portable across checkouts; only the conda python path and "legacy"'s refdata
+# (an external picaso tree) are machine-specific. The explicit
+# JWST_TOOL_PANDEIA_{PYTHON,REFDATA,PSF_DIR} env vars override any of them
+# per-path on another machine.
 _BACKENDS = {
     "current": dict(
         python="/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/bin/python",
-        refdata="/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_data-2026.2-jwst",
-        psf="/Users/imalsky/Desktop/Emulators/VULCAN_Project/pandeia_2026_refdata/pandeia_psfs-2026.2-jwst",
+        refdata=str(DATA_DIR / "pandeia_data-2026.2-jwst"),
+        psf=str(DATA_DIR / "pandeia_psfs-2026.2-jwst"),
         status="Pandeia 2026.2 / pandeia_data-2026.2-jwst (current STScI JWST "
                "5.1 release; validated vs PandExo in tests/parity/)"),
     "legacy": dict(

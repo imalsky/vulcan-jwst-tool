@@ -92,8 +92,11 @@ Current-backend data (one-time download, ~4.3 GB): pandeia.engine 2026.2 via
 `pip install pandeia.engine==2026.2` into its own env, plus the JWST reference
 data (`pandeia-data-v2026p2-jwst`, ~15 MiB) and PSF library
 (`pandeia-psfs-v2026p2-jwst`, ~4 GiB) from the STScI Pandeia distribution.
-Point `JWST_TOOL_PANDEIA_REFDATA`/`JWST_TOOL_PANDEIA_PSF_DIR` at the extracted
-trees if they are not at the built-in default location.
+The built-in default extracts these to this repository's
+`data/pandeia_data-2026.2-jwst/` and `data/pandeia_psfs-2026.2-jwst/`
+(gitignored -- not fetched by cloning); point `JWST_TOOL_PANDEIA_REFDATA`/
+`JWST_TOOL_PANDEIA_PSF_DIR` elsewhere only if you keep the trees outside the
+checkout.
 
 ## Noise model and scope
 

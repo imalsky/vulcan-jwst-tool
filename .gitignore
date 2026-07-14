@@ -20,3 +20,7 @@ dist/
 
 # Large synphot reference data (fetch from ssb.stsci.edu/trds; worker preflight guides you)
 data/cdbs/calspec/
+
+# Large pandeia reference data (one-time ~4.3 GB download; see README "Backend configuration")
+data/pandeia_data-2026.2-jwst/
+data/pandeia_psfs-2026.2-jwst/
