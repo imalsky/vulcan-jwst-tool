@@ -397,7 +397,10 @@ def run_model(params: dict, log=print) -> Path:
     profile["gs_cgs"] = cp["gs_cgs"]
     profile["rstar_cm"] = rstar_cm
     ovr = {                              # chemistry side (applied pre-pre-loop)
-        "gs": cp["gs_cgs"], "Rp": rp_cm, "r_star": cp["rstar_rsun"],
+        # VULCAN derives gravity as g = G*Mp/Rp^2; convert the tool's gs_cgs knob
+        # to the equivalent planet mass at this radius.
+        "Mp": cp["gs_cgs"] * rp_cm**2 / planets.G_CGS,
+        "Rp": rp_cm, "r_star": cp["rstar_rsun"],
         "orbit_radius": cp["orbit_au"],
         "sflux_file": f"atm/stellar_flux/{cp['sflux']}",
         "use_moldiff": cp["use_moldiff"],

@@ -6,8 +6,10 @@ Every planet runs on the SAME validated machinery: the WASP-39b SNCHO photo
 network + 10x-solar FastChem baseline (the import-locked network), with the
 planet identity injected through the existing hooks --
 
-    chemistry : cfg_overrides {gs, Rp, r_star, orbit_radius, sflux_file, ...}
-                (vulcan_chem.build_chem_model applies them before the pre-loop)
+    chemistry : cfg_overrides {Mp, Rp, r_star, orbit_radius, sflux_file, ...}
+                (VULCAN derives gs = G*Mp/Rp^2; gs_cgs is converted to Mp at the
+                boundary in forward.py. vulcan_chem.build_chem_model applies them
+                before the pre-loop)
     RT        : profile {rp_cm, gs_cgs, rstar_cm}
                 (exojax_rt.build_rt_model reads them for geometry/normalization)
     noise     : star dict -> pandeia phoenix SED + Ks normalization
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 R_JUP_CM = 7.1492e9
 R_SUN_CM = 6.957e10
+G_CGS = 6.67430e-8  # gravitational constant (cm^3 g^-1 s^-2); for gs_cgs -> Mp
 
 # Shipped stellar UV spectra usable as photochemistry input (VULCAN-JAX
 # atm/stellar_flux/, all same two-column surface-flux format), labeled by type.
