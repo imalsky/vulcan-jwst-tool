@@ -1,8 +1,12 @@
 """Console entry point: ``jwst-tool`` launches the Streamlit GUI.
 
-Equivalent to ``streamlit run src/jwst_tool/app.py``, but works
-from anywhere once the package is installed. Preflight checks catch the two
-external requirements with actionable messages instead of a mid-run stack
+``jwst-tool``              launch the GUI (preflight checks first, loud)
+``jwst-tool data``         print the full data-availability report + remedies
+``jwst-tool data --deep``  also probe the Pandeia env for its engine version
+
+The GUI launch is equivalent to ``streamlit run src/jwst_tool/app.py``, but
+works from anywhere once the package is installed. Preflight checks catch the
+two external requirements with actionable messages instead of a mid-run stack
 trace: an importable ``vulcan_jax`` package and the Pandeia backend env
 (``$JWST_TOOL_PANDEIA_PYTHON``).
 """
@@ -14,7 +18,25 @@ import sys
 from pathlib import Path
 
 
+def _data_status(argv: list[str]) -> int:
+    """Print the data-availability report (the ``jwst-tool data`` subcommand)."""
+    deep = "--deep" in argv
+    unknown = [a for a in argv if a not in ("--deep",)]
+    if unknown:
+        print(f"jwst-tool data: unknown argument(s) {unknown}; the only flag "
+              "is --deep (probe the Pandeia env's engine version).",
+              file=sys.stderr)
+        return 2
+    from jwst_tool import datacheck
+    report = datacheck.full_report(deep=deep)
+    print(datacheck.format_report(report))
+    return 0 if datacheck.required_ok(report) else 1
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "data":
+        return _data_status(sys.argv[2:])
+
     try:
         import streamlit  # noqa: F401
     except ImportError:
@@ -31,7 +53,8 @@ def main() -> int:
               "Install it from TestPyPI "
               "(pip install -i https://test.pypi.org/simple/ vulcan-jax), or "
               "from a checkout:\n"
-              "  pip install -e <PROJECT_ROOT>/VULCAN-JAX --no-deps",
+              "  pip install -e <PROJECT_ROOT>/VULCAN-JAX --no-deps\n"
+              "Run `jwst-tool data` for the full data-availability report.",
               file=sys.stderr)
         return 2
 
@@ -41,7 +64,8 @@ def main() -> int:
               f"(backend '{ins.JWST_TOOL_BACKEND}': {ins.BACKEND_STATUS}).\n"
               "Point JWST_TOOL_PANDEIA_PYTHON at a python with the matching "
               "pandeia.engine (and JWST_TOOL_PANDEIA_REFDATA at the matching refdata). "
-              "The GUI still starts, but every noise calculation will refuse to run.",
+              "The GUI still starts, but every noise calculation will refuse to run. "
+              "Run `jwst-tool data` for the full data-availability report.",
               file=sys.stderr)
 
     app = Path(__file__).parent / "app.py"

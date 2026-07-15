@@ -13,6 +13,7 @@ the registry in planets.py (or a fully custom system).
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 import subprocess
@@ -21,13 +22,66 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 import streamlit as st
 
 TOOL_DIR = Path(__file__).resolve().parent   # forward.py subprocess lives here
 
-from jwst_tool import detect, fisher as fisher_mod, forward, noise as noise_mod
+from jwst_tool import datacheck, detect, fisher as fisher_mod, forward
+from jwst_tool import noise as noise_mod
 from jwst_tool import instruments as ins
 from jwst_tool import planets
+
+# House figure style: recessive axes/grid, consistent typography, white face
+# (figures must download clean on any Streamlit theme). Data colors stay the
+# fixed per-mode palette in instruments.MODE_COLOR.
+plt.rcParams.update({
+    "figure.facecolor": "white", "axes.facecolor": "white",
+    "savefig.facecolor": "white",
+    "axes.edgecolor": "#9aa0a6", "axes.linewidth": 0.8,
+    "axes.labelcolor": "#333333", "xtick.color": "#555555",
+    "ytick.color": "#555555", "xtick.labelsize": 9, "ytick.labelsize": 9,
+    "axes.labelsize": 10, "legend.fontsize": 9,
+})
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(s)).strip("_").lower()
+
+
+def _fig_png(fig, dpi: int = 200) -> bytes:
+    """Rasterize a figure for download (PNG, dpi 200 -- house convention)."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight",
+                facecolor="white")
+    return buf.getvalue()
+
+
+def _csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode()
+
+
+def _never_reason(tt: dict, scenario: str, val: str) -> str:
+    """Honest 'unreachable' phrasing. Under the default random scenario
+    sig_inf is an exact ceiling (score monotone in N: 'floor caps at').
+    Under a correlated scenario sig_inf is only the N-to-infinity limit --
+    scores can peak at finite N -- so unreachability comes from the full
+    1..N_TRANSITS_CAP scan and is phrased that way."""
+    if scenario == "random":
+        return f"floor caps at {val}"
+    return (f"no count up to {detect.N_TRANSITS_CAP} works; "
+            f"N→∞ limit {val}")
+
+
+def _transits_cell(tt: dict, scenario: str, val_never: str) -> str:
+    """'transits → target' table cell, window-aware for correlated scenarios."""
+    if not tt["reachable"]:
+        return f"never ({_never_reason(tt, scenario, val_never)})"
+    cell = str(tt["n"])
+    if (tt.get("n_last") is not None
+            and tt["n_last"] < detect.N_TRANSITS_CAP):
+        cell += f" (window: lost again past {tt['n_last']})"
+    return cell
 
 st.set_page_config(page_title="JWST Instrument Selector",
                    layout="wide")
@@ -97,6 +151,45 @@ st.caption(
 )
 st.caption(f"**{ins.BACKEND_STATUS}**. Every result records the exact "
            "engine + refdata versions in its provenance block.")
+
+# ---------------------------------------------------------------------------
+# Data availability -- detected live; the display adapts to what is installed
+# (missing data still fails loudly at run time; this is the up-front view)
+# ---------------------------------------------------------------------------
+_STATUS_LABEL = {datacheck.OK: "installed", datacheck.MISSING: "MISSING",
+                 datacheck.AUTO: "downloads on first use"}
+_data_report = datacheck.full_report(base_mols=forward.MOLECULES,
+                                     extra_mols=forward.EXTRA_MOLECULES)
+_missing_req = datacheck.missing_required(_data_report)
+if _missing_req:
+    st.error(
+        f"**Missing required data ({len(_missing_req)} item"
+        f"{'s' if len(_missing_req) > 1 else ''}).** The affected steps will "
+        "refuse to run until it is installed (nothing degrades silently):\n\n"
+        + "\n".join(f"- **{it.label}** -- {it.detail}. How to get it: "
+                    f"{it.remedy}" for it in _missing_req)
+        + "\n\nInstall commands are in the README's *Data setup* section; "
+          "console report: `jwst-tool data`.")
+with st.expander("Data status: what this machine has installed"
+                 + (f"  ({len(_missing_req)} required item(s) missing)"
+                    if _missing_req else "")):
+    st.dataframe(
+        [{"component": it.label,
+          "status": (_STATUS_LABEL[it.status]
+                     + ("" if it.required else " (optional)")),
+          "detail": it.detail,
+          "how to get it": it.remedy if it.status != datacheck.OK else ""}
+         for it in datacheck.all_items(_data_report)],
+        width="stretch", hide_index=True)
+    _c = _data_report["caches"]
+    st.caption(
+        "\"Downloads on first use\" items are fetched automatically the "
+        "first time a run needs them (network required at that moment). "
+        f"Generated caches: {_c['model_cache']['n']} model spectra "
+        f"({_c['model_cache']['mb']} MB), {_c['noise_cache']['n']} noise "
+        f"results ({_c['noise_cache']['mb']} MB); safe to delete, rebuilt "
+        "on demand. Console equivalent: `jwst-tool data` (add `--deep` to "
+        "probe the Pandeia env's engine version).")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 
@@ -176,12 +269,18 @@ with st.sidebar:
                                         "planet (photochemistry).")
         t14 = st.number_input("Transit duration T14 (hr)", 0.5, 10.0,
                               pdef["t14_hr"], 0.1, key=_k("t14"))
+        _uv_ok = datacheck.uv_spectra_status()
         sflux = st.selectbox("Stellar UV spectrum (photochemistry)",
                              list(planets.SFLUX_CHOICES),
                              index=list(planets.SFLUX_CHOICES).index(pdef["sflux"]),
-                             format_func=planets.SFLUX_CHOICES.get, key=_k("sflux"),
+                             format_func=lambda f: (
+                                 planets.SFLUX_CHOICES[f]
+                                 + ("" if _uv_ok.get(f) else "  [FILE MISSING]")),
+                             key=_k("sflux"),
                              help="Shipped VULCAN spectra, pick the nearest "
-                                  "spectral type. Drives photolysis (SO2, CH4 …).")
+                                  "spectral type. Drives photolysis (SO2, CH4 …). "
+                                  "A [FILE MISSING] entry means a broken "
+                                  "vulcan-jax install; the run would refuse it.")
 
     teq = float(pdef["teq_k"])
     st.markdown("### VULCAN chemistry")
@@ -237,10 +336,11 @@ with st.sidebar:
                                    if abs(x - forward.CO_BASELINE) < 1e-6
                                    else f"{x:.2f}"),
             help="Total carbon/oxygen number ratio N_C/N_O. Baseline 0.46 = "
-                 "Lodders 2019 solar (this network's abundance set; the more "
-                 "commonly quoted Asplund 2009 solar is 0.55). Fixed-O carbon "
-                 "enrichment: O/H is held fixed, C/H scales. C/O = 1 (the "
-                 "H2O/CH4-vs-CO transition) is beyond the validated range.")
+                 "Lodders 2009 protosolar (this network's abundance set; the "
+                 "more commonly quoted Asplund 2009 solar is 0.55). Fixed-O "
+                 "carbon enrichment: O/H is held fixed, C/H scales. C/O = 1 "
+                 "(the H2O/CH4-vs-CO transition) is beyond the validated "
+                 "range.")
         dco = float(np.log(co_ratio / forward.CO_BASELINE))
 
     with st.expander("Vertical mixing (K_zz)"):
@@ -312,13 +412,23 @@ with st.sidebar:
             f"**{' · '.join(forward.MOLECULES)}** (solved on every run). The "
             f"opt-in extras are **{' · '.join(forward.EXTRA_MOLECULES)}**. "
             "Adding more is currently in development.")
+        # live line-list availability for the CURRENT broadening choice (the
+        # widget below; previous-run value via session_state, default "air")
+        _mol_status = datacheck.molecule_linelist_status(
+            forward.EXTRA_MOLECULES,
+            broadening=st.session_state.get(K("broad"), "air"))
+        _MOL_NOTE = {datacheck.OK: "opacity cached",
+                     datacheck.AUTO: "downloads on first use",
+                     datacheck.MISSING: "engine data missing"}
         extra_mols = st.multiselect(
             "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
             key=K("xmols"),
+            format_func=lambda m: f"{m}  ({_MOL_NOTE[_mol_status[m]]})",
             help="Added to the base opacity set (the chemistry always solves "
                  "them). C2H2/HCN matter at high C/O, H2S at 3.8-4.6 µm, NH3 on "
-                 "cool (≲900 K) planets. First use downloads the HITRAN lines "
-                 "(~10-15 s each per run).")
+                 "cool (≲900 K) planets. Each entry shows whether its HITRAN "
+                 "line list is already cached locally or will be downloaded "
+                 "on first use (~10-15 s each, network required).")
         use_rayleigh = st.checkbox(
             "H₂/He Rayleigh scattering", value=True, key=K("rayl"),
             help="Zero-free-parameter known physics; matters shortward of "
@@ -342,9 +452,20 @@ with st.sidebar:
                 help="0 = gray deck; 4 ≈ Rayleigh-like small-particle haze.")
         else:
             log_kappa_cloud, alpha_cloud = -1.0, 0.0
+        # h2he uses separate per-molecule caches; count what is already local
+        # for the molecule set in play (CO is cached ExoMol, ignores the knob)
+        _h2he_mols = [m for m in forward.MOLECULES + extra_mols if m != "CO"]
+        _h2he_cached = sum(
+            1 for v in datacheck.molecule_linelist_status(
+                _h2he_mols, broadening="h2he").values() if v == datacheck.OK)
         broadening = st.selectbox(
             "Line broadening perturber", ["air", "h2he"], index=0,
             key=K("broad"),
+            format_func=lambda b: (
+                "air (HITRAN terrestrial widths, validated default)"
+                if b == "air" else
+                f"H2/He blend (planetary; {_h2he_cached}/{len(_h2he_mols)} "
+                "line-list caches present)"),
             help="'air' = HITRAN terrestrial widths (validated default); "
                  "'h2he' = planetary H₂/He blend, first use downloads "
                  "separate line-list caches, and molecules with no H₂/He "
@@ -517,7 +638,7 @@ with st.sidebar:
                     "optional)")
         st.caption("Default **1.0** = the Pandeia prediction as-is. Published "
                    "achieved-vs-predicted ratios (COMPASS/Gordon+2025 G395H "
-                   "≈1.05-1.12×; Espinoza+2023 1.2× NIRISS; Bouwman+2023 "
+                   "≈1.05-1.12×; Radica+2023 1.2× NIRISS SOSS; Bouwman+2023 "
                    "≈1.15× MIRI LRS) are program-specific reference points "
                    "for sensitivity studies, not a calibration. Proportional "
                    "noise, averages down with transits, unlike the floor. "
@@ -762,17 +883,24 @@ if goal_r == "detect":
         st.success(verdict + "  Meets the target.")
     elif bsig > 0:
         # floor-aware transit solver: the photon term averages down with N, the
-        # (R-anchored) systematic floor does not -- a plain 1/sqrt(N) law was
-        # optimistic exactly where it mattered (floor-dominated bright stars)
+        # systematic floor does not -- a plain 1/sqrt(N) law was optimistic
+        # exactly where it mattered (floor-dominated bright stars)
         tt = detect.transits_to_target(best, tsig)
+        _scen = meta.get("scenario", "random")
         if tt["reachable"]:
+            _win = ("" if tt.get("n_last") is None
+                    or tt["n_last"] >= detect.N_TRANSITS_CAP else
+                    f" Correlated-scenario window: past {tt['n_last']} "
+                    "transits the detection is lost again.")
             st.error(verdict + f"  Missing the target, {tt['n']} transits of "
-                     f"{best['label']} would reach it (floor-aware estimate).")
+                     f"{best['label']} would reach it (floor-aware estimate)."
+                     + _win)
         else:
-            st.error(verdict + f"  Missing the target, and NO number of transits "
-                     f"reaches it: the systematic floor caps this mode at "
-                     f"{tt['sig_inf']:.1f}σ. Lower the floor, choose other modes, "
-                     "or relax the target.")
+            _lim = f"{tt['sig_inf']:.1f}σ"
+            st.error(verdict + "  Missing the target, and NO number of "
+                     f"transits reaches it ({_never_reason(tt, _scen, _lim)}). "
+                     "Lower the floor, choose other modes, or relax the "
+                     "target.")
     else:
         st.error(verdict + "  No signal in the selected bands, try other "
                  "modes or a different goal.")
@@ -820,30 +948,39 @@ else:
         tt = fisher_mod.transits_to_target(best_r, fisher_names, gp,
                                            target / tsig, detect.sigma_at_transits,
                                            co_eval=co_eval)
+        _scen = meta.get("scenario", "random")
         if tt["reachable"]:
+            _win = ("" if tt.get("n_last") is None
+                    or tt["n_last"] >= detect.N_TRANSITS_CAP else
+                    f" Correlated-scenario window: past {tt['n_last']} "
+                    "transits the target is missed again.")
             st.error(verdict + f"  Missing the target, {tt['n']} transits of "
                      f"{ins.MODES[bk]['label']} would reach it (floor-aware "
-                     "estimate).")
+                     "estimate)." + _win)
         else:
-            st.error(verdict + f"  Missing the target, and NO number of transits "
-                     f"reaches it: the systematic floor caps this mode at "
-                     f"±{tsig * tt['sig_inf']:.3g}{usp} at {tsig:g}σ. Lower the "
-                     "floor, combine modes, or relax the target.")
+            _lim = f"±{tsig * tt['sig_inf']:.3g}{usp} at {tsig:g}σ"
+            st.error(verdict + "  Missing the target, and NO number of "
+                     f"transits reaches it ({_never_reason(tt, _scen, _lim)}). "
+                     "Lower the floor, combine modes, or relax the target.")
 
 # --- spectrum figure -------------------------------------------------------
+st.subheader("Simulated transmission spectrum")
 wl = model["wl_um"]
 order = np.argsort(wl)
 wl_s, d_s = wl[order], model["depth"][order] * 1e6
+_fname_base = f"jwst_tool_{_slug(meta.get('planet', 'planet'))}"
 
-fig, ax = plt.subplots(figsize=(11, 4.4), dpi=150)
+fig, ax = plt.subplots(figsize=(11, 4.4), dpi=200)
 ax.plot(wl_s, d_s, color="#555555", lw=0.7, alpha=0.8, zorder=2,
         label="model (native)")
+d_wo_s = None
 if goal_r == "detect":
     mols = [str(x) for x in model["mols"]]
     d_wo_s = model["depth_wo"][mols.index(meta["target"])][order] * 1e6
     ax.plot(wl_s, d_wo_s, color="#999999", lw=0.9, ls="--", zorder=1,
             label=f"model without {meta['target']}")
 rng = np.random.default_rng(int(meta["seed"]))
+pt_lo, pt_hi = [], []            # plotted point extents (keep error bars in view)
 for r in results:
     c = ins.MODE_COLOR[r["mode_key"]]
     y = r["depth"] * 1e6
@@ -855,22 +992,56 @@ for r in results:
     x = r.get("wl_eff", r["wl"])
     ax.errorbar(x, y, yerr=r["sigma"] * 1e6, fmt="o", ms=3.0, lw=1.0,
                 color=c, ecolor=c, elinewidth=0.8, capsize=0, zorder=3, label=label)
+    pt_lo.append(float(np.min(y - r["sigma"] * 1e6)))
+    pt_hi.append(float(np.max(y + r["sigma"] * 1e6)))
 ax.set_xscale("log")
-ticks = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0]
-ax.set_xticks(ticks)
-ax.set_xticklabels([f"{t:g}" for t in ticks])
 lo = min(min(r["wl"].min() for r in results), 1.0)
 hi = max(r["wl"].max() for r in results)
+ticks = [t for t in (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0, 12.0)
+         if lo * 0.97 <= t <= hi * 1.03]
+ax.set_xticks(ticks)
+ax.set_xticklabels([f"{t:g}" for t in ticks])
 ax.set_xlim(lo * 0.97, hi * 1.03)
+# y-limits: the model in-window AND every plotted error bar (large-sigma
+# points used to clip out of view)
 sel = (wl_s >= lo * 0.97) & (wl_s <= hi * 1.03)
-pad = 0.06 * (d_s[sel].max() - d_s[sel].min())
-ax.set_ylim(d_s[sel].min() - pad, d_s[sel].max() + 3 * pad)
+y_lo = min(float(d_s[sel].min()), min(pt_lo))
+y_hi = max(float(d_s[sel].max()), max(pt_hi))
+pad = 0.06 * (y_hi - y_lo)
+ax.set_ylim(y_lo - pad, y_hi + 3 * pad)
 ax.set_xlabel("wavelength (μm)")
 ax.set_ylabel("transit depth (ppm)")
 ax.grid(alpha=0.25, lw=0.5)
-ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9)
+ax.spines[["top", "right"]].set_visible(False)
+ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9,
+          edgecolor="#dddddd")
 st.pyplot(fig, width="stretch")
+_spec_png = _fig_png(fig)
 plt.close(fig)
+
+# downloads: the figure + the plotted numbers (binned points, native model)
+_bin_df = pd.concat([
+    pd.DataFrame({
+        "mode": r["mode_key"], "label": r["label"],
+        "wl_um": np.asarray(r["wl"], dtype=float),
+        "wl_eff_um": np.asarray(r.get("wl_eff", r["wl"]), dtype=float),
+        "depth_ppm": np.asarray(r["depth"], dtype=float) * 1e6,
+        "sigma_ppm": np.asarray(r["sigma"], dtype=float) * 1e6,
+        "saturated": bool(r["saturated"]),
+    }) for r in results], ignore_index=True)
+_native = {"wl_um": wl_s, "depth_ppm": d_s}
+if d_wo_s is not None:
+    _native[f"depth_without_{meta['target']}_ppm"] = d_wo_s
+_d1, _d2, _d3, _ = st.columns([1.2, 1.5, 1.5, 2.8])
+_d1.download_button("Figure (PNG)", _spec_png,
+                    f"{_fname_base}_spectrum.png", "image/png",
+                    key=K("dl_spec_png"))
+_d2.download_button("Binned points (CSV)", _csv_bytes(_bin_df),
+                    f"{_fname_base}_binned_points.csv", "text/csv",
+                    key=K("dl_spec_bins"))
+_d3.download_button("Native model (CSV)", _csv_bytes(pd.DataFrame(_native)),
+                    f"{_fname_base}_model_spectrum.csv", "text/csv",
+                    key=K("dl_spec_native"))
 
 # --- goal chart + T-P profile ----------------------------------------------
 col1, col2 = st.columns([2.6, 1.4])
@@ -903,7 +1074,7 @@ with col1:
                              "lower is better)")
         fmt_v = lambda v: f"{v:.3g}"
         vline_target = target
-    fig2, ax2 = plt.subplots(figsize=(6.4, 0.55 * len(names) + 1.2), dpi=150)
+    fig2, ax2 = plt.subplots(figsize=(6.4, 0.55 * len(names) + 1.2), dpi=200)
     bars = ax2.barh(names, vals, color=cols, height=0.62)
     for b, v in zip(bars, vals):
         ax2.text(b.get_width() + max(vals) * 0.02,
@@ -924,12 +1095,23 @@ with col1:
     ax2.grid(axis="x", alpha=0.25, lw=0.5)
     fig2.tight_layout()
     st.pyplot(fig2, width="stretch")
+    _rank_png = _fig_png(fig2)
     plt.close(fig2)
+    _metric = (f"sigma_detect_{meta['target']}" if goal_r == "detect"
+               else f"precision_{gp}_at_{tsig:g}sigma")
+    _rank_df = pd.DataFrame({"mode": names, _metric: vals})
+    _r1, _r2, _ = st.columns([1.2, 1.2, 2.6])
+    _r1.download_button("Figure (PNG)", _rank_png,
+                        f"{_fname_base}_{_slug(_metric)}_ranking.png",
+                        "image/png", key=K("dl_rank_png"))
+    _r2.download_button("Values (CSV)", _csv_bytes(_rank_df),
+                        f"{_fname_base}_{_slug(_metric)}_ranking.csv",
+                        "text/csv", key=K("dl_rank_csv"))
 
 with col2:
     st.subheader("T-P profile")
     cpj = _cpj
-    fig3, ax3 = plt.subplots(figsize=(3.4, 3.6), dpi=150)
+    fig3, ax3 = plt.subplots(figsize=(3.4, 3.6), dpi=200)
     ax3.plot(model["T"], model["p_bar"], color="#2a78d6", lw=1.6)
     for tlim in (320.0, 2980.0):
         ax3.axvline(tlim, color="#cccccc", lw=0.8, ls=":")
@@ -938,12 +1120,29 @@ with col2:
     ax3.set_xlabel("temperature (K)")
     ax3.set_ylabel("pressure (bar)")
     ax3.grid(alpha=0.25, lw=0.5)
+    ax3.spines[["top", "right"]].set_visible(False)
     fig3.tight_layout()
     st.pyplot(fig3, width="stretch")
+    _tp_png = _fig_png(fig3)
     plt.close(fig3)
     st.caption(f"As modeled ({cpj.get('tp_mode', '?')} mode). Dotted lines: "
                "the [320, 2980] K opacity window, profiles outside it are "
                "rejected, never clipped.")
+    if float(np.max(model["T"])) > 2000.0:
+        st.warning(
+            "This profile exceeds 2000 K. Ultra-hot opacity sources are "
+            "not modeled (no H- continuum, no Na/K/Fe atomic lines, no "
+            "TiO/VO/FeH), so spectra and forecasts up here overstate "
+            "molecular detectability.")
+    _tp_df = pd.DataFrame({"p_bar": np.asarray(model["p_bar"], dtype=float),
+                           "T_K": np.asarray(model["T"], dtype=float)})
+    _t1, _t2 = st.columns(2)
+    _t1.download_button("Figure (PNG)", _tp_png,
+                        f"{_fname_base}_tp_profile.png", "image/png",
+                        key=K("dl_tp_png"))
+    _t2.download_button("Values (CSV)", _csv_bytes(_tp_df),
+                        f"{_fname_base}_tp_profile.csv", "text/csv",
+                        key=K("dl_tp_csv"))
 
 # --- mode details table ------------------------------------------------------
 st.subheader("Mode details")
@@ -986,8 +1185,8 @@ for r in sorted(results, key=key_order):
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
-            row["transits → target"] = (str(_tt["n"]) if _tt["reachable"] else
-                                        f"never (floor caps at {_tt['sig_inf']:.1f}σ)")
+            row["transits → target"] = _transits_cell(
+                _tt, meta.get("scenario", "random"), f"{_tt['sig_inf']:.1f}σ")
         else:
             row["transits → target"] = ", "
     else:
@@ -1000,8 +1199,9 @@ for r in sorted(results, key=key_order):
                                                 target / tsig,
                                                 detect.sigma_at_transits,
                                                 co_eval=co_eval)
-            row["transits → target"] = (str(_tt["n"]) if _tt["reachable"] else
-                                        f"never (floor caps at ±{tsig * _tt['sig_inf']:.3g})")
+            row["transits → target"] = _transits_cell(
+                _tt, meta.get("scenario", "random"),
+                f"±{tsig * _tt['sig_inf']:.3g}")
         else:
             row["transits → target"] = ", "
     row.update({"median σ (ppm)": round(r["median_sigma_ppm"]),
@@ -1010,6 +1210,9 @@ for r in sorted(results, key=key_order):
                 "notes": "; ".join(notes)})
     rows.append(row)
 st.dataframe(rows, width="stretch", hide_index=True)
+st.download_button("Mode details (CSV)", _csv_bytes(pd.DataFrame(rows)),
+                   f"{_fname_base}_mode_details.csv", "text/csv",
+                   key=K("dl_modes_csv"))
 if goal_r == "detect":
     st.caption(
         "**σ_detect is a conditional matched-template S/N at the specified "
@@ -1077,6 +1280,9 @@ if fisher_names and "jac" in model:
                       **{f"±{forward.param_axis(n)} at {tsig_f:g}σ":
                          _cell(n, sig[n]) for n in fisher_names}})
     st.dataframe(frows, width="stretch", hide_index=True)
+    st.download_button("Fisher forecast (CSV)", _csv_bytes(pd.DataFrame(frows)),
+                       f"{_fname_base}_fisher_forecast.csv", "text/csv",
+                       key=K("dl_fisher_csv"))
     if fdiag:
         rank, dim = fdiag["fisher_rank"], fdiag["fisher_dimension"]
         st.caption(
@@ -1106,7 +1312,7 @@ if fisher_names and "jac" in model:
             "in a mode's band reads *unconstrained* rather than a fake number.\n"
             "- Metallicity **[M/H]** and vertical mixing **log Kzz** are reported "
             "in **dex** (factors of 10); **C/O** is the absolute carbon/oxygen "
-            "number ratio N_C/N_O (baseline = Lodders 2019 solar ≈ 0.46).\n"
+            "number ratio N_C/N_O (baseline = Lodders 2009 protosolar ≈ 0.46).\n"
             "- σ is evaluated at the transit count you set. Only the "
             "photon/detector term averages down with more transits; the "
             "systematic floor does not, use the 'transits → target' column, "

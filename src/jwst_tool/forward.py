@@ -131,15 +131,17 @@ _VERSION = 10  # bump to invalidate all cached spectra (v5: exact-elemental
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
 # NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity). The
-# network initializes from Lodders 2019 solar abundances (vulcan_jax
-# .../fastchem_vulcan/input/solar_element_abundances.dat -- import-locked and
-# row-order-guarded by VULCAN-JAX test_fastchem_element_order):
+# network initializes from Lodders 2009 PROTOSOLAR abundances (Lodders, Palme
+# & Gail 2009: photospheric +0.053 dex settling correction -- the set upstream
+# VULCAN ships in vulcan_jax .../fastchem_vulcan/input/
+# solar_element_abundances.dat, import-locked and row-order-guarded by
+# VULCAN-JAX test_fastchem_element_order):
 #     A(C) = 8.4434,  A(O) = 8.7826  ->  C/O = 10**(A_C - A_O) = 0.4579.
 # Uniform metallicity scaling preserves it (C and O both scale with Z), and the
 # fixed-O carbon knob makes the internal dco parameter == delta ln(C/O) EXACTLY,
 # so the atmosphere's C/O is CO_BASELINE * exp(dco). (For reference, Asplund 2009
-# solar C/O ~ 0.55; this network uses the Lodders set, hence its solar C/O 0.46.)
-CO_BASELINE = 10.0 ** (8.4434 - 8.7826)   # = 0.45793, Lodders 2019 solar C/O
+# solar C/O ~ 0.55; this network uses the Lodders set, hence its C/O 0.46.)
+CO_BASELINE = 10.0 ** (8.4434 - 8.7826)   # = 0.45793, Lodders 2009 protosolar C/O
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -254,7 +256,7 @@ def canonical_params(params: dict) -> dict:
         "use_rayleigh": bool(params.get("use_rayleigh", True)),
         # line-broadening perturber: "air" (HITRAN terrestrial widths, the
         # validated default) or "h2he" (planetary H2/He blend; downloads
-        # separate <db>_h2he line-list caches on first use, and exojax_rt
+        # separate h2he/<db> line-list caches on first use, and exojax_rt
         # RAISES for a molecule with no H2/He coverage rather than silently
         # falling back)
         "broadening": str(params.get("broadening", "air")),

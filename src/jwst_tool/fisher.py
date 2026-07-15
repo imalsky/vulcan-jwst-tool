@@ -236,10 +236,15 @@ def transits_to_target(result: dict, free_names: list[str], gp: str,
 
     ``sigma_at_transits(result, n) -> per-bin sigma`` comes from detect.py
     (random variance scales 1/N; the minimum floor is a hard lower bound at
-    every N). Returns dict(n=int|None, reachable=bool, sig_inf=float):
-    ``sig_inf`` is the floor-limited best case (display units); ``n`` is None
-    when the target beats it -- no transit count reaches the target, which
-    the old 1/sqrt(N) extrapolation could never say.
+    every N). Returns dict(n=int|None, n_last=int|None, reachable=bool,
+    sig_inf=float): ``sig_inf`` is the INFINITE-TRANSIT LIMIT of the scenario
+    noise model in display units. Under the diagonal "random" scenario the
+    forecast is monotone in N, so sig_inf is an exact best case and a target
+    below it short-circuits to unreachable. Under a correlated scenario the
+    floor-EXCESS systematic grows as photon noise averages down, the forecast
+    can be BEST at a finite N, and reachability comes from the full scan
+    (2026-07-15 audit -- the old sig_inf gate returned false "never"s there);
+    ``n_last`` is then the largest scanned count still meeting the target.
     """
     from . import detect as _detect  # local import: fisher stays numpy-only otherwise
 
@@ -249,12 +254,23 @@ def transits_to_target(result: dict, free_names: list[str], gp: str,
         r2["cov"] = cov
         return display_sigma(gp, mode_forecast(r2, free_names)[gp], co_eval=co_eval)
 
-    sig_inf = _sig_with(np.maximum(np.asarray(result["floor"]), 1e-30),
-                        _detect.cov_at_transits(result, 1, floor_only=True))
-    if not np.isfinite(sig_inf) or target_display < sig_inf:
-        return dict(n=None, reachable=False, sig_inf=sig_inf)
+    cov_inf = _detect.cov_at_transits(result, 1, floor_only=True)
+    sig_inf = _sig_with(np.maximum(np.asarray(result["floor"]), 1e-30), cov_inf)
+    if not np.isfinite(sig_inf):
+        return dict(n=None, n_last=None, reachable=False, sig_inf=sig_inf)
+    diagonal = cov_inf is None         # random scenario: monotone in N
+    if diagonal and target_display < sig_inf:
+        return dict(n=None, n_last=None, reachable=False, sig_inf=sig_inf)
+    n_first = n_last = None
     for n in range(1, _detect.N_TRANSITS_CAP + 1):
-        if _sig_with(sigma_at_transits(result, n),
-                     _detect.cov_at_transits(result, n)) <= target_display:
-            return dict(n=n, reachable=True, sig_inf=sig_inf)
-    return dict(n=None, reachable=False, sig_inf=sig_inf)
+        ok = _sig_with(sigma_at_transits(result, n),
+                       _detect.cov_at_transits(result, n)) <= target_display
+        if ok:
+            if n_first is None:
+                n_first = n
+                if diagonal:           # monotone: smallest n is the answer
+                    return dict(n=n, n_last=None, reachable=True,
+                                sig_inf=sig_inf)
+            n_last = n
+    return dict(n=n_first, n_last=n_last, reachable=n_first is not None,
+                sig_inf=sig_inf)

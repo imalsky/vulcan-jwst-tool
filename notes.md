@@ -585,7 +585,7 @@ Tests: fast suite 96 -> 103 (+7 `test_forward_params.py`, pure-Python gating).
 Retrieval suite re-run green (vulcan_chem guard change is neutral for
 use_condense=False).
 
-## v14: 2026-07-13 backend default -> current Pandeia 2026.2
+## v15.1: 2026-07-13 backend default -> current Pandeia 2026.2
 
 Made the CURRENT backend (pandeia.engine 2026.2 + pandeia_data-2026.2-jwst,
 the STScI JWST 5.1 release validated vs PandExo in tests/parity/) the DEFAULT,

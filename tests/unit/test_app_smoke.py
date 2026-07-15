@@ -1,0 +1,91 @@
+"""GUI smoke test: the app renders end-to-end with no exception.
+
+Runs only where the GUI extras (streamlit + pandas) are installed -- the
+dependency-light CI skips it. Uses Streamlit's AppTest; the pre-run render
+path exercises the intro gate, the data-status panel (datacheck.full_report),
+and every sidebar widget, without launching a forward-model run.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+st = pytest.importorskip("streamlit")
+pytest.importorskip("pandas")
+from streamlit.testing.v1 import AppTest
+
+APP = Path(__file__).resolve().parents[2] / "src" / "jwst_tool" / "app.py"
+
+
+def _run_app():
+    at = AppTest.from_file(str(APP), default_timeout=60)
+    at.session_state["intro_ack"] = True     # skip the how-it-works gate
+    at.run()
+    return at
+
+
+def test_app_renders_without_exception():
+    at = _run_app()
+    assert not at.exception, at.exception
+
+
+def test_data_status_panel_present():
+    at = _run_app()
+    # the availability expander renders on the main page, pre-run
+    labels = " ".join(e.label for e in at.expander)
+    assert "Data status" in labels
+
+
+def test_sidebar_molecule_annotations_present():
+    at = _run_app()
+    ms = [w for w in at.multiselect if w.label == "Extra RT molecules"]
+    assert ms, "extra-molecule multiselect missing"
+    # format_func must annotate availability, one of the three states
+    from jwst_tool import datacheck, forward
+    status = datacheck.molecule_linelist_status(forward.EXTRA_MOLECULES)
+    assert set(status) == set(forward.EXTRA_MOLECULES)
+
+
+def test_results_render_with_synthetic_run():
+    """Drive the full post-Run render path (spectrum + ranking + T-P figures,
+    download buttons, mode table) on a synthetic result -- no forward model."""
+    import json
+    import numpy as np
+
+    n = 40
+    wl = np.linspace(1.0, 5.0, n)
+    model = {
+        "wl_um": wl,
+        "depth": np.full(n, 0.021) + 1e-4 * np.sin(wl),
+        "mols": np.array(["H2O", "CO2", "CO", "CH4", "SO2"], dtype="U8"),
+        "depth_wo": np.tile(np.full(n, 0.0208), (5, 1)),
+        "T": np.full(30, 1100.0),
+        "p_bar": np.logspace(-7, 0.8, 30),
+        "params_json": json.dumps({"dco": 0.0, "tp_mode": "isothermal"}),
+    }
+    nb = 12
+    result = {
+        "mode_key": "nirspec_g395h", "label": "NIRSpec G395H",
+        "saturated": False, "sigma_detect": 0.0,
+        "sigma_detect_proj": float("nan"),
+        "wl": np.linspace(2.9, 5.1, nb), "wl_eff": np.linspace(2.9, 5.1, nb),
+        "depth": np.full(nb, 0.021), "sigma": np.full(nb, 1.5e-4),
+        "median_sigma_ppm": 150.0, "n_bins": nb, "ngroup": 12,
+        "t_cycle_s": 11.0, "warnings": (), "jac_bins": None,
+    }
+    at = AppTest.from_file(str(APP), default_timeout=60)
+    at.session_state["intro_ack"] = True
+    at.session_state["out"] = dict(model=model, results=[result], failed=[],
+                                   unusable=[], fisher_names=[],
+                                   provenance=None)
+    at.session_state["out_meta"] = dict(
+        goal="detect", target="SO2", goal_param=None, target_prec=None,
+        target_sig=3.0, n_transits=1, show_noise=False, seed=0, r_bin=100,
+        planet="WASP-39 b", scenario="random", floor_mode="constant")
+    at.run()
+    assert not at.exception, at.exception
+    # every figure and table must offer a download
+    dl_labels = {b.label for b in at.get("download_button")}
+    assert {"Figure (PNG)", "Binned points (CSV)", "Native model (CSV)",
+            "Values (CSV)", "Mode details (CSV)"} <= dl_labels

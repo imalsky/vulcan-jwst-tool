@@ -222,7 +222,10 @@ def cov_at_transits(result: dict, n_transits: int,
     that diagonal, so diag(C) = max(var_N, floor^2) at every N); None under
     the diagonal random scenario. ``floor_only=True`` gives the
     infinite-transit limit (random term zero, floors clipped away from exact
-    zero)."""
+    zero). NOTE: because the correlated budget is the floor EXCESS, the
+    correlated part GROWS with N (absent where photon noise dominates, fully
+    present at N -> infinity) -- scores are NOT monotone in N under a
+    correlated scenario (see transits_to_target)."""
     scen = result.get("scenario", "random")
     floor = np.asarray(result["floor"])
     if floor_only:
@@ -246,29 +249,48 @@ def _result_nuisance(result: dict) -> list[np.ndarray]:
 def transits_to_target(result: dict, target_sig: float) -> dict:
     """Smallest transit count reaching ``target_sig`` for the detect goal.
 
-    Returns dict(n=int|None, reachable=bool, sig_inf=float): ``sig_inf`` is the
-    floor-limited ceiling (infinite transits); ``n`` is None when the target
-    exceeds it (no number of transits reaches the target -- say so instead of
-    quoting an optimistic 1/sqrt(N) number). The mode's scenario (covariance +
-    segment offsets/slopes) stays in force at every transit count.
+    Returns dict(n=int|None, n_last=int|None, reachable=bool, sig_inf=float).
+    ``sig_inf`` is the INFINITE-TRANSIT LIMIT of the mode's scenario noise
+    model (floor-only). Under the default diagonal "random" scenario the
+    score is monotone in N, sig_inf is an exact ceiling, and a target above
+    it short-circuits to unreachable. Under a correlated scenario the
+    systematic is the floor EXCESS (noise.build_cov), which GROWS as the
+    photon term averages down: the score can PEAK at a finite N and then
+    decline toward sig_inf, so sig_inf is a limit, NOT a bound, and
+    reachability comes from the full n = 1..N_TRANSITS_CAP scan (2026-07-15
+    audit: a smooth-bump signal beat its target only for n = 5..13 while
+    sig_inf sat below it -- the old sig_inf gate returned a false "never").
+    ``n`` is the smallest count meeting the target; ``n_last`` (correlated
+    scenarios only, else None) is the largest scanned count still meeting it
+    -- a finite window means over-observing past ``n_last`` loses the
+    detection again. The mode's scenario (covariance + segment
+    offsets/slopes) stays in force at every transit count.
     """
     if result.get("depth_wo") is None:
-        return dict(n=None, reachable=False, sig_inf=float("nan"))
+        return dict(n=None, n_last=None, reachable=False, sig_inf=float("nan"))
     signal = np.asarray(result["depth"]) - np.asarray(result["depth_wo"])
     nuis = _result_nuisance(result)
     floor = np.asarray(result["floor"])
+    cov_inf = cov_at_transits(result, 1, floor_only=True)
     sig_inf = detection_significance(signal, np.maximum(floor, 1e-30),
-                                     nuisance=nuis,
-                                     cov=cov_at_transits(result, 1,
-                                                         floor_only=True))
-    if target_sig > sig_inf:
-        return dict(n=None, reachable=False, sig_inf=sig_inf)
+                                     nuisance=nuis, cov=cov_inf)
+    diagonal = cov_inf is None        # random scenario: monotone in N
+    if diagonal and target_sig > sig_inf:
+        return dict(n=None, n_last=None, reachable=False, sig_inf=sig_inf)
+    n_first = n_last = None
     for n in range(1, N_TRANSITS_CAP + 1):
-        if detection_significance(signal, sigma_at_transits(result, n),
-                                  nuisance=nuis,
-                                  cov=cov_at_transits(result, n)) >= target_sig:
-            return dict(n=n, reachable=True, sig_inf=sig_inf)
-    return dict(n=None, reachable=False, sig_inf=sig_inf)
+        ok = detection_significance(signal, sigma_at_transits(result, n),
+                                    nuisance=nuis,
+                                    cov=cov_at_transits(result, n)) >= target_sig
+        if ok:
+            if n_first is None:
+                n_first = n
+                if diagonal:          # monotone: smallest n is the answer
+                    return dict(n=n, n_last=None, reachable=True,
+                                sig_inf=sig_inf)
+            n_last = n
+    return dict(n=n_first, n_last=n_last, reachable=n_first is not None,
+                sig_inf=sig_inf)
 
 
 def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
@@ -425,6 +447,18 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     else:
         d_wo_b, sigma_detect, sigma_detect_proj = None, float("nan"), float("nan")
 
+    # current PandExo (master jwst.py min_nint_trans=3) restructures the ramp
+    # to guarantee >= 3 in-transit integrations; this tool's worker ramp is
+    # deliberately transit-independent (one noise cache per star serves any
+    # transit), so say so loudly instead of silently accepting 1-2 cycles:
+    # the box-depth variance stays valid, but time resolution and PandExo
+    # ramp comparability degrade on short transits with long saturated ramps.
+    warnings = dict(mode_result.get("warnings", {}))
+    n_cyc_in = t_in_s / float(mode_result["t_cycle_s"])
+    if n_cyc_in < 3.0:
+        warnings[f"only {n_cyc_in:.1f} integration cycles fit in transit "
+                 "(PandExo enforces >= 3 by shortening the ramp)"] = True
+
     keep = op["keep"]
     return dict(
         jac_bins=jac_bins,
@@ -452,5 +486,5 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
         sat_ngroups=mode_result.get("sat_ngroups"),
         saturated=bool(mode_result.get("saturated", False)),
         t_cycle_s=float(mode_result["t_cycle_s"]),
-        warnings=mode_result.get("warnings", {}),
+        warnings=warnings,
     )

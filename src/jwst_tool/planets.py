@@ -21,8 +21,10 @@ evaluated on-graph, with a constant Kzz. The WASP-39b GCM T-P/Kzz baseline
 modes were removed 2026-07-13 (no GCM profile is ever silently substituted).
 
 Values are literature defaults for PLANNING (all editable in the GUI):
-WASP-39b Mancini+2018/Tsai+2023; HD 189733b Addison+2019; HD 209458b
-Stassun+2017; WASP-107b Piaulet+2021. Stellar UV: shipped VULCAN spectra,
+WASP-39b Mancini+2018/Tsai+2023; HD 189733b Torres+2008 (a: Bouchy+2005);
+HD 209458b Torres+2008 (a, gs from Southworth+2010); WASP-107b Piaulet+2021.
+(Provenance audited against the NASA Exoplanet Archive 2026-07-15: every
+numeric field within the literature spread.) Stellar UV: shipped VULCAN spectra,
 nearest available spectral type (shown in the GUI, never silently swapped).
 """
 from __future__ import annotations
@@ -45,7 +47,7 @@ SFLUX_CHOICES = {
 PLANETS = {
     "wasp39b": dict(
         label="WASP-39 b",
-        star=dict(teff=5400.0, log_g=4.5, metallicity=0.0, ks_mag=10.20),
+        star=dict(teff=5485.0, log_g=4.5, metallicity=0.0, ks_mag=10.20),
         rstar_rsun=0.932, rp_rjup=1.279, gs_cgs=422.0,
         orbit_au=0.04828, teq_k=1120.0, t14_hr=2.80,
         sflux="sflux-W39b_Tsai2023.txt",

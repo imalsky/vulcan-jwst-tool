@@ -118,8 +118,10 @@ PANDEIA_REFDATA = os.environ.get("JWST_TOOL_PANDEIA_REFDATA", _BE["refdata"])
 # "legacy" tree carries its own PSFs, so it is empty there). When set it is
 # passed through to the worker, preflighted, and joins the cache key.
 PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", _BE["psf"])
-# Minimal synphot CDBS assembled for this tool: phoenix grid symlinked from
-# RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.
+# Minimal synphot CDBS assembled for this tool: phoenix grid (symlink here;
+# fetch the STScI reference-atlases synphot5 tarball on other machines), the
+# 2MASS Ks bandpass (tracked in git), and the CALSPEC Vega spectrum
+# (gitignored; ssb.stsci.edu/trds). `jwst-tool data` reports each piece.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
 
 # Engine-generation mode-name renames. MODES stores the canonical (pinned-3.0)
@@ -169,15 +171,23 @@ _COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#008300",
 # selected ramp to [ngroup_min, ngroup_max], so this bounds the optimizer.
 # (A dynamic query of the installed Pandeia/PandExo config is the preferred
 # long-term source; this static table is the pinned-backend equivalent.)
-PANDEXO_NGROUP_MAX = {"nircam": 100}
+PANDEXO_NGROUP_MAX = {"nircam": 100, "niriss": 30}
 
-# For every other instrument PandExo's optimizer is effectively unbounded
-# (its max_ngroup table reads 65535 for nirspec/miri/niriss): SATURATION
-# picks the ramp, not a registry cap. The old self-imposed caps (BOTS 90,
-# SOSS 30) bound before the saturation optimum on moderate stars (G395H on a
-# Ks=10.7 star wants ngroup~125 with NRSRAPID) and made the tool's ramps --
-# and therefore its sigmas and efficiencies -- silently diverge from
-# PandExo/ETC output (2026-07-12 parity harness finding).
+# NIRISS SOSS: 30 groups is the APT hard limit for NISRAPID/SUBSTRIP256 TSO
+# (NIS with more groups requires SUBARRAY=FULL, not a TSO config), enforced
+# upstream by PandExo master 877c0f4 (2026-07-13, max_ngroup['niriss']
+# 65535 -> 30). Since this tool pins readout_pattern="nisrapid", the cap is
+# a schedulability limit, not just PandExo parity. Note the 2026-07-12
+# parity artifacts predate that upstream change by one day.
+#
+# For nirspec/miri PandExo's optimizer is effectively unbounded (its
+# max_ngroup table reads 65535 there): SATURATION picks the ramp, not a
+# registry cap. The old self-imposed BOTS-90 cap bound before the saturation
+# optimum on moderate stars (G395H on a Ks=10.7 star wants ngroup~125 with
+# NRSRAPID) and made the tool's ramps -- and therefore its sigmas and
+# efficiencies -- silently diverge from PandExo/ETC output (2026-07-12
+# parity harness finding). Policy anchor is PandExo MASTER: the tagged v3.0
+# release has a scalar max_ngroup=65536 with no per-instrument caps at all.
 PANDEXO_UNBOUNDED_NGROUP = 65535
 
 # Extraction strategy + sky background: pinned to PandExo's TSO conventions
@@ -247,8 +257,7 @@ MODES = {
         strategy=dict(order=1),
         background="ecliptic", background_level="medium",
         wl_min=0.85, wl_max=2.8,
-        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2,
-        ngroup_max=PANDEXO_UNBOUNDED_NGROUP,
+        floor_ppm=20.0, noise_infl=1.0, ngroup_min=2, ngroup_max=30,
     ),
     "nircam_f322w2": dict(
         label="NIRCam F322W2",
@@ -286,11 +295,15 @@ MODES = {
 # Literature achieved-vs-predicted noise ratios: REFERENCE POINTS for
 # user-driven sensitivity studies, never applied by default (see module
 # docstring). COMPASS G395H reanalysis (Gordon et al. 2025): measured errors
-# average 1.05x PandExo on NRS1, 1.12x on NRS2; NIRISS forecasts
-# conventionally inflated 1.2x (Espinoza et al. 2023, adopted by COMPASS);
-# NIRCam showed minimal systematics (Ahrer et al. 2023); MIRI LRS measured
-# ~15-20% above random-noise simulations (Bouwman et al. 2023); PRISM was
-# photon-limited on the quiet ERS target (Rustamkulov et al. 2023).
+# average 1.05x PandExo on NRS1, 1.12x on NRS2; the G235H value is
+# EXTRAPOLATED from that G395H measurement (same NRS1/NRS2 detectors and
+# SUB2048 BOTS readout, different bandpass -- no published G235H
+# achieved-vs-PandExo ratio exists as of 2026-07); NIRISS SOSS transit fits
+# conventionally inflate errors 1.2x over photon noise (Radica et al. 2023,
+# MNRAS 524, 835); NIRCam showed minimal systematics (Ahrer et al. 2023);
+# MIRI LRS measured ~15-20% above random-noise simulations (Bouwman et al.
+# 2023); PRISM was photon-limited on the quiet ERS target (Rustamkulov et
+# al. 2023).
 LITERATURE_NOISE_FACTORS = {
     "nirspec_prism": 1.0,
     "nirspec_g395h": 1.10,

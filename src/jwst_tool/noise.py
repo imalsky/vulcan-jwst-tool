@@ -266,6 +266,18 @@ def resolve_floor(wl_um: np.ndarray, floor_spec) -> np.ndarray:
 # "conservative" additionally profiles a per-detector-segment SLOPE nuisance
 # (real per-visit fits float linear trends), on top of the per-segment
 # offsets every scenario profiles.
+# NOTE (2026-07-15 audit): because the correlated budget is the floor EXCESS
+# max(0, floor^2 - var_phot), the correlated systematic is absent where photon
+# noise dominates and fully present at N -> infinity -- it GROWS as transits
+# average the photon term down. Template S/N (and Fisher forecasts) are
+# therefore NOT monotone in n_transits under the correlated presets: they can
+# peak at a finite transit count (where the floor just binds) and decline
+# toward the floor-only limit. This is a property of the stated assumption,
+# kept deliberately (it preserves the PandExo per-bin totals exactly, so
+# scenario ranking differences are attributable to correlation structure
+# alone); transits_to_target scans instead of gating on the limit there. A
+# PSD-monotone additive-systematic model would need a NEW scenario family
+# with different (documented) diagonal semantics -- never a silent swap.
 SCENARIOS = {
     "random": dict(f_white=1.0, ell=None, slopes=False,
                    label="random-only: diagonal noise, offsets profiled "
@@ -287,7 +299,10 @@ def build_cov(wl_center: np.ndarray, var_phot: np.ndarray, floor: np.ndarray,
     ``floor`` is the resolved per-bin minimum floor (fractional depth); the
     correlated budget is the floor EXCESS over the random variance, so
     diag(C) always equals max(var_phot, floor^2) -- the same total the
-    diagonal path quotes. Returns None for a fully-white scenario OR when the
+    diagonal path quotes. Consequence (see the SCENARIOS note): the
+    correlated part grows as the random variance shrinks, so scores built on
+    this covariance are not monotone in the transit count. Returns None for
+    a fully-white scenario OR when the
     floor binds nowhere (no excess to correlate), so callers keep the exact
     diagonal fast path; otherwise a positive-definite (n_bins, n_bins)
     matrix. Unknown scenario names raise (KeyError) rather than defaulting;
@@ -406,7 +421,7 @@ def depth_error_bins(mode_result: dict, edges: np.ndarray,
 
     ``noise_inflation`` is an OPTIONAL empirical sensitivity factor on the
     random (Pandeia) sigma, default 1.0 -- the Pandeia prediction as-is.
-    Published achieved-vs-predicted ratios (COMPASS/Gordon+2025, Espinoza+2023,
+    Published achieved-vs-predicted ratios (COMPASS/Gordon+2025, Radica+2023,
     Bouwman+2023; see instruments.LITERATURE_NOISE_FACTORS) are
     program-specific, NOT a transferable calibration, so nothing is applied by
     default. Proportional noise: it averages down with transits, unlike the

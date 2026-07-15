@@ -29,22 +29,45 @@ goal types are supported:
 
 ## Installation
 
-Local development, from this repository's root (sibling checkouts of
-`vulcan-retrieval` assumed):
+The tool spans two python environments plus a set of reference data:
+
+1. **The chemistry/GUI environment** (one env): VULCAN-JAX, the
+   vulcan-retrieval forward engine, ExoJAX, and Streamlit.
+2. **The Pandeia environment** (its own conda env): the STScI ETC engine,
+   deliberately not a package dependency.
+3. **Reference data**: see "Data setup" below; `jwst-tool data` reports
+   what is present on this machine and how to fetch what is not.
+
+Local install, from this repository's root, with sibling checkouts of
+`VULCAN-JAX` and `vulcan-retrieval` next to it (the layout this project
+uses; `--no-deps` because those dists live on TestPyPI, not PyPI):
 
 ```
+pip install --no-deps -e ../VULCAN-JAX
 pip install --no-deps -e ../vulcan-retrieval
 pip install --no-deps -e .
 pip install streamlit pandas
 jwst-tool
 ```
 
-`--no-deps` is required because `vulcan-jax` and `vulcan-retrieval` are
-published on TestPyPI, not PyPI. Consumer install:
+Pandeia environment (once):
 
 ```
-pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple 'vulcan-jwst-tool[gui]'
+conda create -n pandeia_2026 python=3.11
+conda run -n pandeia_2026 pip install pandeia.engine==2026.2
 ```
+
+then point `JWST_TOOL_PANDEIA_PYTHON` at that env's python if it is not at
+the built-in default path.
+
+A TestPyPI consumer install (`pip install -i https://test.pypi.org/simple/
+--extra-index-url https://pypi.org/simple 'vulcan-jwst-tool[gui]'`) works
+only once the matching dependency chain (vulcan-jax >= 0.2.0,
+vulcan-retrieval >= 0.9.0) is published there; the editable checkout install
+above is the supported path today. A site-packages install must also set
+`VULCAN_PROJECT_ROOT` (the directory containing the `vulcan-retrieval/`
+checkout -- its `data/` tree is required at run time) plus
+`JWST_TOOL_DATA_DIR` / `JWST_TOOL_OUTPUT_DIR`.
 
 `jwst-tool` preflights the chemistry stack and the Pandeia backend with
 actionable error messages, then launches the Streamlit GUI. Equivalent:
@@ -54,6 +77,41 @@ The first run of a new parameter set takes about 2 minutes at the default
 resolution (100 layers, native R about 1500), rising to about 3 minutes at the
 150-layer / R about 3000 ceiling, plus 20 to 60 seconds per freed Fisher
 parameter. All results are disk-cached under `output/`; repeat runs are instant.
+
+Every result is exportable from the GUI: each figure (spectrum, mode
+ranking, T-P profile) has a PNG download (200 dpi) and a CSV of the plotted
+numbers (binned points per mode, the native model spectrum, the ranking
+values, the T-P profile), and the mode-details and Fisher tables download
+as CSV.
+
+## Data setup
+
+`jwst-tool data` prints a live report of every item below (present /
+missing / downloads on first use) with the exact remedy per item; add
+`--deep` to also probe the Pandeia env for its engine version. The GUI shows
+the same report in its "Data status" panel and annotates the molecule /
+broadening / UV-spectrum widgets with availability, and it refuses loudly at
+run time if something required is missing -- nothing degrades silently.
+
+| Data | Size | Where it lives | How you get it |
+|---|---|---|---|
+| Pandeia engine env | -- | conda env `pandeia_2026` | `pip install pandeia.engine==2026.2` (own env; see above) |
+| Pandeia JWST refdata | 15 MiB | `data/pandeia_data-2026.2-jwst/` | download: https://stsci.box.com/v/pandeia-data-v2026p2-jwst |
+| Pandeia PSF library | 4 GiB | `data/pandeia_psfs-2026.2-jwst/` | download: https://stsci.box.com/v/pandeia-psfs-v2026p2-jwst |
+| PHOENIX stellar grid | 1.9 GB | `data/cdbs/grid/phoenix` | STScI reference-atlases synphot5 tarball (see `data/notes.md` for the exact URL); on the maintainer's machine a symlink to a local copy |
+| CALSPEC Vega | 288 KB | `data/cdbs/calspec/` | https://ssb.stsci.edu/trds/calspec/alpha_lyr_stis_011.fits |
+| 2MASS Ks bandpass | 9 KB | `data/cdbs/comp/nonhst/` | ships with this repo (tracked in git) |
+| H2-He CIA table | 147 MB | `../vulcan-retrieval/data/opacity_cache/` | manual, once: https://hitran.org/data/CIA/main/H2-He_2011.cia (the `/main/` path segment is required) |
+| H2-H2 CIA table | 24 MB | `../vulcan-retrieval/data/opacity_cache/` | auto-fetched by ExoJAX on first use |
+| CO line list (ExoMol Li2015) | ~8 MB | `../vulcan-retrieval/data/opacity_cache/CO/` | auto-fetched by ExoJAX on first use |
+| HITRAN line lists (per molecule) | ~190 MB total | `../vulcan-retrieval/data/exojax_linelists/` | auto-downloaded on the FIRST run that uses each molecule (~10-15 s; network needed at that moment). H2/He-broadening variants cache separately under `h2he/` |
+| Stellar UV spectra | small | inside the `vulcan_jax` package | ship with vulcan-jax; nothing to fetch |
+| FastChem binary | -- | inside the `vulcan_jax` package | compiled automatically on the first equilibrium-init run; needs `make` + a C++ compiler |
+
+Everything auto-fetched requires network at that moment; everything manual
+is listed with its URL in `jwst-tool data` output and `data/notes.md`. The
+generated caches (`output/model_cache/`, `output/noise_cache/`) are safe to
+delete at any time and rebuild on demand.
 
 ## Backend configuration
 
@@ -194,8 +252,9 @@ validated and cache-keyed:
 - **VULCAN chemistry inputs.** Temperature structure: isothermal (T_iso) or
   Guillot (2010) T-P, shared with the radiative transfer.
   Composition: metallicity (reported in dex, [M/H]) and the C/O ratio (the
-  absolute carbon/oxygen number ratio N_C/N_O; baseline = Lodders 2019 solar
-  0.46, entered as a fixed-O carbon enrichment). Vertical mixing: a constant
+  absolute carbon/oxygen number ratio N_C/N_O; baseline = Lodders 2009
+  protosolar 0.46, the abundance set upstream VULCAN ships, entered as a
+  fixed-O carbon enrichment). Vertical mixing: a constant
   Kzz. Photochemistry on/off, photolysis zenith angle, diurnal averaging
   factor, molecular diffusion on/off, stellar UV spectrum, and the numerical
   grid (chemistry layers -- shared with the RT grid -- and convergence
@@ -259,20 +318,25 @@ against finite differences of the full forward model.
 `tests/parity/outputs/REPORT.md`).** Every instrument mode was run
 through both this tool's worker and current PandExo (master, pinned commit)
 on the same Pandeia 2026.2 engine and reference data, for a moderate star, a
-bright star, and a saturation edge case, with no noise floor. Result:
-configuration, wavelength grids, extracted count rates (0.99 to 1.02),
-group selection (within one group), integration timing (within 1 percent),
-and saturation masking all match. The remaining difference is the noise
+bright saturation edge case, and a faint (Ks = 13) star, with no noise
+floor. Result: configuration, wavelength grids, extracted count rates
+(flux-ratio medians 0.987 to 1.03), group selection (within one group on
+the moderate and bright stars; within about 1 percent relative, up to 5
+groups absolute, on the faint star's 500-to-1000-group ramps), per-group
+integration timing (within 0.1 percent; the total inherits the group
+choice, up to about 5.5 percent where a single group of 16 dominates), and
+saturation masking all match. The remaining difference is the noise
 model itself and it is one-sided: this tool propagates pandeia's full
 extracted noise (correlated ramp noise, background, dark, IPC), while
 PandExo's default "fml" calculation is an analytic ramp formula close to
 pure photon noise. This tool's sigmas are therefore conservative relative
-to PandExo, by roughly 6 to 12 percent for G235H, G395H, NIRISS SOSS, and
-NIRCam; by roughly 34 to 50 percent for NIRSpec PRISM under the shipped
-two-group minimum (an intentional group-selection policy difference -- PRISM
-is not full group-selection parity, and it saturates on bright targets); and
-by roughly 33 to 49 percent for MIRI LRS. Margins are quantified per mode in
-the report. Published achieved-versus-PandExo ratios (COMPASS G395H 1.05 to
+to PandExo, by roughly 2 to 24 percent for G235H, G395H, NIRISS SOSS, and
+NIRCam on matched configurations (up to about 31 percent under the policy
+configurations on the faint star); by roughly 34 to 50 percent for NIRSpec
+PRISM under the shipped two-group minimum (an intentional group-selection
+policy difference -- PRISM is not full group-selection parity, and it
+saturates on bright targets); and by roughly 33 to 56 percent for MIRI LRS.
+Margins are quantified per mode in the report. Published achieved-versus-PandExo ratios (COMPASS G395H 1.05 to
 1.12; MIRI LRS roughly 1.15 above random-noise simulations) fall on the
 same side. Uncertainties are labeled pandeia-extracted-noise forecasts,
 never PandExo-identical output.
@@ -296,6 +360,16 @@ Pending release gates, tracked explicitly rather than assumed:
 
 - The model band starts at 1.0 micron (H2-H2 CIA table edge) and MIRI LRS is
   cut at 12 microns.
+- Ultra-hot-Jupiter opacity sources are absent: no H- bound-free/free-free
+  continuum (the SNCHO network has no ionization chemistry, so H-/e- cannot
+  be produced) and no atomic or metal-oxide/hydride species (Na, K, Fe, TiO,
+  VO, FeH). Because the band starts at 1.0 micron, the Na/K resonance wings
+  and most TiO/VO bands fall out of band anyway; the in-band gaps are the H-
+  continuum (bound-free edge at 1.64 micron plus free-free longward), FeH
+  and VO near 1 to 1.6 micron, and the hot line-list under-representation
+  already noted. Forecasts for profiles hotter than roughly 2000 K are
+  unreliable and overstate molecular detectability; the GUI warns when a
+  profile exceeds that.
 - Default spectra are clear-sky; the cloud deck is opt-in and is held fixed
   (not marginalized) in Fisher forecasts.
 - The box-transit depth-error formula neglects ingress/egress and
@@ -325,7 +399,8 @@ Pending release gates, tracked explicitly rather than assumed:
 
 `src/jwst_tool/` package (GUI `app.py`, forward-model driver `forward.py`,
 Pandeia worker `pandeia_worker.py`, noise/detect/fisher/binning modules,
-instrument registry); `data/` input CDBS tree; `output/` generated runtime
+instrument registry, data-availability detector `datacheck.py` backing
+`jwst-tool data` and the GUI status panel); `data/` input CDBS tree; `output/` generated runtime
 caches (model spectra + Pandeia noise, gitignored). All tests and validation
 live under `tests/`: `tests/unit/` the fast numpy suite (`python -m pytest
 tests -q`), `tests/parity/` the PandExo parity gate, split into `scripts/`

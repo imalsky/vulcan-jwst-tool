@@ -64,7 +64,9 @@
   JSON git-ignored) + `figs/`): config/grid/flux/ngroup/timing parity achieved
   on engine 2026.2 both sides; the residual sigma gap is the NOISE MODEL
   (pandeia full extracted noise vs PandExo's analytic fml ≈ photon-only):
-  ours conservative by ~7–12% (NIR) / ~35–48% (MIRI LRS). NEVER label
+  ours conservative by ~2–24% NIR matched (up to ~31% policy on the faint
+  Ks=13 star) / ~33–56% (MIRI LRS) — the three-star envelope; the old
+  "~7–12% NIR" quoted only the moderate/bright stars. NEVER label
   sigmas "PandExo-identical"; they are pandeia-extracted-noise forecasts.
   Figures show ONLY the 1:1 parity (config/timing + extracted flux); the
   noise-model difference is documented in REPORT.md, not plotted. Re-run:
@@ -86,11 +88,31 @@
   cumulative-trapezoid integral to cell edges — that is only O(h²) and was off
   by ~1–2 ppm for edges between model nodes. Applies to BOTH `bin_model` and
   `smooth_to_native_r`; pinned by machine-precision tests in `test_binning.py`.
-- **PandExo group caps (re-audit V2, item 5)**: `instruments.PANDEXO_NGROUP_MAX`
-  bounds each instrument's `ngroup_max` (NIRCam grism = 100, not 180); an
-  import-time guard refuses any mode above its cap and the worker clamps its
-  selected ramp via `pandeia_worker._clamp_ngroup`. Never raise a NIRCam mode
-  above 100 without a matching PandExo/Pandeia change.
+- **PandExo group caps (re-audit V2, item 5; NIRISS added 2026-07-15)**:
+  `instruments.PANDEXO_NGROUP_MAX` bounds each instrument's `ngroup_max`
+  (NIRCam grism = 100; NIRISS SOSS = 30, the APT NISRAPID/SUBSTRIP256 hard
+  limit adopted by PandExo master 877c0f4 on 2026-07-13 — one day AFTER the
+  parity run, so the parity artifacts predate it); an import-time guard
+  refuses any mode above its cap and the worker clamps its selected ramp via
+  `pandeia_worker._clamp_ngroup`. The policy anchor is PandExo MASTER
+  (tagged v3.0 has a scalar 65536, no per-instrument caps). Never raise a
+  capped mode without a matching PandExo/Pandeia change.
+- **transits_to_target gates only under the diagonal scenario (2026-07-15
+  audit, HIGH)**: under correlated scenarios the floor-EXCESS systematic
+  grows with N, scores are NOT monotone (can peak at finite N), so `sig_inf`
+  is a limit, not a bound — detect/fisher `transits_to_target` scan
+  1..N_TRANSITS_CAP there and report the reachability WINDOW (`n_last`);
+  never reintroduce the unconditional `target > sig_inf -> unreachable`
+  early return (pinned in `tests/unit/test_transits_window.py`).
+- **Data availability is DETECTED, not assumed**: `datacheck.py` (stdlib-only)
+  knows every external dataset (pandeia env/refdata/PSF, CDBS pieces, CIA
+  tables, per-molecule line lists incl. the `h2he/<db>` layout, UV spectra,
+  FastChem binary) and powers `jwst-tool data` + the GUI status panel and
+  widget annotations. It never replaces the loud run-time failures. h2he
+  line-list caches live in `exojax_linelists/h2he/<db>` — the old
+  `<db>_h2he` suffix broke exojax>=2.x molecule parsing (every h2he run
+  died before downloading; fixed in the sibling repo 2026-07-15, pinned by
+  its `test_opacity_cache_paths.py`).
 - **Strict grid validation (2026-07-12 re-audit, item 7)**: `binning` raises
   on non-finite wavelengths/weights/model values, non-ascending model grids,
   and bad bin edges — NEVER silently drops invalid samples. Median pixel
