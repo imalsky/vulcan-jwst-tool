@@ -42,34 +42,45 @@ def _intro_gate() -> None:
     The acknowledgment survives the sidebar reset (see _reset_all)."""
     if st.session_state.get("intro_ack"):
         return
-    st.title("JWST instrument selector")
-    st.markdown(
-        """
-vulcan-jwst-tool is a local JWST transmission-spectroscopy planning tool that
-ranks JWST time-series instrument modes by how well each one can detect a target
-molecule or constrain an atmospheric parameter for a given exoplanet, and it
-reports the number of transits needed to reach a chosen precision. It follows
-the same principle as PandExo, a Pandeia exposure-time-calculator noise forecast
-for JWST exoplanet spectra, but replaces the assumed input spectrum with a
-differentiable forward model whose chemistry follows the VULCAN photochemical
-kinetics code at github.com/exoclime/VULCAN (ported to JAX as VULCAN-JAX and
-chained into ExoJAX radiative transfer), and it uses automatic differentiation
-through that model to obtain the exact spectral Jacobian, the parameter
-derivatives of transit depth, that feeds a Fisher-information forecast. The
-forecasts are deliberately optimistic in three ways: molecule-detection scores
-are a conditional matched-template signal-to-noise ratio at one fixed
-atmosphere, so a real retrieval does worse; the Fisher results are local
-Cramer-Rao lower bounds rather than posterior widths; and the noise model omits
-time-correlated systematics, so achieved precision is usually poorer. It is a
-planning tool, not an atmospheric retrieval, and it does not model
+    _, mid, _ = st.columns([1, 3, 1])
+    with mid:
+        st.title("JWST instrument selector")
+        st.markdown(
+            """
+**vulcan-jwst-tool** is a local JWST transmission-spectroscopy planning tool
+that ranks JWST time-series instrument modes by how well each one can **detect a
+target molecule** or **constrain an atmospheric parameter** for a given
+exoplanet, and it reports the number of transits needed to reach a chosen
+precision.
+
+It follows the same principle as **PandExo**, a Pandeia exposure-time-calculator
+noise forecast for JWST exoplanet spectra, but replaces the assumed input
+spectrum with a differentiable forward model whose chemistry follows the
+**VULCAN** photochemical kinetics code at
+[github.com/exoclime/VULCAN](https://github.com/exoclime/VULCAN) (ported to JAX
+as VULCAN-JAX and chained into ExoJAX radiative transfer). It then uses
+**automatic differentiation** through that model to obtain the exact spectral
+Jacobian, the parameter derivatives of transit depth, that feeds a
+**Fisher-information forecast**.
+
+The forecasts are **deliberately optimistic** in three ways:
+
+- Molecule-detection scores are a conditional matched-template signal-to-noise
+  ratio at one fixed atmosphere, so a real retrieval does worse.
+- The Fisher results are local Cramer-Rao lower bounds rather than posterior
+  widths.
+- The noise model omits time-correlated systematics, so achieved precision is
+  usually poorer.
+
+It is a **planning tool, not an atmospheric retrieval**, and it does not model
 time-correlated instrument systematics such as visit-long trends, 1/f residuals,
-detrending covariance, or stellar heterogeneity, and condensation is not
-supported.
-        """
-    )
-    if st.button("I understand, open the tool", type="primary"):
-        st.session_state["intro_ack"] = True
-        st.rerun()
+detrending covariance, or stellar heterogeneity. Condensation is not supported.
+            """
+        )
+        st.write("")
+        if st.button("I understand, open the tool", type="primary"):
+            st.session_state["intro_ack"] = True
+            st.rerun()
     st.stop()
 
 
