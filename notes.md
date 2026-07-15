@@ -721,3 +721,51 @@ test_forward_params.py, display_sigma unit conversions in test_fisher.py);
 test_closure.py drops the retired `quality="fast"` (defaults are the same
 tier). Verified end-to-end with Streamlit AppTest (detect + constrain renders,
 Rayleigh default ON, default C/O -> dco=0).
+
+## v18: 2026-07-15 structural composition + certified FD Fisher (forward v11-v13)
+
+Three forward versions in one day, ending with the legacy composition
+machinery removed outright.
+
+- **v11**: `use_vm_mol` became an explicit canonical parameter, default False.
+  VULCAN-JAX flipped its own default to the hybrid upwind scheme on
+  2026-07-14 (vm_branch port) and the tool silently inherited it for v9/v10
+  spectra. A/B on the default W39b case measured the flip benign (all RT
+  molecules <= 0.01 dex in the transit photosphere), but the rule stands:
+  never let an upstream default flip reach the tool unpinned. Also: yconv
+  ladder widened to 1e-4, metallicity slider to 0.1-100x, convergence
+  certificate (conv_stages/accept/longdy/gate) saved in the npz and shown in
+  the GUI, conditional (others-fixed) Fisher sigmas next to marginalized.
+- **v12**: CO_BASELINE bug fixed -- v10's 0.4579 came from the FastChem
+  EQ-init file (Lodders), but the conserved atom columns come from the cfg's
+  customized set (C_H 2.95e-3 / O_H 5.37e-3, Tsai 2023 10x-solar): true
+  baseline C/O = 0.549. The wrong basis skewed every absolute-C/O surface by
+  1.2x. Plus a structural (re-init) C-rich baseline mode, verified live at
+  C/O = 1.5.
+- **v13**: legacy removed. Composition is ONE structural path (`co_ratio` +
+  `met_x_solar` pin the cfg elemental abundances; FastChem re-initializes at
+  the request; no dco knob, no b_z bound, no two-stage warm continuation, no
+  detection-only C-rich restriction). Fisher Jacobians are central finite
+  differences of longdy-certified re-solves with a mandatory h-vs-2h
+  consistency gate and Richardson-combined rows (fd_h/fd_err saved + shown);
+  the photo-on Fisher gate is retired. Cost: ~6-8 min per composition row,
+  ~3-5 min per Kzz/T row -- the price of machinery-free, self-verifying
+  derivatives. The v12 warm-jvp AD Jacobian was captured before removal and
+  the FD rows verified against it (see CLAUDE.md). The AD machinery remains
+  in the sibling vulcan-retrieval repo, where SMC needs it.
+
+### v18 addendum: FD-vs-AD verification (measured 2026-07-15)
+
+The v12 warm-jvp rows were captured before removal and the v13 FD rows
+compared against them on identical W39b defaults (yconv 1e-3, all four
+parameters + lnR0): correlation >= 0.9999 on every row; scale agreement
+T_iso 0.14%, dlnCO 0.07%, lnKzz exact, lnR0 0.01%, lnZ 1.6% (the lnZ gap is
+the hydrostatic-grid rebuild the FD row includes and the fixed-grid AD chain
+approximated). h-vs-2h consistency per row: 0.004-0.113, all far below the
+0.25 gate. Conclusion: the retired AD path was NOT wrong; FD was adopted for
+certification, any-composition validity, and single-path simplicity at a
+measured ~2.5-3x forecast cost. Division of labor: FD owns every quotable
+derivative in this tool; reverse-mode AD (VULCAN-JAX
+steady_state_reaction_sensitivity / steady_state_input_sensitivity,
+validated 0.2-0.8%) remains the only feasible route for per-reaction and
+per-layer sensitivities and is deliberately not wired into the forecasts.

@@ -7,9 +7,9 @@ Pipeline per run: VULCAN-JAX photochemistry -> ExoJax transmission spectrum
 (local subprocess, disk-cached; ~1.5-2 min at the default 100-layer resolution) ->
 Pandeia ETC noise per instrument mode (subprocess in its own conda env, disk-cached) ->
 science-goal scoring per mode. Two goal types: DETECT a molecule (nested-model
-delta-chi2 significance) or CONSTRAIN a parameter (Fisher forecast from the
-autodiff Jacobian, vs a target precision). Planets beyond WASP-39b come from
-the registry in planets.py (or a fully custom system).
+delta-chi2 significance) or CONSTRAIN a parameter (Fisher forecast from
+certified finite-difference Jacobians, vs a target precision). Planets beyond
+WASP-39b come from the registry in planets.py (or a fully custom system).
 """
 from __future__ import annotations
 
@@ -109,13 +109,21 @@ precision.
 
 It follows the same principle as **PandExo**, a Pandeia exposure-time-calculator
 noise forecast for JWST exoplanet spectra, but replaces the assumed input
-spectrum with a differentiable forward model whose chemistry follows the
+spectrum with a live forward model whose chemistry follows the
 **VULCAN** photochemical kinetics code at
 [github.com/exoclime/VULCAN](https://github.com/exoclime/VULCAN) (ported to JAX
-as VULCAN-JAX and chained into ExoJAX radiative transfer). It then uses
-**automatic differentiation** through that model to obtain the exact spectral
-Jacobian, the parameter derivatives of transit depth, that feeds a
-**Fisher-information forecast**.
+as VULCAN-JAX and chained into ExoJAX radiative transfer). The spectral
+Jacobian that feeds the **Fisher-information forecast** is built by
+**certified finite differences**: every parameter derivative is a central
+difference of independently converged, convergence-certified solves,
+evaluated at two step sizes that must agree before the row is reported
+(composition derivatives re-initialize the chemistry at the perturbed
+elemental abundances, the standard VULCAN workflow). This choice is
+deliberate: it is slower than automatic differentiation but transparent and
+self-verifying, and it was cross-validated against the retired AD path to
+0.07-1.6% per row. AD remains the right tool for high-dimensional
+sensitivities (per-reaction, per-layer) and lives in VULCAN-JAX, not in
+this tool's forecasts.
 
 The forecasts are **deliberately optimistic** in three ways:
 
@@ -316,32 +324,41 @@ with st.sidebar:
                                                -1.0, 0.05, key=_k("lg"))
 
     with st.expander("Composition"):
+        # Composition is fully STRUCTURAL (v13, one path for every value):
+        # metallicity scales the cfg's O/C/N/S abundances together, C/O then
+        # sets C_H = co * O_H, and FastChem re-initializes at exactly that
+        # composition -- the upstream-VULCAN workflow. No perturbative knob,
+        # no fixed-O validity ceiling: C-rich (> 1) is the same code path.
+        # A corner with no certified steady state errors loudly (longdy
+        # gate); it can never return a wrong spectrum.
         met = st.select_slider(
             "Metallicity (× solar)",
-            options=[1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0],
+            options=[0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0,
+                     50.0, 100.0],
             value=10.0, key=K("met"),
-            help="Uniform metal enrichment; the constraint forecast reports it "
-                 "in dex ([M/H]).")
-        # Absolute C/O = N_C/N_O (the standard exoplanet-atmosphere quantity, a
-        # number ratio -- not a log, not [C/H]/[O/H]). The chemistry knob is
-        # fixed-O carbon enrichment with dco = ln(C/O / C/O_baseline) EXACTLY, so
-        # this slider maps straight onto it. Options span the validated dco range
-        # [-0.5, 0.5]; the baseline option is exactly CO_BASELINE -> dco = 0.
-        _co_opts = [0.30, 0.35, 0.40, forward.CO_BASELINE, 0.50, 0.55, 0.60,
-                    0.65, 0.70, 0.75]
+            help="Scales the network's O/C/N/S abundances together (He "
+                 "fixed); every value is a full FastChem re-initialization. "
+                 "Reported in dex ([M/H]) by the constraint forecast. Far "
+                 "corners (0.1x, 100x on cold profiles) may fail the "
+                 "convergence gate loudly.")
+        _co_opts = [0.25, 0.30, 0.35, 0.40, 0.46, 0.50, forward.CO_BASELINE,
+                    0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+                    1.05, 1.20, 1.50, 2.00]
         co_ratio = st.select_slider(
             "C/O (carbon/oxygen number ratio)", options=_co_opts,
             value=forward.CO_BASELINE, key=K("co"),
-            format_func=lambda x: (f"{x:.2f} (solar)"
+            format_func=lambda x: (f"{x:.2f} (baseline)"
                                    if abs(x - forward.CO_BASELINE) < 1e-6
                                    else f"{x:.2f}"),
-            help="Total carbon/oxygen number ratio N_C/N_O. Baseline 0.46 = "
-                 "Lodders 2009 protosolar (this network's abundance set; the "
-                 "more commonly quoted Asplund 2009 solar is 0.55). Fixed-O "
-                 "carbon enrichment: O/H is held fixed, C/H scales. C/O = 1 "
-                 "(the H2O/CH4-vs-CO transition) is beyond the validated "
-                 "range.")
-        dco = float(np.log(co_ratio / forward.CO_BASELINE))
+            help="Total carbon/oxygen number ratio N_C/N_O; sets the carbon "
+                 "abundance at the (metallicity-scaled) oxygen: C_H = C/O × "
+                 "O_H, then the network re-initializes at that composition. "
+                 "Baseline 0.55 = this network's WASP-39b elemental set "
+                 "(Tsai et al. 2023 10x-solar; Asplund-flavored solar C/O). "
+                 "Any value works, including carbon-rich (> 1); near the "
+                 "C/O = 1 transition the chemistry stiffens and solves get "
+                 "slower, and derivatives there are physically "
+                 "ill-conditioned -- constrain C/O per side, not across it.")
 
     with st.expander("Vertical mixing (K_zz)"):
         # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
@@ -355,13 +372,11 @@ with st.sidebar:
     with st.expander("Photochemistry & transport"):
         use_photo = st.checkbox(
             "Photochemistry (UV photolysis)", value=True, key=K("photo"),
-            help="Off = thermochemistry + transport only (no photolysis products "
-                 "such as SO2). Parameter constraints (the Fisher forecast) "
-                 "require this ON: the forecast uses a warm-started forward-mode "
-                 "derivative of the steady state, and that tangent only relaxes "
-                 "to the true sensitivity in the photo-on regime (validated jvp "
-                 "vs finite-difference <0.1% there; with photo off it is "
-                 "under-relaxed/unstable). Detection goals work either way.")
+            help="Off = thermochemistry + transport only (no photolysis "
+                 "products such as SO2). Both detection goals and the Fisher "
+                 "forecast work either way: since v13 every Jacobian row is a "
+                 "finite difference of independently converged solves, so no "
+                 "photo-on tangent regime is required.")
         sl_angle_deg = st.slider(
             "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
             disabled=not use_photo,
@@ -376,6 +391,16 @@ with st.sidebar:
             "Molecular diffusion", value=True, key=K("moldiff"),
             help="Species-dependent molecular diffusion competing with Kzz "
                  "(sets the homopause; matters high up).")
+        use_vm_mol = st.checkbox(
+            "Upwind molecular-diffusion advection (vm_mol)", value=False,
+            key=K("vmmol"), disabled=not use_moldiff,
+            help="Adds the advective settling flux with upwind differencing, "
+                 "refreshed in-loop (the hybrid vm_mol scheme; VULCAN-JAX's "
+                 "own default since 2026-07-14). OFF reproduces this tool's "
+                 "validated baseline chemistry; ON is the newer scheme, not "
+                 "yet re-baselined for these forecasts, and mainly moves "
+                 "heavy species in the upper atmosphere. Requires molecular "
+                 "diffusion.")
 
     with st.expander("Numerical grid (layers & convergence)"):
         st.caption("Grid resolution and solver tolerance, same physics, finer "
@@ -387,18 +412,31 @@ with st.sidebar:
                  "grid is LOCKED to the same count. More layers resolve steep "
                  "photochemical gradients. Roughly 1.5 min at 100, 3 min at 150.")
         yconv_cri = st.select_slider(
-            "Convergence tolerance (yconv)", options=[1.0e-2, 1.0e-3],
+            "Convergence tolerance (yconv)",
+            options=[1.0e-2, 3.0e-3, 1.0e-3, 3.0e-4, 1.0e-4],
             value=forward.YCONV_DEFAULT, key=K("yconv"),
             format_func={1.0e-2: "1e-2 (fast, VULCAN default)",
-                         1.0e-3: "1e-3 (strict)"}.get,
+                         3.0e-3: "3e-3",
+                         1.0e-3: "1e-3 (strict, validated tier)",
+                         3.0e-4: "3e-4",
+                         1.0e-4: "1e-4 (very strict, slow)"}.get,
             help="Steady-state convergence criterion. 1e-2 is the VULCAN master "
-                 "default; use 1e-3, with more layers, for final mid-IR numbers.")
+                 "default; 1e-3 (with more layers) is the validated strict tier "
+                 "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
+                 "runtime -- a solve that cannot reach the tolerance errors "
+                 "loudly instead of returning an unconverged spectrum.")
 
     with st.expander("Condensation (not offered)"):
         st.caption(
             "Condensation through VULCAN is not offered in this tool: a "
-            "condensing column's steady state is not reliably differentiable, "
-            "so it cannot enter the Fisher forecast.")
+            "condensing column converges only via a window + fix-species pin "
+            "that freezes the condensed reservoir at a step-sequence-dependent "
+            "transient -- the result is not a reproducible function of the "
+            "input parameters, which breaks derivatives of every kind "
+            "(the AD tangent disagreed with finite differences by ~90% on the "
+            "pinned sulfur reservoir, and finite differences of pinned "
+            "transients are equally untrustworthy). For aerosol opacity use "
+            "the ExoJAX cloud deck instead.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -495,7 +533,8 @@ with st.sidebar:
             help="Detect: significance of molecule X being present (Δχ² between "
                  "the spectrum with and without it). Constrain: how tightly a "
                  "parameter (metallicity, C/O, Kzz, …) could be measured, a "
-                 "Fisher forecast from the autodiff Jacobian.")
+                 "Fisher forecast from certified finite-difference Jacobians "
+                 "(slow: minutes per freed parameter).")
         goal_param, target_prec = None, None
         if goal == "detect":
             target_mol = st.selectbox("Detect molecule", mol_options,
@@ -503,9 +542,6 @@ with st.sidebar:
                                       key=K("mol_" + "_".join(sorted(extra_mols))))
         else:
             target_mol = None
-            if not use_photo:
-                st.warning("Parameter constraints use the Fisher forecast, "
-                           "which needs photochemistry ON (VULCAN section).")
             goal_param = st.selectbox(
                 "Constrain parameter", avail_free, key=K(f"gp_{tp_mode}"),
                 format_func=lambda n: forward.PARAM_LABELS[n],
@@ -531,8 +567,13 @@ with st.sidebar:
         st.caption(
             "Expected 1σ constraints on atmosphere parameters from this "
             "observation, a linearized retrieval (Cramér-Rao bound) built "
-            "from d(spectrum)/d(parameter), computed by autodiff through the "
-            "full chemistry+RT chain. No MCMC, no priors.")
+            "from d(spectrum)/d(parameter). Each derivative is a central "
+            "finite difference of independently converged, certified solves "
+            "(evaluated at two step sizes that must agree, else the run "
+            "errors) -- conceptually simple and self-verifying, but "
+            "expensive: a composition row re-solves the chemistry 4 times "
+            "from scratch (~6-8 min), a Kzz/T row adds 4 cold solves "
+            "(~3-5 min). No MCMC, no priors.")
         if goal == "constrain":
             fisher_extra = st.multiselect(
                 "Jointly free parameters", avail_free,
@@ -540,22 +581,19 @@ with st.sidebar:
                 key=K(f"fx_{tp_mode}"),
                 help="The goal parameter is always included. More free "
                      "parameters = a more honest (wider) forecast; each adds "
-                     "~20-60 s of Jacobian time.")
+                     "minutes of finite-difference solves (see above).")
             fisher_params = sorted(set(fisher_extra) | {goal_param})
         else:
             do_fisher = st.checkbox(
                 "Compute parameter constraints too", value=False,
-                key=K("dofish"), disabled=not use_photo,
-                help="One warm-started forward-mode jvp per parameter "
-                     "(~20-60 s each). Needs photochemistry ON.")
-            if not use_photo:
-                st.caption("Locked because **photochemistry is OFF** (VULCAN "
-                           "chemistry section). The constraint uses a forward-mode "
-                           "derivative that is only valid in the photo-on regime, "
-                           "turn photochemistry on to unlock it.")
+                key=K("dofish"),
+                help="Central-difference Jacobian rows from certified "
+                     "re-solves: ~6-8 min per composition parameter, "
+                     "~3-5 min per Kzz/T parameter. Works with "
+                     "photochemistry on or off.")
             fisher_params = st.multiselect(
                 "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
-                default=["lnZ", "dlnCO", "lnKzz"]) if (do_fisher and use_photo) else []
+                default=["lnZ", "dlnCO", "lnKzz"]) if do_fisher else []
 
     st.divider()
     st.markdown("### Instrument & noise")
@@ -674,11 +712,12 @@ with st.sidebar:
 params = dict(planet=planet_key, nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               rp_rjup=rp, gs_cgs=g_ms2 * 100.0, rstar_rsun=rstar,
               orbit_au=orbit_au, sflux=sflux,
-              met_x_solar=met, dco=dco,
+              met_x_solar=met, co_ratio=float(co_ratio),
               kzz_mode=kzz_mode, kzz_x=kzz_x, kzz_const=kzz_const,
               tp_mode=tp_mode, fisher_params=fisher_params,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
+              use_vm_mol=use_vm_mol and use_moldiff,
               use_rayleigh=use_rayleigh, broadening=broadening,
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,
@@ -693,25 +732,28 @@ try:
 except ValueError as e:          # e.g. stale widget combo mid-rerun
     cached, params_error = False, str(e)
 
-n_jvp = len(fisher_params)
 # rough runtime hint keyed off the resolution knobs (old fast ~1.8, high ~2.8 min)
 base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
 if yconv_cri <= 1.5e-3:              # strict convergence costs extra iterations
     base_min += 0.5
-if met != 10.0 or dco != 0.0:        # composition step -> two-stage chemistry
-    base_min += 0.6 * (nz / 100.0)
 base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
 # cool columns (<~900 K) converge much more slowly (WASP-107b: ~5 min measured)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
           "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0)}.get(tp_mode, 1100.0)
 if t_char < 900.0:
     base_min += 2.5
-per_jvp = 0.8 if (nz >= 140 or yconv_cri <= 1.5e-3) else 0.5
+# FD Jacobians: composition rows = 4 re-init build+solve cycles each; Kzz/T-P
+# rows = 4 cold solves each (see forward.FD_STEPS block)
+_solve_min = max(1.0, base_min * 0.5)
+n_fd_comp = sum(1 for n in fisher_params if n in forward.FD_COMP_PARAMS)
+n_fd_theta = len(fisher_params) - n_fd_comp
+fd_min = n_fd_comp * 4 * (_solve_min + 0.8) + n_fd_theta * 4 * _solve_min
 native_r = int(round(nu_pts * 2950 / 8000 / 50) * 50)
 grid_lbl = f"{nz}-layer, native R≈{native_r}"
 est = "instant (cached)" if cached else (
-    f"~{base_min + per_jvp * n_jvp:.0f} min (local {grid_lbl} run"
-    + (f" + {n_jvp} Jacobian directions" if n_jvp else "") + ")")
+    f"~{base_min + fd_min:.0f} min (local {grid_lbl} run"
+    + (f" + {len(fisher_params)} FD Jacobian rows" if fisher_params else "")
+    + ")")
 col_btn, col_note = st.columns([1, 3])
 run_clicked = col_btn.button("Run", type="primary", width="stretch")
 col_note.caption(f"**{planet_label}**, {grid_lbl}, model spectrum: "
@@ -838,10 +880,11 @@ out = st.session_state["out"]
 meta = st.session_state["out_meta"]
 model, results = out["model"], out["results"]
 goal_r = meta.get("goal", "detect")
-# the atmosphere's absolute C/O, for the dlnCO -> absolute-C/O display conversion
-# (sigma_CO = C/O * sigma_lnCO); params_json carries this run's dco
+# the atmosphere's absolute C/O, for the dlnCO -> absolute-C/O display
+# conversion (sigma_CO = C/O * sigma_lnCO); since v13 params_json carries it
+# directly as co_ratio (composition is structural)
 _cpj = json.loads(str(model["params_json"]))
-co_eval = float(forward.CO_BASELINE * np.exp(float(_cpj.get("dco", 0.0))))
+co_eval = float(_cpj.get("co_ratio", forward.CO_BASELINE))
 
 for k, err in out["failed"]:
     first = str(err).strip().splitlines()[-1] if "Traceback" in str(err) else \
@@ -863,6 +906,17 @@ if out.get("provenance"):
         f"(refdata {_pv['refdata_version']}), worker v{_pv['worker_version']} "
         ",  recorded in every noise cache.")
 
+# chemistry convergence certificate (v11+): the runner's own longdy per gated
+# stage -- every value shown passed the gate, or run_model would have raised
+if "conv_longdy" in model and np.asarray(model["conv_longdy"]).size:
+    _gate = float(np.asarray(model["conv_gate"], float)[0])
+    st.caption(
+        "Chemistry convergence certificate: " + "; ".join(
+            f"{s}: longdy {l:.3g} < gate {_gate:g} ({int(a)} accepted steps)"
+            for s, a, l in zip(model["conv_stages"], model["conv_accept"],
+                               np.asarray(model["conv_longdy"], float)))
+        + ".")
+
 fisher_names = ([str(x) for x in model["jac_names"][:-1]]
                 if "jac_names" in model else [])
 ok = [r for r in results if not r["saturated"]]
@@ -877,7 +931,7 @@ if goal_r == "detect":
     verdict = (f"**Best mode for detecting {meta['target']} on "
                f"{meta.get('planet', '?')}: {best['label']}**, "
                f"{bsig:.1f}σ in {ntr} transit{'s' if ntr > 1 else ''} "
-               f"(target {tsig:g}σ; median precision "
+               f"(target {tsig:g}σ; Δχ² = {bsig * bsig:.0f}; median precision "
                f"{best['median_sigma_ppm']:.0f} ppm per R={meta['r_bin']} bin).")
     if bsig >= tsig:
         st.success(verdict + "  Meets the target.")
@@ -1259,6 +1313,19 @@ if fisher_names and "jac" in model:
         v = tsig_f * fisher_mod.display_sigma(n, s, co_eval=co_eval)
         return "unconstrained" if not np.isfinite(v) or v > 1e4 else f"{v:.3g}"
 
+    # two columns per parameter: marginalized (joint fit) + conditional
+    # (others fixed) -- both read off the SAME nuisance-augmented Fisher matrix
+    _fcols = [c for n in fisher_names
+              for c in (f"±{forward.param_axis(n)} at {tsig_f:g}σ",
+                        f"±{forward.param_axis(n)} (others fixed)")]
+
+    def _row_cells(sig, cond):
+        cells = {}
+        for n in fisher_names:
+            cells[f"±{forward.param_axis(n)} at {tsig_f:g}σ"] = _cell(n, sig[n])
+            cells[f"±{forward.param_axis(n)} (others fixed)"] = _cell(n, cond[n])
+        return cells
+
     frows = []
     usable_f = [r for r in with_jac if not r["saturated"]]
     for r in with_jac:
@@ -1266,20 +1333,27 @@ if fisher_names and "jac" in model:
             # shown for completeness, but a saturated mode contributes no usable
             # data -- same exclusion policy as the verdict + combined row
             frows.append({"mode": r["label"] + "  [saturated, excluded]",
-                          **{f"±{forward.param_axis(n)} at {tsig_f:g}σ": ", "
-                             for n in fisher_names}})
+                          **{c: ", " for c in _fcols}})
             continue
-        sig = fisher_mod.mode_forecast(r, fisher_names)
-        frows.append({"mode": r["label"],
-                      **{f"±{forward.param_axis(n)} at {tsig_f:g}σ":
-                         _cell(n, sig[n]) for n in fisher_names}})
+        cond = {}
+        sig = fisher_mod.mode_forecast(r, fisher_names, conditional=cond)
+        frows.append({"mode": r["label"], **_row_cells(sig, cond)})
     fdiag = {}
     if len(usable_f) >= 2:
-        sig = fisher_mod.combined_forecast(usable_f, fisher_names, diag=fdiag)
+        cond = {}
+        sig = fisher_mod.combined_forecast(usable_f, fisher_names, diag=fdiag,
+                                           conditional=cond)
         frows.append({"mode": "ALL SELECTED (combined, non-saturated)",
-                      **{f"±{forward.param_axis(n)} at {tsig_f:g}σ":
-                         _cell(n, sig[n]) for n in fisher_names}})
+                      **_row_cells(sig, cond)})
     st.dataframe(frows, width="stretch", hide_index=True)
+    st.caption(
+        "Two columns per parameter: the **marginalized** forecast (joint fit; "
+        "all other parameters plus the lnR0 / per-segment offset / slope "
+        "nuisances are free and marginalized out) and the **conditional** "
+        "bound (everything else held fixed at truth). Both are Cramer-Rao "
+        "lower bounds from the same Fisher matrix; a large gap between them "
+        "means the parameter is degenerate with the others in that band, not "
+        "that the spectral response is missing.")
     st.download_button("Fisher forecast (CSV)", _csv_bytes(pd.DataFrame(frows)),
                        f"{_fname_base}_fisher_forecast.csv", "text/csv",
                        key=K("dl_fisher_csv"))
@@ -1290,6 +1364,18 @@ if fisher_names and "jac" in model:
             f"number {fdiag['condition_number']:.2g}."
             + (" **Rank-deficient, degenerate directions are reported as "
                "unconstrained, not as fake finite numbers.**" if rank < dim else ""))
+    if "fd_err" in model:
+        # FD provenance: every row passed the h-vs-2h consistency gate at
+        # run time (a failed row raises and no model is cached)
+        _fd = ", ".join(
+            f"{n} {e:.3f}" for n, e in zip(model["jac_names"],
+                                           np.asarray(model["fd_err"], float))
+            if str(n) != "lnR0")
+        st.caption(
+            "Jacobian provenance: central finite differences of certified "
+            "solves, Richardson-combined; per-row h-vs-2h consistency (0 = "
+            f"perfect, gate {forward.FD_CONSISTENCY_TOL}): {_fd}. lnR0 is an "
+            "RT-only analytic direction.")
     with st.expander("How to read this table"):
         st.markdown(
             f"- Each cell is the **expected ±uncertainty at {tsig_f:g}σ** "
@@ -1312,7 +1398,8 @@ if fisher_names and "jac" in model:
             "in a mode's band reads *unconstrained* rather than a fake number.\n"
             "- Metallicity **[M/H]** and vertical mixing **log Kzz** are reported "
             "in **dex** (factors of 10); **C/O** is the absolute carbon/oxygen "
-            "number ratio N_C/N_O (baseline = Lodders 2009 protosolar ≈ 0.46).\n"
+            "number ratio N_C/N_O (baseline ≈ 0.55, the network's WASP-39b "
+            "elemental set from Tsai et al. 2023).\n"
             "- σ is evaluated at the transit count you set. Only the "
             "photon/detector term averages down with more transits; the "
             "systematic floor does not, use the 'transits → target' column, "

@@ -211,6 +211,52 @@
   experimental. detect/fisher/transits-to-target consume the stored
   `cov`/`slope_rows`; "conservative" adds per-segment slope nuisances.
   Kernel presets are stated assumptions, never calibrated covariances.
+- **vm_mol is PINNED, never inherited (2026-07-15, forward v11)**: VULCAN-JAX
+  flipped its own default to hybrid upwind vm_mol on 2026-07-14 (vm_branch
+  port) and the tool silently inherited it for v9/v10 spectra. `use_vm_mol`
+  is now an explicit canonical parameter (cache-keyed) with a GUI checkbox,
+  DEFAULT False = the validated pre-flip baseline; run_model passes both
+  `use_vm_mol` and `use_hybrid_vm_mol` through cfg_overrides. Measured on the
+  default W39b case the flip was benign (every RT molecule <= 0.01 dex in the
+  transit photosphere), but never let an upstream default flip reach the tool
+  unpinned. Turning it ON is un-re-baselined for these forecasts.
+- **Composition is STRUCTURAL, one path (2026-07-15, forward v13 -- the
+  legacy machinery is GONE)**: canonical params carry `met_x_solar`
+  (0.1-100x, scales the cfg O/C/N/S together, He fixed, and
+  `fastchem_met_scale` follows for the non-network trace metals) and
+  `co_ratio` (absolute N_C/N_O, 0.1-2.0, sets `C_H = co_ratio * O_H`);
+  run_model pins the abundances into cfg_overrides and FastChem
+  re-initializes AT the requested composition, upstream-VULCAN style. There
+  is NO differential dco knob, NO warm two-stage composition continuation,
+  NO b_z bound, and NO detection-only C-rich restriction -- C/O > 1 is the
+  same code path (verified live at 1.5: longdy 0.011, SO2 -> 0 ppm). theta
+  keeps the `[lnZ, dlnCO, lnKzz, tp...]` layout for the vulcan_chem
+  contract but its two composition entries are ALWAYS 0. `CO_BASELINE`
+  (= cfg C_H/O_H = 0.549, Tsai 2023 10x-solar; the FastChem
+  `solar_element_abundances.dat` 0.458 was the v10 wrong-basis bug) is only
+  the GUI default + display baseline, cross-checked against the live cfg.
+  Never reintroduce a perturbative composition knob here; the AD machinery
+  lives on in the sibling retrieval repo, where SMC needs it.
+- **Fisher Jacobians are certified central FINITE DIFFERENCES (v13)**: each
+  composition row (lnZ, dlnCO) = 4 FastChem-re-init build+solve cycles
+  (~6-8 min); each theta row (lnKzz, T-P) = 4 cold solves on the baseline
+  build (~3-5 min); lnR0 = one RT-only central difference. Every FD point is
+  longdy-certified; every row must pass the h-vs-2h consistency gate
+  (`FD_CONSISTENCY_TOL`, RuntimeError on failure -- an FD row dominated by
+  convergence noise is NEVER reported) and the reported row is the
+  Richardson combination. Steps in `forward.FD_STEPS`; per-row consistency
+  saved as `fd_h`/`fd_err` in the npz and shown in the GUI. Directions:
+  lnZ = all metals together (C/O preserved), dlnCO = carbon at fixed O
+  (same direction as the retired warm-jvp knob, rows 1:1 comparable). The
+  photo-on Fisher gate is RETIRED -- FD needs no tangent regime, so
+  constraints work photo-off too.
+- **Wider explicit ranges + info surfacing (2026-07-15)**: metallicity
+  slider 0.1-100x solar, YCONV_RANGE floor 1e-4, C/O options 0.25-2.00.
+  Safe because the longdy gate (61cdf7b) rejects any non-steady solve
+  loudly. The npz stores the convergence certificate
+  (conv_stages/accept/longdy/gate) and the GUI shows it;
+  fisher.mode_forecast/combined_forecast take `conditional=` to report
+  conditional (others-fixed) sigmas next to the marginalized ones.
 - **Parameter scope (2026-07-13)**: ONLY explicit isothermal / Guillot T-P
   and constant Kzz exist — the WASP-39 b GCM `baseline` T-P mode, `scale` Kzz
   mode, and `has_gcm_baseline` were REMOVED end-to-end (canonical_params

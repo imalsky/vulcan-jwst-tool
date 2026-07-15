@@ -100,3 +100,64 @@ def test_unknown_rt_molecule_points_to_engine():
     # an out-of-set RT molecule is refused loudly with how to add it
     with pytest.raises(ValueError, match="config.MOLECULES"):
         forward.canonical_params(_p(extra_mols=["PH3"]))
+
+
+def test_vm_mol_is_pinned_explicitly_default_off():
+    # VULCAN-JAX flipped its own default to hybrid vm_mol on 2026-07-14; the
+    # tool must PIN the scheme in the canonical params (cache-keyed) instead
+    # of inheriting the upstream YAML default. Default False = the validated
+    # pre-flip baseline chemistry.
+    cp = forward.canonical_params(_p())
+    assert cp["use_vm_mol"] is False
+    assert forward.canonical_params(_p(use_vm_mol=True))["use_vm_mol"] is True
+
+
+def test_yconv_range_widened_floor():
+    # the tolerance ladder reaches 1e-4 (strict, slow); below it still raises
+    assert forward.YCONV_RANGE == (1.0e-4, 1.0e-2)
+    assert forward.canonical_params(_p(yconv_cri=1.0e-4))["yconv_cri"] == 1.0e-4
+    with pytest.raises(ValueError):
+        forward.canonical_params(_p(yconv_cri=5.0e-5))
+
+
+def test_co_baseline_is_the_cfg_elemental_basis():
+    # CO_BASELINE must be the network cfg's C_H/O_H (the conserved-column
+    # basis, Tsai 2023 10x-solar, C/O ~ 0.549) -- NOT the FastChem EQ-init
+    # file's Lodders ratio (0.458), which only seeds the initial guess. The
+    # v10 constant used the wrong basis and skewed every absolute-C/O
+    # surface by 1.2x; run_model additionally cross-checks the live cfg.
+    assert abs(forward.CO_BASELINE - 0.00295 / 0.00537) < 1e-12
+    assert abs(forward.CO_BASELINE - 0.549) < 1e-3
+
+
+def test_composition_is_structural_one_path():
+    # v13: composition is ONE structural path -- co_ratio (absolute N_C/N_O)
+    # and met_x_solar go straight into the cfg elemental abundances; the
+    # legacy differential knobs are gone from the canonical params entirely
+    cp = forward.canonical_params(_p())
+    assert abs(cp["co_ratio"] - forward.CO_BASELINE) < 1e-5
+    assert "dco" not in cp and "co_baseline" not in cp
+    # C-rich is the same path, with NO detection-only restriction: FD Fisher
+    # rows are certified re-solves, valid at any baseline
+    cp = forward.canonical_params(_p(co_ratio=1.5, met_x_solar=30.0,
+                                     fisher_params=["lnZ", "dlnCO"]))
+    assert cp["co_ratio"] == 1.5 and cp["met_x_solar"] == 30.0
+
+
+def test_composition_ranges():
+    for bad in (dict(co_ratio=0.05), dict(co_ratio=2.5),
+                dict(met_x_solar=0.05), dict(met_x_solar=150.0)):
+        with pytest.raises(ValueError):
+            forward.canonical_params(_p(**bad))
+
+
+def test_fisher_works_photo_off_and_validates_names():
+    # v13: FD Jacobians are certified re-solves -- no photo-on tangent regime,
+    # so the old photo-on Fisher gate is gone
+    cp = forward.canonical_params(_p(use_photo=False, fisher_params=["lnZ"]))
+    assert cp["fisher_params"] == ["lnZ"] and cp["use_photo"] is False
+    # unknown Fisher parameters are refused loudly (FD needs a defined step)
+    with pytest.raises(ValueError, match="unknown Fisher parameter"):
+        forward.canonical_params(_p(fisher_params=["lnFoo"]))
+    with pytest.raises(ValueError, match="unknown Fisher parameter"):
+        forward.canonical_params(_p(fisher_params=["Tirr"]))  # guillot-only

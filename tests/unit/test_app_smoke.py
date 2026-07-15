@@ -62,7 +62,8 @@ def test_results_render_with_synthetic_run():
         "depth_wo": np.tile(np.full(n, 0.0208), (5, 1)),
         "T": np.full(30, 1100.0),
         "p_bar": np.logspace(-7, 0.8, 30),
-        "params_json": json.dumps({"dco": 0.0, "tp_mode": "isothermal"}),
+        "params_json": json.dumps({"co_ratio": 0.549348,
+                                   "tp_mode": "isothermal"}),
     }
     nb = 12
     result = {

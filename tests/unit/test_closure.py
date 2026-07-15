@@ -84,16 +84,17 @@ def test_matched_filter_amplitude_variance_closure():
                     reason="slow: 3 full VULCAN-JAX+ExoJAX forward runs "
                            "(~5-10 min, JAX required); set JWST_TOOL_RUN_SLOW=1")
 def test_jacobian_row_matches_finite_difference():
-    """One cached warm-started-jvp Jacobian row against a central finite
-    difference of two cold re-solved forward models. T_iso (isothermal T-P)
-    keeps both FD runs on the single-stage chemistry path (met=10x, dco=0);
-    it replaced the removed GCM-baseline dT shift 2026-07-13 (same
-    single-scalar theta[3] slot, same FD design).
+    """One cached FD Jacobian row (v13: Richardson central difference at
+    h = 10 K with the h-vs-2h gate) against an INDEPENDENT, smaller-step
+    (h = 2 K) central difference of two separately cached forward runs.
+    Different step, different cache entries, same certified-solve machinery:
+    agreement pins that the production row measures the physical derivative,
+    not a step-size artifact.
 
     Agreement gate is deliberately loose: the default resolution certifies
-    chemistry at yconv 1e-2, and the FD endpoints re-converge cold while the jvp
-    rides the warm continuation -- shape correlation plus ~15% scale is what
-    steady-state uniqueness guarantees at this tolerance."""
+    chemistry at yconv 1e-2 and both estimates carry convergence noise --
+    shape correlation plus ~15% scale is what steady-state uniqueness
+    guarantees at this tolerance."""
     from jwst_tool import forward
 
     def quiet(_s):

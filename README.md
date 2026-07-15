@@ -17,13 +17,15 @@ goal types are supported:
   profiled out. This is conditional on the assumed atmospheric state and
   upper-bounds any retrieval detection; it is labeled accordingly throughout.
 - **Constrain a parameter.** A Fisher-information forecast built from
-  parameter derivatives of the spectrum computed by automatic
-  differentiation through the converged chemistry and radiative transfer
-  (one warm-started forward-mode JVP per parameter, not finite differences).
-  These are machine-precision derivatives of the discretized,
-  tolerance-converged numerical model, not a claim of exactness for the
-  underlying physics; an opt-in test closes a Jacobian row against finite
-  differences of the full stack. Forecast uncertainties are local
+  parameter derivatives of the spectrum computed as central finite
+  differences of independently converged, convergence-certified solves.
+  Composition derivatives (metallicity, C/O) re-initialize the chemistry at
+  the perturbed elemental abundances -- the standard VULCAN workflow -- and
+  every row is evaluated at two step sizes that must agree (the run errors
+  otherwise) before the Richardson-combined row is reported. This is slower
+  than the retired autodiff path but conceptually transparent and
+  self-verifying, and it works at any composition, including carbon-rich,
+  with photochemistry on or off. Forecast uncertainties are local
   Cramer-Rao lower bounds under the stated noise model, marginalized over
   calibration nuisances; they are not posterior widths.
 
@@ -75,8 +77,11 @@ actionable error messages, then launches the Streamlit GUI. Equivalent:
 
 The first run of a new parameter set takes about 2 minutes at the default
 resolution (100 layers, native R about 1500), rising to about 3 minutes at the
-150-layer / R about 3000 ceiling, plus 20 to 60 seconds per freed Fisher
-parameter. All results are disk-cached under `output/`; repeat runs are instant.
+150-layer / R about 3000 ceiling. Fisher rows are finite differences of full
+re-solves and dominate the runtime when enabled: roughly 6 to 8 minutes per
+composition parameter (metallicity, C/O) and 3 to 5 minutes per Kzz or
+temperature parameter. All results are disk-cached under `output/`; repeat
+runs are instant.
 
 Every result is exportable from the GUI: each figure (spectrum, mode
 ranking, T-P profile) has a PNG download (200 dpi) and a CSV of the plotted
@@ -251,12 +256,16 @@ validated and cache-keyed:
 
 - **VULCAN chemistry inputs.** Temperature structure: isothermal (T_iso) or
   Guillot (2010) T-P, shared with the radiative transfer.
-  Composition: metallicity (reported in dex, [M/H]) and the C/O ratio (the
-  absolute carbon/oxygen number ratio N_C/N_O; baseline = Lodders 2009
-  protosolar 0.46, the abundance set upstream VULCAN ships, entered as a
-  fixed-O carbon enrichment). Vertical mixing: a constant
+  Composition: metallicity (reported in dex, [M/H]; scales the network's
+  O/C/N/S abundances together) and the C/O ratio (the absolute carbon/oxygen
+  number ratio N_C/N_O; baseline 0.55, the network cfg's WASP-39b elemental
+  set from Tsai et al. 2023). Both are structural: the chemistry
+  re-initializes at exactly the requested elemental abundances, so any
+  value works, including carbon-rich C/O > 1. Vertical
+  mixing: a constant
   Kzz. Photochemistry on/off, photolysis zenith angle, diurnal averaging
-  factor, molecular diffusion on/off, stellar UV spectrum, and the numerical
+  factor, molecular diffusion on/off, upwind molecular-diffusion advection
+  (vm_mol, off by default), stellar UV spectrum, and the numerical
   grid (chemistry layers -- shared with the RT grid -- and convergence
   tolerance). Condensation is not offered (it is not reliably differentiable in
   VULCAN, so it cannot enter the Fisher forecast -- see Known limitations); for
@@ -311,8 +320,9 @@ behavior, R-independence, multi-transit approach to the floor, invalid-input
 rejection), the scale-invariance regressions for Fisher rank and nuisance
 projection, scenario covariance properties, rank-aware Fisher behavior, and
 Poisson count-space and matched-filter amplitude-variance closures. One
-opt-in slow test (`JWST_TOOL_RUN_SLOW=1`) closes an autodiff Jacobian row
-against finite differences of the full forward model.
+opt-in slow test (`JWST_TOOL_RUN_SLOW=1`) closes a production Jacobian row
+against an independent smaller-step finite difference of the full forward
+model.
 
 **PandExo parity (measured 2026-07-12,
 `tests/parity/outputs/REPORT.md`).** Every instrument mode was run

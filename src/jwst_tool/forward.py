@@ -37,12 +37,14 @@ retrieval framework uses):
                     with f=0.25 and the planet's surface gravity
     Kzz: kzz_mode "const" only -- constant Kzz = kzz_const cm^2/s (cfg_overrides
       Kzz_prof="const"), further x kzz_x if given.
-    Composition:
-      met_x_solar  metallicity in x solar -> lnZ = ln(met/10) about the 10x baseline
-      dco          Delta ln(C/O) carbon-enrichment proxy
+    Composition (STRUCTURAL since v13 -- set in the cfg elemental abundances,
+    FastChem re-initializes at exactly the requested values; one path for
+    every composition, including C-rich):
+      met_x_solar  metallicity in x solar -- scales the cfg O/C/N/S together
+      co_ratio     absolute C/O = N_C/N_O -- sets C_H = co_ratio * O_H
     Physics (cfg_overrides / RT flags; defaults = the previous hard-coded values):
       use_photo     photochemistry on/off (off = thermochem + transport only;
-                    Fisher REQUIRES on -- the validated-jvp regime)
+                    FD Fisher works either way since v13)
       sl_angle_deg  photolysis zenith angle (deg; 83 = Tsai 2023 terminator slant)
       f_diurnal     diurnal photolysis factor (1.0 = permanent dayside)
       use_moldiff   molecular diffusion on/off (homopause)
@@ -114,7 +116,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 10  # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 13  # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
                # broadening knob in the RT; v6: use_condense knob in the cache
                # key; v7: GCM baseline/scale modes REMOVED -- every planet on
@@ -126,22 +128,75 @@ _VERSION = 10  # bump to invalidate all cached spectra (v5: exact-elemental
                # are stale; v10: fidelity "quality" tier replaced by explicit
                # nz/nu_pts/yconv_cri knobs, and the RT layer count art_nlayer is
                # now LOCKED equal to nz (was fixed at 60) -- the cache key changed
-               # and the RT grid differs, so pre-v10 spectra are stale)
+               # and the RT grid differs, so pre-v10 spectra are stale; v11:
+               # use_vm_mol is now an EXPLICIT canonical parameter, default False.
+               # VULCAN-JAX flipped its own default to hybrid vm_mol on 2026-07-14
+               # (vm_branch port), which this tool silently inherited for ~a day:
+               # v9/v10 spectra were solved with upwind molecular-diffusion
+               # advection the tool's validated baselines never had. Default False
+               # restores the pre-flip chemistry; True opts into the upwind
+               # scheme, un-re-baselined for this tool's forecasts; v12:
+               # CO_BASELINE corrected 0.458 -> 0.549 (cfg C_H/O_H basis, the
+               # FastChem file was the wrong set), cfg C_H now pinned
+               # explicitly, and co_baseline (structural re-init C/O, incl.
+               # C-rich > 1, detection-only) joins the canonical params;
+               # v13: LEGACY COMPOSITION MACHINERY REMOVED -- dco/co_baseline
+               # replaced by one structural co_ratio (any value, one path),
+               # warm-jvp Jacobians replaced by certified central-FD rows
+               # with the h-vs-2h consistency gate (see the FD_STEPS block),
+               # two-stage continuation and the photo-on Fisher gate retired)
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
-# NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity). The
-# network initializes from Lodders 2009 PROTOSOLAR abundances (Lodders, Palme
-# & Gail 2009: photospheric +0.053 dex settling correction -- the set upstream
-# VULCAN ships in vulcan_jax .../fastchem_vulcan/input/
-# solar_element_abundances.dat, import-locked and row-order-guarded by
-# VULCAN-JAX test_fastchem_element_order):
-#     A(C) = 8.4434,  A(O) = 8.7826  ->  C/O = 10**(A_C - A_O) = 0.4579.
-# Uniform metallicity scaling preserves it (C and O both scale with Z), and the
-# fixed-O carbon knob makes the internal dco parameter == delta ln(C/O) EXACTLY,
-# so the atmosphere's C/O is CO_BASELINE * exp(dco). (For reference, Asplund 2009
-# solar C/O ~ 0.55; this network uses the Lodders set, hence its C/O 0.46.)
-CO_BASELINE = 10.0 ** (8.4434 - 8.7826)   # = 0.45793, Lodders 2009 protosolar C/O
+# NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity).
+# The basis is the W39b cfg's CUSTOMIZED elemental set (vulcan_jax
+# configs/W39b.yaml: use_solar false, C_H 2.95e-3, O_H 5.37e-3 -- the
+# Tsai et al. 2023 WASP-39b 10x-solar composition; Asplund-flavored solar
+# C/O ~ 0.55). That set defines the CONSERVED atom columns: the elemental
+# mode rebuilds every column (and atom_ini) in the cfg basis, and both
+# build-time diagnostics confirm it ("[chem] ... baseline C/O = 0.5493").
+# It is NOT the FastChem solar_element_abundances.dat set (Lodders 2009
+# protosolar, C/O = 0.458) -- that file only seeds the EQUILIBRIUM INITIAL
+# GUESS for the non-network trace metals and does not survive into the
+# converged column. v10 shipped CO_BASELINE = 0.4579 from the FastChem file;
+# that wrong basis skewed every absolute-C/O surface by a factor 1.2.
+# Since v13 this constant is only the GUI's DEFAULT co_ratio and display
+# baseline (composition itself is structural: run_model pins the cfg
+# abundances per request); run_model still cross-checks it against the
+# loaded cfg's C_H/O_H and refuses to run on drift.
+CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
+
+# --- Finite-difference Fisher Jacobians (v13: the ONLY Jacobian path) --------
+# Every composition/structure derivative is a CENTRAL difference of fully
+# re-initialized, longdy-certified cold solves -- conceptually the upstream-
+# VULCAN workflow (set elemental abundances, FastChem re-init, solve), applied
+# uniformly. Directions (stated, since any C/O derivative must pick a
+# convention): lnZ scales O/C/N/S together (C/O preserved); dlnCO scales C_H
+# at fixed O (the same fixed-O direction the retired warm-jvp knob used, so
+# rows are 1:1 comparable); lnKzz and the T-P parameters perturb theta on the
+# SAME chemistry build (no re-init needed -- Kzz/T enter on-graph).
+# Each row is evaluated at step h AND 2h; the two must agree
+# (max|J_h - J_2h| / max|J_h| < FD_CONSISTENCY_TOL over the band) or the run
+# RAISES -- an FD row dominated by solver convergence noise is never reported.
+# The reported row is the Richardson combination (4 J_h - J_2h)/3. Cost: a
+# composition row is 4 build+solve cycles (~6-8 min), a theta row 4 cold
+# solves (~3-5 min); the price of certified, machinery-free derivatives.
+# VALIDATED 2026-07-15 against the retired warm-jvp AD rows on W39b defaults
+# (yconv 1e-3): corr >= 0.9999 and scale within 0.07-1.6% on every row
+# (T_iso 0.14%, dlnCO 0.07%, lnKzz exact, lnZ 1.6% -- the lnZ gap is the
+# hydrostatic-grid rebuild the FD row includes and the fixed-grid AD chain
+# approximated); h-vs-2h consistency 0.004-0.113, all far under the gate.
+# Where AD remains the right tool -- high-dimensional sensitivities
+# (dL/d ln k over ~800 reactions, dL/dT(P) per layer), one adjoint solve vs
+# thousands of FD solves -- use VULCAN-JAX steady_state_reaction_sensitivity /
+# steady_state_input_sensitivity (validated 0.2-0.8% there); deliberately NOT
+# wired into this tool's forecasts.
+FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.10,      # ln-space steps
+            "T_iso": 10.0, "Tirr": 10.0, "Tint": 10.0,      # Kelvin
+            "log_kappa": 0.05, "log_gamma": 0.05}           # dex
+FD_COMP_PARAMS = ("lnZ", "dlnCO")     # need a chemistry re-init per FD point
+FD_CONSISTENCY_TOL = 0.25
+FD_LNR0_STEP = 0.01                   # lnR0 is RT-only (smooth, analytic)
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -160,7 +215,9 @@ def active_molecules(cp: dict) -> list[str]:
 NZ_DEFAULT, NU_PTS_DEFAULT, YCONV_DEFAULT = 100, 4000, 1.0e-2
 NZ_RANGE = (60, 150)            # chemistry (= RT) layers
 NU_PTS_RANGE = (4000, 8000)     # native wavenumber points (native R ~ nu_pts/2.7)
-YCONV_RANGE = (1.0e-3, 1.0e-2)  # steady-state convergence tolerance
+YCONV_RANGE = (1.0e-4, 1.0e-2)  # steady-state convergence tolerance (1e-3 is the
+                                # validated "high" tier; below it costs runtime
+                                # but is safe -- the longdy gate rejects loudly)
 
 # Modelable temperature window (premodit table range, 20 K inset) -- reject, never clip.
 T_WINDOW = (320.0, 2980.0)
@@ -234,7 +291,13 @@ def canonical_params(params: dict) -> dict:
         "orbit_au": round(float(params.get("orbit_au", sysd["orbit_au"])), 5),
         "sflux": sflux,
         "met_x_solar": round(float(params.get("met_x_solar", 10.0)), 4),
-        "dco": round(float(params.get("dco", 0.0)), 4),
+        # Composition is fully STRUCTURAL (v13): met_x_solar scales the cfg's
+        # O/C/N/S abundances together (He fixed), co_ratio then sets
+        # C_H = co_ratio * O_H -- FastChem re-initializes AT the requested
+        # composition, the upstream-VULCAN way. One path for every value,
+        # including C-rich (> 1); a corner with no certified steady state
+        # errors loudly (longdy gate), it never returns a wrong spectrum.
+        "co_ratio": round(float(params.get("co_ratio", CO_BASELINE)), 6),
         "kzz_mode": str(params.get("kzz_mode", "const")),
         "kzz_x": round(float(params.get("kzz_x", 1.0)), 4),
         "kzz_const": round(float(params.get("kzz_const", 1.0e9)), 1),
@@ -250,6 +313,13 @@ def canonical_params(params: dict) -> dict:
         "sl_angle_deg": round(float(params.get("sl_angle_deg", 83.0)), 1),
         "f_diurnal": round(float(params.get("f_diurnal", 1.0)), 3),
         "use_moldiff": bool(params.get("use_moldiff", True)),
+        # Upwind molecular-diffusion advection (Shami's vm_branch hybrid scheme).
+        # PINNED explicitly since v11: VULCAN-JAX flipped its own default to True
+        # on 2026-07-14 and the tool inherited it silently. Default False = the
+        # tool's validated pre-flip baseline; True = the upwind scheme, not yet
+        # re-baselined for this tool. Only meaningful with use_moldiff on
+        # (the engine gates use_vm on use_vm_mol AND use_moldiff).
+        "use_vm_mol": bool(params.get("use_vm_mol", False)),
         # RT physics: Rayleigh is known zero-parameter physics, ON by default
         # (v3 and earlier ran without it -- that biased the <1.5 um slope);
         # the cloud deck is the ExoJax power-law retrieval cloud, OFF by default.
@@ -284,12 +354,20 @@ def canonical_params(params: dict) -> dict:
             "(HITRAN db id, molmass, VULCAN species name), make sure the SNCHO "
             "network actually solves that species, then list it here in "
             "forward.EXTRA_MOLECULES.")
-    if cp["fisher_params"] and not cp["use_photo"]:
+    if not 0.1 <= cp["co_ratio"] <= 2.0:
         raise ValueError(
-            "Fisher forecast requires photochemistry ON: the warm-started "
-            "steady-state jvp is validated only in the photo-on regime "
-            "(config.py run-profile notes). Enable photochemistry or clear "
-            "the Fisher parameter list.")
+            f"co_ratio={cp['co_ratio']} outside [0.1, 2.0] (the network was "
+            "never exercised beyond this range)")
+    if not 0.1 <= cp["met_x_solar"] <= 100.0:
+        raise ValueError(
+            f"met_x_solar={cp['met_x_solar']} outside [0.1, 100] x solar")
+    allowed_fp = {"lnZ", "dlnCO", "lnKzz"} | set(TP_PARAM_NAMES[tp_mode])
+    bad_fp = set(cp["fisher_params"]) - allowed_fp
+    if bad_fp:
+        raise ValueError(
+            f"unknown Fisher parameter(s) {sorted(bad_fp)} for tp_mode="
+            f"{tp_mode!r}: choose from ['lnZ', 'dlnCO', 'lnKzz'] + "
+            f"{TP_PARAM_NAMES[tp_mode]}")
     if params.get("use_condense"):
         # Condensation is intentionally UNSUPPORTED (loud, no silent ignore).
         # A condensing VULCAN column reaches steady state only via a window +
@@ -385,21 +463,20 @@ def _make_progress(cp: dict, log):
     conditionals); weights are rough wall-clock seconds so the GUI bar moves
     honestly. advance() is called at the START of each stage.
     """
-    two_stage = not (cp["met_x_solar"] == 10.0 and cp["dco"] == 0.0)
     mols = active_molecules(cp)
     stages = [("building chemistry model (compile + warm-up)", 45.0),
               ("building radiative transfer (opacities + CIA)",
                10.0 + 3.0 * len(cp["extra_mols"]))]
-    if two_stage:
-        stages += [("chemistry stage 1/2: T + Kzz relaxation", 35.0),
-                   ("chemistry stage 2/2: composition continuation", 30.0)]
-    else:
-        stages += [("solving photochemistry", 35.0)]
+    stages += [("solving photochemistry", 35.0)]
     stages += [("full transmission spectrum", 8.0)]
     stages += [(f"spectrum without {m}", 4.0) for m in mols]
-    stages += [(f"Jacobian d/d({n})", 40.0) for n in cp["fisher_params"]]
+    # FD Jacobians: a composition row = 4 re-init build+solve cycles; a
+    # lnKzz/T-P row = 4 cold solves on the baseline build
+    stages += [(f"FD Jacobian d/d({n})",
+                420.0 if n in FD_COMP_PARAMS else 260.0)
+               for n in cp["fisher_params"]]
     if cp["fisher_params"]:
-        stages += [("Jacobian d/d(lnR0)", 5.0)]
+        stages += [("FD Jacobian d/d(lnR0)", 8.0)]
     total = sum(w for _, w in stages)
     state = {"i": 0, "done": 0.0}
 
@@ -419,7 +496,6 @@ def run_model(params: dict, log=print) -> Path:
     # import order is load-bearing: vulcan_chem (env + x64) before jax/exojax
     from retrieval_framework.forward import config
     from retrieval_framework.forward import vulcan_chem
-    import jax
     import jax.numpy as jnp
     from retrieval_framework.forward import exojax_rt
     from retrieval_framework.forward import interp_map
@@ -427,8 +503,13 @@ def run_model(params: dict, log=print) -> Path:
     cp = canonical_params(params)
     advance, finish = _make_progress(cp, log)
     tp_eval, n_tp, tp_vals, theta_names = _build_tp(cp, cp["gs_cgs"])
-    theta = np.array([np.log(cp["met_x_solar"] / 10.0), cp["dco"],
-                      np.log(cp["kzz_x"])] + tp_vals, dtype=np.float64)
+    # theta layout [lnZ, dlnCO, lnKzz, tp...] is the vulcan_chem contract; the
+    # two composition entries are ALWAYS 0 since v13 -- composition is set
+    # STRUCTURALLY in the cfg elemental abundances (below), never as a theta
+    # perturbation. Only lnKzz (on-graph multiplier) and the T-P parameters
+    # remain live theta directions.
+    theta = np.array([0.0, 0.0, np.log(cp["kzz_x"])] + tp_vals,
+                     dtype=np.float64)
     log(f"[fwd] params {cp}")
     log(f"[fwd] theta {dict(zip(theta_names, np.round(theta, 4)))}")
 
@@ -468,6 +549,11 @@ def run_model(params: dict, log=print) -> Path:
         "orbit_radius": cp["orbit_au"],
         "sflux_file": f"atm/stellar_flux/{cp['sflux']}",
         "use_moldiff": cp["use_moldiff"],
+        # pin the vm_mol scheme EXPLICITLY (never inherit the upstream YAML
+        # default, which flipped to True on 2026-07-14): hybrid in-loop
+        # phase-flip is how vm_mol runs, so the two flags travel together.
+        "use_vm_mol": cp["use_vm_mol"],
+        "use_hybrid_vm_mol": cp["use_vm_mol"],
     }
     if cp["use_photo"]:                  # photolysis geometry/averaging knobs
         ovr["sl_angle"] = float(np.deg2rad(cp["sl_angle_deg"]))
@@ -486,11 +572,51 @@ def run_model(params: dict, log=print) -> Path:
         f"UV = {cp['sflux']}")
     profile["cfg_overrides"] = ovr
 
+    # CO_BASELINE must equal the loaded cfg's C_H/O_H (it is the GUI's default
+    # co_ratio and the display baseline) -- refuse loudly on drift (the v10
+    # bug was exactly a wrong-basis constant here).
+    import vulcan_jax as _vj
+    _cfg_chk = _vj.load_config(profile.get("vulcan_cfg_name") or config.W39B_CFG_NAME)
+    _co_cfg = float(_cfg_chk.C_H) / float(_cfg_chk.O_H)
+    if abs(_co_cfg / CO_BASELINE - 1.0) > 1e-9:
+        raise RuntimeError(
+            f"forward.CO_BASELINE={CO_BASELINE:.5f} no longer matches the "
+            f"network cfg's C_H/O_H={_co_cfg:.5f}: the C/O display baseline "
+            "would be mislabeled. Update CO_BASELINE to the cfg value (and "
+            "bump _VERSION).")
+
+    def _abundance_overrides(met_x_solar: float, co_ratio: float) -> dict:
+        # STRUCTURAL composition (v13): scale the cfg's metal abundances
+        # together for metallicity (He fixed -- He is not a metal), then set
+        # carbon from the requested C/O at the scaled oxygen. FastChem
+        # re-initializes at exactly this composition (ini_abun writes the
+        # custom O/C/N/S values straight into the FastChem input;
+        # fastchem_met_scale only scales the NON-network trace metals
+        # (Na/K/Fe/...), so it follows met_x_solar to stay consistent).
+        m = met_x_solar / 10.0                 # cfg abundances ARE 10x solar
+        o_h = float(_cfg_chk.O_H) * m
+        return {"O_H": o_h, "C_H": co_ratio * o_h,
+                "N_H": float(_cfg_chk.N_H) * m,
+                "S_H": float(_cfg_chk.S_H) * m,
+                "fastchem_met_scale": float(met_x_solar)}
+
+    ovr.update(_abundance_overrides(cp["met_x_solar"], cp["co_ratio"]))
+    log(f"[fwd] structural composition: {cp['met_x_solar']:g}x solar metals, "
+        f"C/O = {cp['co_ratio']:.3f} (C_H {ovr['C_H']:.3e}, O_H {ovr['O_H']:.3e})")
+
+    def _build_chem(extra_abun: dict | None = None, tag: str = "baseline"):
+        prof = dict(profile)
+        prof["cfg_overrides"] = ({**ovr, **extra_abun} if extra_abun else ovr)
+        t_b = time.time()
+        chem_b = vulcan_chem.build_chem_model(prof, tp_eval=tp_eval,
+                                              n_tp_params=n_tp)
+        log(f"[fwd] chemistry model ({tag}) ready in {time.time()-t_b:.0f} s")
+        return chem_b
+
     t0 = time.time()
     advance()
     log("[fwd] building chemistry model (VULCAN-JAX warm-up ~40 s) ...")
-    chem = vulcan_chem.build_chem_model(profile, tp_eval=tp_eval, n_tp_params=n_tp)
-    log(f"[fwd] chemistry ready in {time.time()-t0:.0f} s")
+    chem = _build_chem()
 
     # --- T-P validity: REJECT (never clip) out-of-window profiles ------------
     T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(chem.p_bar)))
@@ -509,10 +635,6 @@ def run_model(params: dict, log=print) -> Path:
     rt = exojax_rt.build_rt_model(profile)
     log(f"[fwd] RT ready in {time.time()-t0:.0f} s")
 
-    to_art = interp_map.make_to_art(chem.p_bar, rt.p_art_bar)
-    mol_cols = {k: chem.sidx[config.MOLECULES[k]["vulcan"]] for k in rt.molecules}
-    h2 = chem.sidx["H2"]
-    he = chem.sidx["He"]
     p_art_j = jnp.asarray(rt.p_art_bar)
 
     def art_T(th):
@@ -523,20 +645,35 @@ def run_model(params: dict, log=print) -> Path:
     cloud_vec = (jnp.asarray([cp["log_kappa_cloud"], cp["alpha_cloud"]])
                  if cp["cloud_on"] else None)
 
-    def depth_from_y(y, th, lnR0=0.0, drop_mol=None):
-        ymix = y / jnp.sum(y, axis=1, keepdims=True)
-        T_art = art_T(th)
-        mmw_art = to_art(ymix @ chem.species_masses)
-        vmr = {k: to_art(ymix[:, c]) for k, c in mol_cols.items()}
-        if drop_mol is not None:
-            vmr[drop_mol] = jnp.zeros_like(vmr[drop_mol])
-        return rt.transmission_depth_r(
-            vmr, to_art(ymix[:, h2]), T_art, mmw_art, jnp.asarray(lnR0),
-            vmr_he=to_art(ymix[:, he]), cloud=cloud_vec)
+    def make_depth_fn(chem_b):
+        """Depth function bound to ONE chemistry build: the interpolation map
+        follows that build's hydrostatic grid (composition moves the mean
+        molecular weight and hence the pressure grid between the FD re-init
+        builds, so the map is never shared across builds)."""
+        to_art_b = interp_map.make_to_art(chem_b.p_bar, rt.p_art_bar)
+        mol_cols = {k: chem_b.sidx[config.MOLECULES[k]["vulcan"]]
+                    for k in rt.molecules}
+        h2_b, he_b = chem_b.sidx["H2"], chem_b.sidx["He"]
 
-    # --- chemistry: two-stage for composition steps (validated pattern) ------
+        def depth_fn(y, th, lnR0=0.0, drop_mol=None):
+            ymix = y / jnp.sum(y, axis=1, keepdims=True)
+            T_art = art_T(th)
+            mmw_art = to_art_b(ymix @ chem_b.species_masses)
+            vmr = {k: to_art_b(ymix[:, c]) for k, c in mol_cols.items()}
+            if drop_mol is not None:
+                vmr[drop_mol] = jnp.zeros_like(vmr[drop_mol])
+            return rt.transmission_depth_r(
+                vmr, to_art_b(ymix[:, h2_b]), T_art, mmw_art,
+                jnp.asarray(lnR0), vmr_he=to_art_b(ymix[:, he_b]),
+                cloud=cloud_vec)
+        return depth_fn
+
+    depth_from_y = make_depth_fn(chem)
+
+    # --- chemistry: certified cold solves (v13: no warm continuation) --------
     t0 = time.time()
     th0 = jnp.asarray(theta)
+    conv_cert = []   # (stage, accept_count, longdy) for every PASSED gate
     def _check_converged(ac, longdy, stage):
         # accept_count < count_max is NOT a convergence test: the hybrid vm_mol phase-flip
         # (and the stall fallback) terminate the runner EARLY -- accept_count ~ count_min+2000,
@@ -554,24 +691,14 @@ def run_model(params: dict, log=print) -> Path:
                 f"yconv_min={chem.yconv_min:g}; {how}). This parameter corner has no "
                 "certified steady state -- adjust T-P / Kzz / composition (or the "
                 "convergence settings) rather than trusting an unconverged spectrum.")
+        conv_cert.append((stage, ac, longdy))
 
-    if cp["met_x_solar"] == 10.0 and cp["dco"] == 0.0:
-        advance()
-        log("[fwd] solving chemistry (single stage, baseline composition) ...")
-        y_sol, ac, longdy = chem.converged_y(th0, return_longdy=True)
-        _check_converged(ac, longdy, "single stage")
-    else:
-        advance()
-        log("[fwd] solving chemistry stage 1/2 (T/Kzz relaxation) ...")
-        th_relax = th0.at[0].set(0.0).at[1].set(0.0)
-        y_relaxed, ac1, ld1 = chem.converged_y(th_relax, return_longdy=True)
-        _check_converged(ac1, ld1, "stage 1, T/Kzz relaxation")
-        advance()
-        log(f"[fwd] stage 1 done ({time.time()-t0:.0f} s); "
-            "stage 2/2 (composition, warm continuation) ...")
-        y_sol, ac2, ld2 = chem.converged_y(th0, warm_y=y_relaxed, lnZ_ref=0.0,
-                                      c_o_ref=0.0, return_longdy=True)
-        _check_converged(ac2, ld2, "stage 2, composition continuation")
+    # Single certified cold solve, always: composition is baked into the build
+    # (structural), so there is no composition continuation and no stage 2.
+    advance()
+    log("[fwd] solving photochemistry (cold, certified) ...")
+    y_sol, ac, longdy = chem.converged_y(th0, return_longdy=True)
+    _check_converged(ac, longdy, "baseline solve")
     y_np = np.asarray(y_sol)
     if not np.all(np.isfinite(y_np)):
         raise RuntimeError("chemistry solve returned non-finite abundances -- "
@@ -592,35 +719,100 @@ def run_model(params: dict, log=print) -> Path:
         depth_wo[i] = np.asarray(depth_from_y(y_sol, th0, drop_mol=mol))
         log(f"[fwd] spectrum without {mol} in {time.time()-t1:.0f} s")
 
-    # --- Fisher Jacobian: warm-started jvp per free parameter + lnR0 ---------
+    # --- Fisher Jacobian: central FD of certified solves (v13) ---------------
+    # See the FD_STEPS block at module top: composition rows re-initialize the
+    # chemistry per FD point (the upstream-VULCAN workflow); lnKzz/T-P rows
+    # perturb theta on the baseline build. Every point is longdy-certified,
+    # every row must pass the h-vs-2h consistency gate, and the reported row
+    # is the Richardson combination (4 J_h - J_2h)/3.
     jac_names = list(cp["fisher_params"])
     jac = np.zeros((len(jac_names) + 1, depth.shape[0])) if jac_names else None
+    fd_h, fd_err = [], []
     if jac_names:
-        lnZ0, co0 = float(theta[0]), float(theta[1])
+        def _certified_depth(chem_b, th, stage):
+            y_b, ac_b, ld_b = chem_b.converged_y(jnp.asarray(th),
+                                                 return_longdy=True)
+            _check_converged(ac_b, ld_b, stage)
+            return np.asarray(make_depth_fn(chem_b)(y_b, jnp.asarray(th)))
 
-        def f_theta(th):
-            # continuation from the converged column: primal is a no-op re-converge,
-            # the jvp is the validated warm-started steady-state tangent
-            y = chem.converged_y(th, warm_y=y_sol, lnZ_ref=lnZ0, c_o_ref=co0)
-            return depth_from_y(y, th)
+        def _fd_row(name, d_p1, d_m1, d_p2, d_m2, h):
+            j1 = (d_p1 - d_m1) / (2.0 * h)
+            j2 = (d_p2 - d_m2) / (4.0 * h)
+            if not (np.isfinite(j1).all() and np.isfinite(j2).all()):
+                raise RuntimeError(
+                    f"FD Jacobian for {name}: non-finite entries")
+            scale = float(np.max(np.abs(j1)))
+            if scale == 0.0:
+                return j1, 0.0     # no spectral response: exact zero row
+            err = float(np.max(np.abs(j1 - j2)) / scale)
+            if err > FD_CONSISTENCY_TOL:
+                raise RuntimeError(
+                    f"FD Jacobian for {name} FAILED the step-size consistency "
+                    f"check: max|J(h) - J(2h)| / max|J(h)| = {err:.3f} > "
+                    f"{FD_CONSISTENCY_TOL} (h = {h:g}). The row is dominated "
+                    "by solver convergence noise or curvature -- tighten "
+                    "yconv_cri (1e-3 or 1e-4), raise nz, or adjust "
+                    "forward.FD_STEPS. An uncertified derivative is never "
+                    "reported.")
+            return (4.0 * j1 - j2) / 3.0, err   # Richardson, O(h^4)
 
         for j, name in enumerate(jac_names):
             t1 = time.time()
             advance()
-            i_par = theta_names.index(name)
-            e = np.zeros_like(theta)
-            e[i_par] = 1.0
-            _, dd = jax.jvp(f_theta, (th0,), (jnp.asarray(e),))
-            jac[j] = np.asarray(dd)
-            log(f"[fwd] Jacobian d(depth)/d({name}) in {time.time()-t1:.0f} s")
+            h = FD_STEPS[name]
+            dvals = {}
+            if name in FD_COMP_PARAMS:
+                # composition direction: FastChem re-init + certified cold
+                # solve per FD point (4x build+solve)
+                for s in (1, -1, 2, -2):
+                    f = float(np.exp(s * h))
+                    if name == "lnZ":      # all metals together; C/O preserved
+                        ab = _abundance_overrides(cp["met_x_solar"] * f,
+                                                  cp["co_ratio"])
+                    else:                  # dlnCO: carbon at fixed oxygen
+                        ab = _abundance_overrides(cp["met_x_solar"],
+                                                  cp["co_ratio"] * f)
+                    chem_s = _build_chem(ab, tag=f"FD {name} {s:+d}h")
+                    dvals[s] = _certified_depth(chem_s, theta,
+                                                f"FD {name} {s:+d}h")
+            else:
+                # theta direction (lnKzz / T-P): baseline build, certified
+                # cold solves at theta +- h, +- 2h
+                i_par = theta_names.index(name)
+                for s in (1, -1, 2, -2):
+                    th_s = theta.copy()
+                    th_s[i_par] += s * h
+                    if i_par >= 3:         # T-P step must stay in the window
+                        T_s = np.asarray(tp_eval(jnp.asarray(th_s[3:]),
+                                                 jnp.asarray(chem.p_bar)))
+                        if T_s.min() < T_WINDOW[0] or T_s.max() > T_WINDOW[1]:
+                            raise RuntimeError(
+                                f"FD step for {name} ({s:+d}h = {s * h:+g}) "
+                                f"leaves the modelable T window {T_WINDOW}: "
+                                "move the profile away from the window edge "
+                                "or reduce forward.FD_STEPS for it.")
+                    dvals[s] = _certified_depth(chem, th_s,
+                                                f"FD {name} {s:+d}h")
+            jac[j], err = _fd_row(name, dvals[1], dvals[-1],
+                                  dvals[2], dvals[-2], h)
+            fd_h.append(h)
+            fd_err.append(err)
+            log(f"[fwd] FD Jacobian d(depth)/d({name}) in "
+                f"{time.time()-t1:.0f} s (h-vs-2h consistency {err:.3f} < "
+                f"{FD_CONSISTENCY_TOL})")
 
         t1 = time.time()
         advance()
-        _, dd = jax.jvp(lambda r: depth_from_y(y_sol, th0, lnR0=r),
-                        (jnp.asarray(0.0),), (jnp.asarray(1.0),))
-        jac[-1] = np.asarray(dd)
+        # lnR0 is RT-only (smooth, analytic in lnR0): one central difference
+        # through the radiative transfer, no chemistry and no gate needed.
+        d_rp = np.asarray(depth_from_y(y_sol, th0, lnR0=+FD_LNR0_STEP))
+        d_rm = np.asarray(depth_from_y(y_sol, th0, lnR0=-FD_LNR0_STEP))
+        jac[-1] = (d_rp - d_rm) / (2.0 * FD_LNR0_STEP)
         jac_names.append("lnR0")
-        log(f"[fwd] Jacobian d(depth)/d(lnR0) [RT-only nuisance] in {time.time()-t1:.0f} s")
+        fd_h.append(FD_LNR0_STEP)
+        fd_err.append(0.0)
+        log(f"[fwd] FD Jacobian d(depth)/d(lnR0) [RT-only nuisance] in "
+            f"{time.time()-t1:.0f} s")
 
     MODEL_CACHE.mkdir(parents=True, exist_ok=True)
     out = cache_path(params)
@@ -633,10 +825,20 @@ def run_model(params: dict, log=print) -> Path:
         T=np.asarray(T_check), theta=theta,
         theta_names=np.array(theta_names, dtype="U16"),
         params_json=np.array(json.dumps(cp), dtype="U2048"),
+        # convergence certificate: the runner's own longdy per gated stage
+        # (all strictly below the gate, or run_model would have raised)
+        conv_stages=np.array([s for s, _, _ in conv_cert], dtype="U48"),
+        conv_accept=np.array([a for _, a, _ in conv_cert], dtype=np.int64),
+        conv_longdy=np.array([l for _, _, l in conv_cert], dtype=np.float64),
+        conv_gate=np.array([float(chem.yconv_min)], dtype=np.float64),
     )
     if jac is not None:
         arrays["jac"] = jac
         arrays["jac_names"] = np.array(jac_names, dtype="U16")
+        # FD provenance: step and h-vs-2h consistency metric per row (lnR0's
+        # is 0 by construction -- RT-only, no gate)
+        arrays["fd_h"] = np.array(fd_h, dtype=np.float64)
+        arrays["fd_err"] = np.array(fd_err, dtype=np.float64)
     np.savez_compressed(out, **arrays)
     finish()
     log(f"[fwd] cached -> {out.name}")

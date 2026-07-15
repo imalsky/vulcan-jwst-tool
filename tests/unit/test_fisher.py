@@ -216,3 +216,54 @@ def test_display_sigma_units():
         fisher.display_sigma("dlnCO", 0.1)
     # a plain temperature is unit-1 (K in, K out)
     assert fisher.display_sigma("T_iso", 42.0) == 42.0
+
+
+def test_conditional_sigmas_bound_marginalized():
+    # conditional (others fixed) <= marginalized (others free), always --
+    # both read off the SAME nuisance-augmented Fisher matrix
+    rng = np.random.default_rng(7)
+    nb = 40
+    jac = np.vstack([rng.standard_normal((2, nb)),
+                     rng.standard_normal(nb) + 1.0])   # p0, p1, lnR0
+    r = dict(jac_bins=jac, sigma=np.full(nb, 1e-4))
+    cond = {}
+    marg = fisher.mode_forecast(r, ["p0", "p1"], conditional=cond)
+    for n in ("p0", "p1"):
+        assert np.isfinite(cond[n]) and cond[n] > 0
+        assert cond[n] <= marg[n] * (1 + 1e-12)
+
+
+def test_conditional_equals_marginalized_when_orthogonal():
+    # orthogonal, zero-mean parameter rows (also orthogonal to the constant
+    # offset and to lnR0): F is diagonal on the report block, so conditional
+    # and marginalized coincide
+    nb = 8
+    p0 = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0])
+    p1 = np.array([1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0])
+    ln_r0 = np.array([1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0])
+    jac = np.vstack([p0, p1, ln_r0])
+    r = dict(jac_bins=jac, sigma=np.ones(nb))
+    cond = {}
+    marg = fisher.mode_forecast(r, ["p0", "p1"], conditional=cond)
+    for n in ("p0", "p1"):
+        assert np.isclose(cond[n], marg[n], rtol=1e-12)
+
+
+def test_conditional_no_response_reads_inf():
+    nb = 10
+    jac = np.vstack([np.zeros(nb), np.ones(nb)])       # p0 dead, lnR0 alive
+    cond = {}
+    fisher.mode_forecast(dict(jac_bins=jac, sigma=np.ones(nb)), ["p0"],
+                         conditional=cond)
+    assert cond["p0"] == np.inf
+
+
+def test_combined_conditional_accumulates_modes():
+    # two modes must beat (or match) either alone, conditionally too
+    rng = np.random.default_rng(3)
+    r1 = dict(jac_bins=rng.standard_normal((2, 25)), sigma=np.full(25, 1e-4))
+    r2 = dict(jac_bins=rng.standard_normal((2, 20)), sigma=np.full(20, 1e-4))
+    c1, c12 = {}, {}
+    fisher.combined_forecast([r1], ["p0"], conditional=c1)
+    fisher.combined_forecast([r1, r2], ["p0"], conditional=c12)
+    assert c12["p0"] <= c1["p0"] * (1 + 1e-12)

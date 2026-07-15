@@ -122,12 +122,27 @@ def _marg_sigmas(F: np.ndarray, n_report: int,
     return out
 
 
+def _conditional_sigmas(F: np.ndarray, n_report: int) -> np.ndarray:
+    """CONDITIONAL sigmas 1/sqrt(F_ii) for the first n_report parameters:
+    every other parameter AND every nuisance held fixed at truth. The
+    optimistic Cramer-Rao complement of the marginalized sigma (conditional
+    <= marginalized always, up to numerical-rank inf); a large gap flags
+    degeneracy with other parameters/nuisances, not missing spectral
+    response. F_ii == 0 (no response at all) reads inf. Pure diagonal
+    read-off -- no inversion, so no rank subtleties."""
+    d = np.asarray(np.diag(np.asarray(F, float)), float)[:n_report]
+    out = np.full(n_report, np.inf)
+    pos = d > 0.0
+    out[pos] = 1.0 / np.sqrt(d[pos])
+    return out
+
+
 def display_sigma(name: str, sigma: float, co_eval: float | None = None) -> float:
     """Internal-unit sigma -> display-unit sigma.
 
     C/O (``dlnCO``) is reported as an ABSOLUTE number ratio: the internal sigma is
     in delta-ln(C/O), so to first order sigma_CO = C/O * sigma_lnCO. ``co_eval``
-    is the atmosphere's C/O at the evaluation point (CO_BASELINE * exp(dco));
+    is the atmosphere's C/O at the evaluation point (params_json co_ratio);
     it is REQUIRED for dlnCO (a loud error beats a silently-wrong scale)."""
     if name == "dlnCO":
         if co_eval is None:
@@ -177,27 +192,35 @@ def _fisher(Jn: np.ndarray, result: dict) -> np.ndarray:
 
 
 def mode_forecast(result: dict, free_names: list[str],
-                  diag: dict | None = None) -> dict:
+                  diag: dict | None = None,
+                  conditional: dict | None = None) -> dict:
     """Per-mode marginalized sigmas. result needs jac_bins (n_par, n_bins) whose rows
     are [free..., lnR0], sigma (n_bins,), and (optionally) seg (n_bins,) for the
     per-segment offset nuisances, cov (correlated-scenario covariance) and
-    slope_rows (per-segment slope nuisances). ``diag``: see _marg_sigmas."""
+    slope_rows (per-segment slope nuisances). ``diag``: see _marg_sigmas.
+    Pass a dict as ``conditional`` to also receive the conditional sigmas
+    (others fixed; see _conditional_sigmas) from the SAME Fisher matrix."""
     J = np.asarray(result["jac_bins"])
     steps = _segment_offset_rows(result)          # (n_steps, n_bins)
     slope = _slope_nuisance_rows(result)          # (n_slopes, n_bins)
     Jn = np.vstack([J] + [x for x in (steps, slope) if x.size])
     F = _fisher(Jn, result)
+    if conditional is not None:
+        conditional.update(zip(free_names,
+                               _conditional_sigmas(F, len(free_names))))
     sig = _marg_sigmas(F, len(free_names), diag=diag)
     return dict(zip(free_names, sig))
 
 
 def combined_forecast(results: list[dict], free_names: list[str],
-                      diag: dict | None = None) -> dict:
+                      diag: dict | None = None,
+                      conditional: dict | None = None) -> dict:
     """All modes jointly: shared free params + shared lnR0 + one depth offset
     per detector SEGMENT (NRS1/NRS2 counted separately for the two-detector
     gratings) + each mode's scenario slope nuisances, all marginalized. Noise
     is block-diagonal across modes (each block the mode's scenario covariance
-    or diagonal sigma; no cross-mode noise correlation is modeled)."""
+    or diagonal sigma; no cross-mode noise correlation is modeled).
+    ``conditional``: as in mode_forecast."""
     n_f = len(free_names)
     # count nuisance columns: one offset per segment + this mode's slope rows
     seg_counts, slope_counts = [], []
@@ -224,6 +247,8 @@ def combined_forecast(results: list[dict], free_names: list[str],
             Jg[col:col + n_sl] = _slope_nuisance_rows(r)
             col += n_sl
         F += _fisher(Jg, r)
+    if conditional is not None:
+        conditional.update(zip(free_names, _conditional_sigmas(F, n_f)))
     sig = _marg_sigmas(F, n_f, diag=diag)
     return dict(zip(free_names, sig))
 
