@@ -537,32 +537,41 @@ def run_model(params: dict, log=print) -> Path:
     # --- chemistry: two-stage for composition steps (validated pattern) ------
     t0 = time.time()
     th0 = jnp.asarray(theta)
-    def _check_converged(ac, stage):
-        ac = int(ac)
-        if ac >= int(chem.count_max):
+    def _check_converged(ac, longdy, stage):
+        # accept_count < count_max is NOT a convergence test: the hybrid vm_mol phase-flip
+        # (and the stall fallback) terminate the runner EARLY -- accept_count ~ count_min+2000,
+        # well below count_max -- even when the column is still oscillating and nowhere near a
+        # steady state (photo-off W39b: longdy ~ 1-60 with accept_count ~2122). Gate on the
+        # runner's own longdy metric against the loose convergence gate (yconv_min); a genuinely
+        # converged solve has longdy < yconv_min (photo-on W39b sits at ~0.06 < 0.1).
+        ac = int(ac); longdy = float(longdy)
+        if not (longdy < chem.yconv_min):
+            how = (f"hit the count_max={chem.count_max} cap" if ac >= int(chem.count_max)
+                   else f"terminated early at {ac} accepted steps (e.g. hybrid vm_mol "
+                        "phase-flip / stall budget) without settling")
             raise RuntimeError(
-                f"chemistry did NOT converge ({stage}: {ac} accepted steps hit the "
-                f"count_max={chem.count_max} cap). This parameter corner has no "
-                "certified steady state -- adjust T-P / Kzz / composition rather "
-                "than trusting an unconverged spectrum.")
+                f"chemistry did NOT converge ({stage}: longdy={longdy:.3g} >= gate "
+                f"yconv_min={chem.yconv_min:g}; {how}). This parameter corner has no "
+                "certified steady state -- adjust T-P / Kzz / composition (or the "
+                "convergence settings) rather than trusting an unconverged spectrum.")
 
     if cp["met_x_solar"] == 10.0 and cp["dco"] == 0.0:
         advance()
         log("[fwd] solving chemistry (single stage, baseline composition) ...")
-        y_sol, ac = chem.converged_y(th0, return_diag=True)
-        _check_converged(ac, "single stage")
+        y_sol, ac, longdy = chem.converged_y(th0, return_longdy=True)
+        _check_converged(ac, longdy, "single stage")
     else:
         advance()
         log("[fwd] solving chemistry stage 1/2 (T/Kzz relaxation) ...")
         th_relax = th0.at[0].set(0.0).at[1].set(0.0)
-        y_relaxed, ac1 = chem.converged_y(th_relax, return_diag=True)
-        _check_converged(ac1, "stage 1, T/Kzz relaxation")
+        y_relaxed, ac1, ld1 = chem.converged_y(th_relax, return_longdy=True)
+        _check_converged(ac1, ld1, "stage 1, T/Kzz relaxation")
         advance()
         log(f"[fwd] stage 1 done ({time.time()-t0:.0f} s); "
             "stage 2/2 (composition, warm continuation) ...")
-        y_sol, ac2 = chem.converged_y(th0, warm_y=y_relaxed, lnZ_ref=0.0,
-                                      c_o_ref=0.0, return_diag=True)
-        _check_converged(ac2, "stage 2, composition continuation")
+        y_sol, ac2, ld2 = chem.converged_y(th0, warm_y=y_relaxed, lnZ_ref=0.0,
+                                      c_o_ref=0.0, return_longdy=True)
+        _check_converged(ac2, ld2, "stage 2, composition continuation")
     y_np = np.asarray(y_sol)
     if not np.all(np.isfinite(y_np)):
         raise RuntimeError("chemistry solve returned non-finite abundances -- "
