@@ -6,6 +6,10 @@ import pytest
 
 from jwst_tool import binning, noise as noise_mod
 
+# `np.trapezoid` is NumPy 2.0+; `np.trapz` is the 1.26 spelling (deprecated in
+# 2.0). The package floor is NumPy>=1.26, so bind whichever exists.
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
 
 def _fake_pixels(rng, n=800, wl0=1.0, wl1=5.0):
     wl = np.sort(rng.uniform(wl0, wl1, n))
@@ -219,8 +223,8 @@ def test_smooth_to_native_r_conserves_flux_and_noops_at_high_r():
     y_lo = binning.smooth_to_native_r(wl, y, wl, r_lo, 5.0, 11.0)
     assert not np.allclose(y_lo, y)                # something happened
     band = (wl >= 5.5) & (wl <= 10.5)             # interior (no edge effects)
-    assert abs(np.trapezoid(y_lo[band], wl[band]) - np.trapezoid(y[band], wl[band])) \
-        < 1e-3 * abs(np.trapezoid(y[band], wl[band]))
+    assert abs(_trapz(y_lo[band], wl[band]) - _trapz(y[band], wl[band])) \
+        < 1e-3 * abs(_trapz(y[band], wl[band]))
     # very high native R (>> model sampling) -> kernel unresolved -> exact no-op
     r_hi = np.full(wl.size, 1e5)
     y_hi = binning.smooth_to_native_r(wl, y, wl, r_hi, 5.0, 11.0)

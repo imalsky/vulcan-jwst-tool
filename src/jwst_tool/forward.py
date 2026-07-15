@@ -110,14 +110,16 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 8   # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 9   # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
                # broadening knob in the RT; v6: use_condense knob in the cache
                # key; v7: GCM baseline/scale modes REMOVED -- every planet on
                # an isothermal structural baseline; v8: condensation REMOVED as
                # an option -- use_condense is no longer a parameter (raises if
                # requested), so the cache key changes and pre-v8 spectra are
-               # stale)
+               # stale; v9: VULCAN-JAX SNCHO CH2CN+H+M association k0 typo fix
+               # (1.00E-20 -> 1.00E-29) changes the chemistry, so pre-v9 spectra
+               # are stale)
 
 
 def active_molecules(cp: dict) -> list[str]:

@@ -78,8 +78,9 @@ This tool answers that — quickly, on your laptop.
   can differ in either direction depending on extraction and analysis
   choices, though unmodeled systematics commonly degrade precision.
 - A molecule "detection sigma" here is a **best-case template match at one fixed
-  atmosphere** — a real retrieval that re-fits temperature, clouds, and other
-  gases will always give a **weaker** detection.
+  atmosphere**. A real retrieval that re-fits temperature, clouds, and other
+  gases usually gives a **weaker** result, but this is not universal once priors
+  and real data enter.
 - Defaults are **clear-sky**; clouds mute features, so turn them on to stress-test.
 
 Everything runs locally and is cached, so the first run of a new setup takes a
@@ -278,7 +279,7 @@ with st.sidebar:
             "open-system \"smooth rainout\" replacement built to fix that was "
             "measured NO-GO (it could not reach a strict flux-balanced steady "
             "state within its gate). For aerosol / haze opacity, use the "
-            "differentiable ExoJAX **cloud deck** below instead.")
+            "differentiable ExoJAX **power-law cloud** below instead.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -299,11 +300,12 @@ with st.sidebar:
             help="Zero-free-parameter known physics; matters shortward of "
                  "~1.5 µm (the SOSS blue end). Leave ON except for comparisons.")
         cloud_on = st.checkbox(
-            "Cloud deck (power-law opacity)", value=False, key=K("cloud"),
+            "Power-law cloud/haze opacity", value=False, key=K("cloud"),
             help="ExoJax power-law retrieval cloud, uniformly mixed: "
-                 "κ(ν) = κ₀·(ν/ν₀)^α per gram of atmosphere. Held FIXED in "
-                 "the Fisher forecast (no cloud marginalization), so forecasts "
-                 "with a thick deck are best-case.")
+                 "κ(ν) = κ₀·(ν/ν₀)^α per gram of atmosphere (no cloud-top "
+                 "pressure or particle microphysics). Held FIXED in the Fisher "
+                 "forecast (no cloud marginalization), so forecasts with thick "
+                 "opacity are best-case.")
         if cloud_on:
             log_kappa_cloud = st.slider(
                 "log₁₀ κ_cloud (cm²/g at 3.5 µm)", -4.0, 2.0, -1.0, 0.1,
@@ -370,7 +372,8 @@ with st.sidebar:
                                               key=K(f"tgt_{goal_param}"))
         target_sig = st.number_input(
             "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"),
-            help="3σ is the standard evidence threshold; 5σ a firm detection. "
+            help="3σ is a common planning threshold, 5σ a firmer target; these "
+                 "are Gaussian-equivalent √Δχ² labels, not Bayesian evidence. "
                  "Detection verdicts require this significance; a precision "
                  "target must be met AT it (so the 1σ error must be "
                  "precision/level); Fisher intervals are quoted at it.")
