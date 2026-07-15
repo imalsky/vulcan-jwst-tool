@@ -42,55 +42,57 @@ def _intro_gate() -> None:
     The acknowledgment survives the sidebar reset (see _reset_all)."""
     if st.session_state.get("intro_ack"):
         return
-    st.title("JWST instrument selector — how it works")
+    st.title("JWST instrument selector: how it works")
     st.markdown(
         """
 ### The 10-second version
 
-You have a planet. You want to know **which JWST instrument mode gives you the
+You have a planet. You want to know **which JWST time-series mode gives you the
 best shot at your science goal**, and roughly **how many transits** it takes.
-This tool answers that — quickly, on your laptop.
+This tool answers that quickly, on your laptop.
 
-### What it actually does (in plain words)
+### How it works
 
-1. **Simulates the planet's atmosphere.** It runs a photochemistry model
-   (VULCAN-JAX) to work out what molecules are present at what altitude, given
-   your planet, temperature, metallicity, and so on.
-2. **Turns that into a spectrum.** It computes the transmission spectrum — the
-   fingerprint of dips in starlight the atmosphere would imprint as the planet
-   crosses its star (ExoJAX).
-3. **Asks "how noisy would JWST be?"** It runs STScI's official exposure-time
-   calculator (Pandeia — the same engine behind the JWST web ETC) to get the
-   real photon + detector noise for each instrument mode on *your* star.
-4. **Scores each mode.** For a **detection** goal it measures how strongly the
-   molecule's fingerprint stands out above the noise; for a **constraint** goal
-   it forecasts how tightly you'd pin down a number (metallicity, C/O, …). Then
-   it ranks the modes and tells you the transits needed.
+1. **Simulate the atmosphere.** A photochemistry model (VULCAN-JAX, a JAX port
+   of VULCAN, github.com/exoclime/VULCAN) computes which molecules sit at which
+   altitude for your planet, temperature, metallicity, and mixing.
+2. **Turn it into a spectrum.** ExoJAX computes the transmission spectrum, the
+   pattern of starlight dips the atmosphere imprints as the planet transits.
+3. **Ask how noisy JWST would be.** STScI's Pandeia exposure-time calculator
+   (the engine behind the JWST web ETC) gives the photon and detector noise for
+   each mode on *your* star, following the same approach as PandExo.
+4. **Score each mode.** For a **detection** goal it measures how strongly the
+   molecule stands out above the noise. For a **constraint** goal it uses
+   automatic differentiation through the whole model to get the exact spectral
+   Jacobian (how the transit depth changes with each parameter), which feeds a
+   Fisher forecast. It then ranks the modes and reports the transits needed.
 
-### What the numbers mean — and what they don't
+### What the numbers mean, and what they do not
 
-- **This is a planning tool, not a retrieval.** Trust the **ranking of modes**
-  far more than the exact ppm or "sigma" values.
-- The noise is an **instrument-model forecast**: photon + detector noise from
-  the STScI Pandeia engine, with an optional PandExo-style minimum noise
-  floor. It does **not** model time-correlated systematics (visit trends,
-  1/f residuals, detrending covariance, stellar activity) — real reductions
-  can differ in either direction depending on extraction and analysis
-  choices, though unmodeled systematics commonly degrade precision.
-- A molecule "detection sigma" here is a **best-case template match at one fixed
-  atmosphere**. A real retrieval that re-fits temperature, clouds, and other
-  gases usually gives a **weaker** result, but this is not universal once priors
-  and real data enter.
-- Defaults are **clear-sky**; clouds mute features, so turn them on to stress-test.
+**This is a planning tool, not a retrieval**, so trust the **ranking of modes**
+far more than the exact ppm or sigma values. The forecasts are deliberately
+optimistic in three ways:
+
+1. A detection sigma is a **best-case template match at one fixed atmosphere**.
+   A real retrieval that re-fits temperature, clouds, and other gases usually
+   does worse.
+2. A constraint forecast is a **Fisher lower bound**, the smallest error bar the
+   information allows, not a posterior width.
+3. The noise model **omits time-correlated systematics** (visit trends, 1/f
+   residuals, detrending covariance, stellar activity), so achieved precision is
+   usually poorer.
+
+It does not perform atmospheric retrieval, and condensation is not supported.
+Defaults are clear-sky; clouds mute features, so turn them on to stress-test.
 
 Everything runs locally and is cached, so the first run of a new setup takes a
 couple of minutes and re-runs are instant.
         """
     )
     st.info("This is a fast forecasting tool. Use it to compare instrument "
-            "modes and plan transits — not as a substitute for a full "
+            "modes and plan transits, not as a substitute for a full "
             "retrieval or a real noise analysis.")
-    if st.button("I understand — open the tool", type="primary"):
+    if st.button("I understand, open the tool", type="primary"):
         st.session_state["intro_ack"] = True
         st.rerun()
     st.stop()
@@ -104,10 +106,10 @@ st.caption(
     "Pick a planet and a science goal, run the model locally, and see which "
     "instrument mode achieves it best. Uncertainties are a **Pandeia "
     "instrument-model forecast** with an optional PandExo-style minimum noise "
-    "floor — not a full time-series systematics forecast; treat mode rankings "
+    "floor, not a full time-series systematics forecast; treat mode rankings "
     "as more robust than absolute ppm."
 )
-st.caption(f"**{ins.BACKEND_STATUS}** — every result records the exact "
+st.caption(f"**{ins.BACKEND_STATUS}**. Every result records the exact "
            "engine + refdata versions in its provenance block.")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
