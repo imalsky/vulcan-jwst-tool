@@ -42,56 +42,31 @@ def _intro_gate() -> None:
     The acknowledgment survives the sidebar reset (see _reset_all)."""
     if st.session_state.get("intro_ack"):
         return
-    st.title("JWST instrument selector: how it works")
+    st.title("JWST instrument selector")
     st.markdown(
         """
-### The 10-second version
-
-You have a planet. You want to know **which JWST time-series mode gives you the
-best shot at your science goal**, and roughly **how many transits** it takes.
-This tool answers that quickly, on your laptop.
-
-### How it works
-
-1. **Simulate the atmosphere.** A photochemistry model (VULCAN-JAX, a JAX port
-   of VULCAN, github.com/exoclime/VULCAN) computes which molecules sit at which
-   altitude for your planet, temperature, metallicity, and mixing.
-2. **Turn it into a spectrum.** ExoJAX computes the transmission spectrum, the
-   pattern of starlight dips the atmosphere imprints as the planet transits.
-3. **Ask how noisy JWST would be.** STScI's Pandeia exposure-time calculator
-   (the engine behind the JWST web ETC) gives the photon and detector noise for
-   each mode on *your* star, following the same approach as PandExo.
-4. **Score each mode.** For a **detection** goal it measures how strongly the
-   molecule stands out above the noise. For a **constraint** goal it uses
-   automatic differentiation through the whole model to get the exact spectral
-   Jacobian (how the transit depth changes with each parameter), which feeds a
-   Fisher forecast. It then ranks the modes and reports the transits needed.
-
-### What the numbers mean, and what they do not
-
-**This is a planning tool, not a retrieval**, so trust the **ranking of modes**
-far more than the exact ppm or sigma values. The forecasts are deliberately
-optimistic in three ways:
-
-1. A detection sigma is a **best-case template match at one fixed atmosphere**.
-   A real retrieval that re-fits temperature, clouds, and other gases usually
-   does worse.
-2. A constraint forecast is a **Fisher lower bound**, the smallest error bar the
-   information allows, not a posterior width.
-3. The noise model **omits time-correlated systematics** (visit trends, 1/f
-   residuals, detrending covariance, stellar activity), so achieved precision is
-   usually poorer.
-
-It does not perform atmospheric retrieval, and condensation is not supported.
-Defaults are clear-sky; clouds mute features, so turn them on to stress-test.
-
-Everything runs locally and is cached, so the first run of a new setup takes a
-couple of minutes and re-runs are instant.
+vulcan-jwst-tool is a local JWST transmission-spectroscopy planning tool that
+ranks JWST time-series instrument modes by how well each one can detect a target
+molecule or constrain an atmospheric parameter for a given exoplanet, and it
+reports the number of transits needed to reach a chosen precision. It follows
+the same principle as PandExo, a Pandeia exposure-time-calculator noise forecast
+for JWST exoplanet spectra, but replaces the assumed input spectrum with a
+differentiable forward model whose chemistry follows the VULCAN photochemical
+kinetics code at github.com/exoclime/VULCAN (ported to JAX as VULCAN-JAX and
+chained into ExoJAX radiative transfer), and it uses automatic differentiation
+through that model to obtain the exact spectral Jacobian, the parameter
+derivatives of transit depth, that feeds a Fisher-information forecast. The
+forecasts are deliberately optimistic in three ways: molecule-detection scores
+are a conditional matched-template signal-to-noise ratio at one fixed
+atmosphere, so a real retrieval does worse; the Fisher results are local
+Cramer-Rao lower bounds rather than posterior widths; and the noise model omits
+time-correlated systematics, so achieved precision is usually poorer. It is a
+planning tool, not an atmospheric retrieval, and it does not model
+time-correlated instrument systematics such as visit-long trends, 1/f residuals,
+detrending covariance, or stellar heterogeneity, and condensation is not
+supported.
         """
     )
-    st.info("This is a fast forecasting tool. Use it to compare instrument "
-            "modes and plan transits, not as a substitute for a full "
-            "retrieval or a real noise analysis.")
     if st.button("I understand, open the tool", type="primary"):
         st.session_state["intro_ack"] = True
         st.rerun()
