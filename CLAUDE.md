@@ -40,8 +40,14 @@
   refdata in every cache key). The current backend uses the split refdata
   layout (`JWST_TOOL_PANDEIA_PSF_DIR` for the separate PSF library; `psf_dir`
   in the job, preflighted). NIRCam mode rename ssgrism→lw_tsgrism is a
-  2026-engine thing the parity harness patches; the registry keeps the 3.0
-  name (build_default_calc maps it). On any backend change re-check
+  2026-engine thing: the registry (`MODES`) keeps the canonical 3.0 token and
+  `instruments.engine_mode()` resolves it to the active backend's name.
+  `noise.noise_job` calls it on the PRODUCTION path (and the parity harness goes
+  through the same `noise_job`), so both agree. `build_default_calc` does NOT
+  alias — it raises `ValueError: Invalid mode` on an unknown token, which is
+  exactly what happened before the fix when the production path sent the raw
+  `ssgrism` to the 2026 engine while only the parity script patched it. Never
+  reintroduce a parity-only rename. On any backend change re-check
   `n_pix_degenerate_dropped` (the 3.0rc3 red-edge pileup is fixed in 2026.2 —
   the degenerate mask drops 0 there).
 - **TSO instrument configs are pinned EXPLICITLY (2026-07-12 parity run)**:
@@ -190,11 +196,11 @@
   gets an isothermal structural baseline; no GCM profile is ever silently
   substituted). The slow `test_closure.py` FD test now drives `T_iso`
   (same single-scalar theta[3] design the retired `dT` had). GUI is organized
-  into five clearly-labeled sections: 🪐 Planet & star, 🧪 VULCAN chemistry
-  (T-P, composition, Kzz, photochem; condensation is a why-not note), 🌈
-  ExoJAX RT (opacity/scattering/clouds/broadening), 🎯 Science goal (goal,
-  fidelity, Fisher), 🔭 Instrument & noise (modes, transits, saturation,
-  noise model). Verified with Streamlit `AppTest`
+  into five clearly-labeled sections: Planet & star; VULCAN chemistry (T-P,
+  composition, Kzz, photochem, numerical grid; condensation is a why-not note);
+  ExoJAX RT (opacity/scattering/clouds/broadening/native sampling); Science
+  goal (goal, Fisher); Instrument & noise (modes, transits, saturation, noise
+  model). Verified with Streamlit `AppTest`
   (`session_state['intro_ack']=True` skips the how-it-works gate).
 - **Condensation is REMOVED as an option (2026-07-14).** `use_condense` is no
   longer a parameter; `canonical_params` RAISES on a truthy `use_condense`

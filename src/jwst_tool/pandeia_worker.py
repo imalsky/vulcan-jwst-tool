@@ -1,4 +1,5 @@
-"""Pandeia ETC worker -- runs INSIDE the picaso_base conda env (pandeia.engine 3.0).
+"""Pandeia ETC worker -- runs INSIDE the selected backend's conda env (DEFAULT
+"current" = pandeia.engine 2026.2; "legacy" = pinned 3.0; see instruments._BACKENDS).
 
 Standalone on purpose: no imports from the rest of the tool, stdlib + pandeia only.
 

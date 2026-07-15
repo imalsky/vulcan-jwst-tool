@@ -1,8 +1,16 @@
 """JWST time-series instrument-mode registry + paths for the noise backend.
 
 Each mode entry carries the Pandeia configuration used by ``pandeia_worker.py``
-(running inside the ``picaso_base`` conda env: pandeia.engine 3.0 +
-pandeia_data-3.0rc3) plus display metadata and a default systematic noise floor.
+(running inside the selected backend's conda env -- the DEFAULT ``current``
+backend is pandeia.engine 2026.2 + pandeia_data-2026.2-jwst; ``legacy`` is the
+pinned 3.0 pair, see the BACKEND SELECTION block below) plus display metadata
+and a default systematic noise floor.
+
+Mode tokens in ``MODES`` are the canonical (pinned-3.0) Pandeia names; some were
+renamed in 2026-era engines. ``engine_mode()`` resolves each to the token the
+ACTIVE backend accepts, and both the production path (``noise.noise_job``) and
+the parity harness go through it -- so a mode is never submitted under a name the
+running engine rejects.
 
 Noise floors (``floor_ppm``): default CONSTANT minimum-uncertainty values per
 mode, applied with PandExo semantics (sigma_final = max(sigma_random, floor)
@@ -113,6 +121,33 @@ PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", _BE["psf"])
 # Minimal synphot CDBS assembled for this tool: phoenix grid symlinked from
 # RT-Project/picaso, johnson_j bandpass fetched from ssb.stsci.edu/trds.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
+
+# Engine-generation mode-name renames. MODES stores the canonical (pinned-3.0)
+# Pandeia token; 2026-era engines renamed some modes, and the running engine
+# hard-rejects an unknown token (ValueError: Invalid mode). The ACTIVE backend
+# decides which name is valid, so this is keyed by JWST_TOOL_BACKEND and both the
+# production noise path and the parity harness resolve through engine_mode() --
+# one source of truth, no path can send a name the selected engine refuses.
+#   current (Pandeia 2026.x): NIRCam grism time series "ssgrism" -> "lw_tsgrism".
+#   legacy  (Pandeia 3.0):    identity (3.0 still calls it "ssgrism").
+_MODE_RENAMES = {
+    "current": {"nircam": {"ssgrism": "lw_tsgrism"}},
+    "legacy": {},
+}
+ENGINE_MODE_RENAMES = _MODE_RENAMES[JWST_TOOL_BACKEND]
+
+
+def engine_mode(instrument: str, mode: str) -> str:
+    """Resolve a registry mode token to the name the ACTIVE backend accepts.
+
+    MODES carries the pinned-3.0 token; 2026-era engines renamed some modes
+    (e.g. NIRCam ``ssgrism`` -> ``lw_tsgrism``). Returns ``mode`` unchanged when
+    the active backend needs no rename. Both ``noise.noise_job`` (production) and
+    ``tests/parity`` go through here so a mode is never submitted under a name the
+    running engine rejects.
+    """
+    return ENGINE_MODE_RENAMES.get(instrument, {}).get(mode, mode)
+
 
 # Star normalization is band-integrated 2MASS Ks (vegamag, synphot "2mass,ks"
 # bandpass) inside the worker -- the web-ETC convention. The retired shortcut

@@ -97,22 +97,18 @@ PANDEXO_MODES = {
                                "readmode": "fastr1"}}),
 }
 
-# Engine-generation mode renames: the pinned 3.0 backend calls the NIRCam
-# grism time series "ssgrism"; 2026-era engines call it "lw_tsgrism". The
-# tool's registry stays on the pinned name; parity jobs patch it.
-MODE_RENAMES_2026 = {"nircam": {"ssgrism": "lw_tsgrism"}}
-
-
 def run_ours(star: dict, keys: list[str]) -> dict:
+    # noise_job now resolves engine-generation mode renames (NIRCam
+    # ssgrism->lw_tsgrism on the 2026 engine) via instruments.engine_mode(), so
+    # parity exercises the SAME production path as a normal run -- no separate
+    # rename here (that was the bug: the old parity-only patch let NIRCam pass
+    # the gate while the production path silently sent the rejected token).
     job = noise.noise_job(star, keys, sat_limit=SAT_LIMIT)
     eng = noise.backend_fingerprint()["engine_version"]
     if not eng.startswith("2026"):
         raise SystemExit(
             f"run_parity: JWST_TOOL_PANDEIA_PYTHON resolves engine {eng!r}; "
             "the parity gate compares on the CURRENT backend (2026.x)")
-    for m in job["modes"]:
-        ren = MODE_RENAMES_2026.get(m["instrument"], {})
-        m["mode"] = ren.get(m["mode"], m["mode"])
     return noise.run_pandeia(job, progress=lambda s: print("  " + s, flush=True))
 
 

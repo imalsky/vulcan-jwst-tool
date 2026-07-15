@@ -103,7 +103,13 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
     for key in mode_keys:
         m = dict(ins.MODES[key])
         modes.append({
-            "key": key, "instrument": m["instrument"], "mode": m["mode"],
+            # engine_mode() maps the registry's canonical (3.0) token to the
+            # name the ACTIVE backend accepts (e.g. NIRCam ssgrism->lw_tsgrism on
+            # the 2026 engine); no-op on the legacy backend. Without this the
+            # 2026 engine raises "Invalid mode: ssgrism" and both NIRCam modes
+            # fail. The parity harness relies on the same resolution.
+            "key": key, "instrument": m["instrument"],
+            "mode": ins.engine_mode(m["instrument"], m["mode"]),
             "config": m.get("config", {}), "strategy": m.get("strategy", {}),
             "background": m.get("background"),
             "background_level": m.get("background_level"),
@@ -134,7 +140,7 @@ def job_key(job: dict) -> str:
 
 
 def run_pandeia(job: dict, progress=None, force: bool = False) -> dict:
-    """Run the worker in picaso_base (or return the cached result).
+    """Run the worker in the selected backend's env (or return the cached result).
 
     ``progress``: optional callable(str) receiving worker stdout lines live.
     Raises RuntimeError (loudly, with stderr) if the worker process itself dies;
@@ -148,8 +154,9 @@ def run_pandeia(job: dict, progress=None, force: bool = False) -> dict:
     py = Path(ins.PICASO_PYTHON)
     if not py.exists():
         raise RuntimeError(
-            f"Pandeia backend python not found at {py} (the picaso_base conda env "
-            "with pandeia.engine 3.0). The noise model cannot run without it.")
+            f"Pandeia backend python not found at {py} (the '{ins.JWST_TOOL_BACKEND}' "
+            f"backend: {ins.BACKEND_STATUS}). The noise model cannot run without it; "
+            "set JWST_TOOL_PANDEIA_PYTHON to a python with the matching pandeia.engine.")
 
     in_json = ins.NOISE_CACHE / f"{job_key(job)}.job.json"
     out_json = ins.NOISE_CACHE / f"{job_key(job)}.out.json"

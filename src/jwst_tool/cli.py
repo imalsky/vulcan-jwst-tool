@@ -37,10 +37,11 @@ def main() -> int:
 
     from jwst_tool import instruments as ins
     if not Path(ins.PICASO_PYTHON).exists():
-        print(f"jwst-tool: Pandeia backend python not found at {ins.PICASO_PYTHON}.\n"
-              "Point JWST_TOOL_PANDEIA_PYTHON at a python with pandeia.engine 3.0 "
-              "(and JWST_TOOL_PANDEIA_REFDATA at the matching refdata). The GUI "
-              "still starts, but every noise calculation will refuse to run.",
+        print(f"jwst-tool: Pandeia backend python not found at {ins.PICASO_PYTHON} "
+              f"(backend '{ins.JWST_TOOL_BACKEND}': {ins.BACKEND_STATUS}).\n"
+              "Point JWST_TOOL_PANDEIA_PYTHON at a python with the matching "
+              "pandeia.engine (and JWST_TOOL_PANDEIA_REFDATA at the matching refdata). "
+              "The GUI still starts, but every noise calculation will refuse to run.",
               file=sys.stderr)
 
     app = Path(__file__).parent / "app.py"
