@@ -49,8 +49,8 @@ PLANETS = {
         rstar_rsun=0.932, rp_rjup=1.279, gs_cgs=422.0,
         orbit_au=0.04828, teq_k=1120.0, t14_hr=2.80,
         sflux="sflux-W39b_Tsai2023.txt",
-        note="The validated system (Tsai et al. 2023 setup): JWST ERS SO2 "
-             "story.",
+        note="Inflated ~Saturn-mass planet (Ks = 10.2, G8V host); a well-observed "
+             "warm transmission-spectroscopy target.",
     ),
     "hd189733b": dict(
         label="HD 189733 b",

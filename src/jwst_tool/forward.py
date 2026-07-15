@@ -20,9 +20,13 @@ RT. The WASP-39b GCM T-P/Kzz special cases were REMOVED (2026-07-13): no
 tp_mode="baseline", no GCM-scaled Kzz, no has_gcm_baseline branches -- a GCM
 profile is never silently substituted.
 
-Quality tiers (the GUI's fidelity switch; "fast" is the default):
-    fast  nz=100, yconv 1e-2 (VULCAN master default), nu_pts=4000, 40 layers
-    high  nz=150, yconv 1e-3, nu_pts=8000, 60 layers (the original WIDE setup)
+Numerical resolution (was the GUI "fidelity" switch, now three explicit knobs):
+    nz         VULCAN chemistry layers; the ExoJax RT grid (art_nlayer) is LOCKED
+               equal to nz in run_model, so chemistry and RT share one layer count
+    nu_pts     native wavenumber points over the 1-15 um band (native R ~ nu_pts/2.7)
+    yconv_cri  steady-state convergence tolerance
+    Defaults reproduce the old "fast" tier (nz=100, nu_pts=4000, yconv 1e-2);
+    the validated ceiling is the old "high" tier (nz=150, nu_pts=8000, yconv 1e-3).
 
 Atmosphere-structure knobs (all consumed by the same validated pipeline hooks the
 retrieval framework uses):
@@ -110,7 +114,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 9   # bump to invalidate all cached spectra (v5: exact-elemental
+_VERSION = 10  # bump to invalidate all cached spectra (v5: exact-elemental
                # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
                # broadening knob in the RT; v6: use_condense knob in the cache
                # key; v7: GCM baseline/scale modes REMOVED -- every planet on
@@ -119,24 +123,42 @@ _VERSION = 9   # bump to invalidate all cached spectra (v5: exact-elemental
                # requested), so the cache key changes and pre-v8 spectra are
                # stale; v9: VULCAN-JAX SNCHO CH2CN+H+M association k0 typo fix
                # (1.00E-20 -> 1.00E-29) changes the chemistry, so pre-v9 spectra
-               # are stale)
+               # are stale; v10: fidelity "quality" tier replaced by explicit
+               # nz/nu_pts/yconv_cri knobs, and the RT layer count art_nlayer is
+               # now LOCKED equal to nz (was fixed at 60) -- the cache key changed
+               # and the RT grid differs, so pre-v10 spectra are stale)
+
+# Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
+# the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
+# NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity). The
+# network initializes from Lodders 2019 solar abundances (vulcan_jax
+# .../fastchem_vulcan/input/solar_element_abundances.dat -- import-locked and
+# row-order-guarded by VULCAN-JAX test_fastchem_element_order):
+#     A(C) = 8.4434,  A(O) = 8.7826  ->  C/O = 10**(A_C - A_O) = 0.4579.
+# Uniform metallicity scaling preserves it (C and O both scale with Z), and the
+# fixed-O carbon knob makes the internal dco parameter == delta ln(C/O) EXACTLY,
+# so the atmosphere's C/O is CO_BASELINE * exp(dco). (For reference, Asplund 2009
+# solar C/O ~ 0.55; this network uses the Lodders set, hence its solar C/O 0.46.)
+CO_BASELINE = 10.0 ** (8.4434 - 8.7826)   # = 0.45793, Lodders 2019 solar C/O
 
 
 def active_molecules(cp: dict) -> list[str]:
     """RT molecule set for canonical params: base set + selected extras."""
     return MOLECULES + [m for m in EXTRA_MOLECULES if m in cp["extra_mols"]]
 
-# Model fidelity tiers layered on config.WIDE (1-15 um band unchanged).
-# Both keep the full 60-layer ART grid (RT evals are ~1-2 s, so thinning it buys
-# nothing). Measured fast-vs-high agreement (W39b defaults): G395H SO2 3.6 vs
-# 3.8 sigma, F444W 2.8 vs 3.0, Fisher sigma(lnZ) 0.027 vs 0.029 dex; the weak
-# mid-IR SO2 bands are the one real casualty (MIRI LRS 0.9 vs 1.9 sigma -- the
-# nz=100 / yconv 1e-2 chemistry mutes the high-altitude SO2 shell). Use "high"
-# for final numbers.
-QUALITY = {
-    "fast": dict(nz=100, yconv_cri=1.0e-2, nu_pts=4000, art_nlayer=60),
-    "high": dict(nz=150, yconv_cri=1.0e-3, nu_pts=8000, art_nlayer=60),
-}
+# Numerical-resolution knobs layered on config.WIDE (1-15 um band unchanged) --
+# these replaced the old "fast"/"high" fidelity switch. Defaults reproduce the
+# old "fast" tier; the validated ceiling is the old "high" tier. The ExoJax RT
+# layer count (art_nlayer) is LOCKED equal to nz in run_model (chemistry and RT
+# share one grid), so there is no separate RT-layer knob. Measured fast-vs-high
+# agreement (W39b defaults): G395H SO2 3.6 vs 3.8 sigma, F444W 2.8 vs 3.0, Fisher
+# sigma(lnZ) 0.027 vs 0.029 dex; the weak mid-IR SO2 bands are the one real
+# casualty (MIRI LRS 0.9 vs 1.9 sigma at nz=100 / yconv 1e-2) -- raise nz / tighten
+# yconv for final mid-IR numbers.
+NZ_DEFAULT, NU_PTS_DEFAULT, YCONV_DEFAULT = 100, 4000, 1.0e-2
+NZ_RANGE = (60, 150)            # chemistry (= RT) layers
+NU_PTS_RANGE = (4000, 8000)     # native wavenumber points (native R ~ nu_pts/2.7)
+YCONV_RANGE = (1.0e-3, 1.0e-2)  # steady-state convergence tolerance
 
 # Modelable temperature window (premodit table range, 20 K inset) -- reject, never clip.
 T_WINDOW = (320.0, 2980.0)
@@ -147,8 +169,15 @@ TP_PARAM_NAMES = {
     "isothermal": ["T_iso"],
     "guillot": ["Tirr", "Tint", "log_kappa", "log_gamma"],
 }
-# Display units + friendly names for the GUI's constraint table / science goals.
-PARAM_UNITS = {"lnZ": "dex(Z)", "dlnCO": "ln(C/O)", "lnKzz": "dex(Kzz)",
+# Display SYMBOL, UNIT, and friendly name per parameter for the GUI's constraint
+# table / science goals. The symbol is what a reader recognizes and MUST match the
+# unit's log base: metallicity and Kzz are reported in dex (log10), so their
+# symbols are [M/H] and log Kzz (never "ln", which would mislabel the base); C/O
+# is the absolute number ratio N_C/N_O (dimensionless, so no unit bracket).
+PARAM_SYMBOLS = {"lnZ": "[M/H]", "dlnCO": "C/O", "lnKzz": "log Kzz",
+                 "T_iso": "T_iso", "Tirr": "T_irr", "Tint": "T_int",
+                 "log_kappa": "log κ_IR", "log_gamma": "log γ"}
+PARAM_UNITS = {"lnZ": "dex", "dlnCO": "", "lnKzz": "dex",
                "T_iso": "K", "Tirr": "K", "Tint": "K",
                "log_kappa": "dex", "log_gamma": "dex"}
 PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
@@ -156,6 +185,14 @@ PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
                 "T_iso": "Isothermal T", "Tirr": "Guillot T_irr",
                 "Tint": "Guillot T_int", "log_kappa": "Guillot log κ_IR",
                 "log_gamma": "Guillot log γ"}
+
+
+def param_axis(name: str) -> str:
+    """Axis/column label for a parameter: 'Symbol [unit]', or bare 'Symbol' when
+    it is dimensionless (C/O). Keeps every user-facing header on the standard
+    representation (e.g. '[M/H] [dex]', 'C/O', 'T_iso [K]')."""
+    u = PARAM_UNITS[name]
+    return f"{PARAM_SYMBOLS[name]} [{u}]" if u else PARAM_SYMBOLS[name]
 
 def canonical_params(params: dict) -> dict:
     tp_mode = str(params.get("tp_mode", "isothermal"))
@@ -168,16 +205,27 @@ def canonical_params(params: dict) -> dict:
     if planet not in planets.PLANETS and planet != "custom":
         raise ValueError(f"unknown planet {planet!r}")
     sysd = planets.system_fields(planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS))
-    quality = str(params.get("quality", "fast"))
-    if quality not in QUALITY:
-        raise ValueError(f"unknown quality {quality!r} (choose from {list(QUALITY)})")
+    nz = int(params.get("nz", NZ_DEFAULT))
+    if not NZ_RANGE[0] <= nz <= NZ_RANGE[1]:
+        raise ValueError(f"nz={nz} outside the validated layer range {NZ_RANGE} "
+                         "(chemistry layers, also used for the RT grid)")
+    nu_pts = int(params.get("nu_pts", NU_PTS_DEFAULT))
+    if not NU_PTS_RANGE[0] <= nu_pts <= NU_PTS_RANGE[1]:
+        raise ValueError(f"nu_pts={nu_pts} outside the validated range {NU_PTS_RANGE} "
+                         "(native wavenumber points; native R ~ nu_pts/2.7)")
+    yconv_cri = float(params.get("yconv_cri", YCONV_DEFAULT))
+    if not YCONV_RANGE[0] <= yconv_cri <= YCONV_RANGE[1]:
+        raise ValueError(f"yconv_cri={yconv_cri:g} outside the validated range "
+                         f"{YCONV_RANGE} (steady-state convergence tolerance)")
     sflux = str(params.get("sflux", sysd["sflux"]))
     if sflux not in planets.SFLUX_CHOICES:
         raise ValueError(f"unknown stellar UV spectrum {sflux!r} "
                          f"(choose from {list(planets.SFLUX_CHOICES)})")
     cp = {
         "planet": planet,
-        "quality": quality,
+        "nz": nz,
+        "nu_pts": nu_pts,
+        "yconv_cri": round(yconv_cri, 6),
         "rp_rjup": round(float(params.get("rp_rjup", sysd["rp_rjup"])), 4),
         "gs_cgs": round(float(params.get("gs_cgs", sysd["gs_cgs"])), 1),
         "rstar_rsun": round(float(params.get("rstar_rsun", sysd["rstar_rsun"])), 4),
@@ -225,8 +273,15 @@ def canonical_params(params: dict) -> dict:
         raise ValueError(f"broadening={cp['broadening']!r} (choose 'air' or 'h2he')")
     bad_mols = set(cp["extra_mols"]) - set(EXTRA_MOLECULES)
     if bad_mols:
-        raise ValueError(f"unknown extra molecules {sorted(bad_mols)} "
-                         f"(choose from {EXTRA_MOLECULES})")
+        raise ValueError(
+            f"unknown RT molecule(s) {sorted(bad_mols)}. This tool ships opacity "
+            f"for the always-on base set {MOLECULES} plus the opt-in extras "
+            f"{EXTRA_MOLECULES}. To add another molecule you must extend the "
+            "forward engine (a cross-repo change in the sibling vulcan-retrieval): "
+            "add an entry to retrieval_framework.forward.config.MOLECULES "
+            "(HITRAN db id, molmass, VULCAN species name), make sure the SNCHO "
+            "network actually solves that species, then list it here in "
+            "forward.EXTRA_MOLECULES.")
     if cp["fisher_params"] and not cp["use_photo"]:
         raise ValueError(
             "Fisher forecast requires photochemistry ON: the warm-started "
@@ -376,7 +431,12 @@ def run_model(params: dict, log=print) -> Path:
     log(f"[fwd] theta {dict(zip(theta_names, np.round(theta, 4)))}")
 
     profile = dict(config.WIDE)
-    profile.update(QUALITY[cp["quality"]])
+    # numerical resolution (was the fidelity tier): the ExoJax RT layer count is
+    # LOCKED equal to the chemistry layer count -- chemistry and RT share one grid.
+    profile["nz"] = cp["nz"]
+    profile["art_nlayer"] = cp["nz"]
+    profile["nu_pts"] = cp["nu_pts"]
+    profile["yconv_cri"] = cp["yconv_cri"]
     # exact-elemental abundance map (lnZ / dlnCO are true column elemental
     # directions; conserved totals rebuilt per theta -- see vulcan_chem docstring).
     # reanchor_atom_ini is moot in this mode but kept for a masks-mode fallback.

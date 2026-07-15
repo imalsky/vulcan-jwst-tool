@@ -667,3 +667,57 @@ Tool changes (forward `_VERSION` 6 -> 7, all cached spectra stale):
 
 Suite: test_forward_params.py rewritten (GCM modes raise; Guillot+conden
 accepted; moldiff gate; CONDEN_CFG wired; default tp_mode isothermal).
+
+## v17: 2026-07-15 GUI pass -- fidelity retired, absolute C/O, unit cleanup (forward v10)
+
+GUI/units editing pass (all within the tool; the sibling forward engine already
+accepts every key set, so no cross-repo change was needed).
+
+1. **Fidelity switch retired -> explicit resolution knobs.** The "fast"/"high"
+   `quality` tier is gone. `forward.canonical_params` now takes `nz`
+   (chemistry layers), `nu_pts` (native wavenumber points), and `yconv_cri`
+   (convergence tolerance) directly, validated against `NZ_RANGE` (60-150),
+   `NU_PTS_RANGE` (4000-8000), `YCONV_RANGE` (1e-3..1e-2); defaults reproduce
+   the old "fast" tier. **The ExoJax RT layer count `art_nlayer` is now LOCKED
+   equal to `nz`** (was fixed at 60) -- chemistry and RT share one grid, per
+   request. GUI: layers + convergence live in a VULCAN "Numerical grid"
+   expander, native sampling in the ExoJax opacity expander. `forward._VERSION`
+   -> 10 (cache key changed AND the RT grid differs, so pre-v10 spectra stale).
+
+2. **C/O reported as an absolute number ratio.** C/O = N_C/N_O is the standard
+   exoplanet quantity (not [C/H]/[O/H], not a log). The internal chemistry knob
+   stays delta-ln(C/O) at fixed O, but the GUI slider and the Fisher constraint
+   are now absolute C/O: `forward.CO_BASELINE = 10**(8.4434-8.7826) = 0.4579`
+   (Lodders 2019 solar, the network's abundance set -- Asplund 2009 solar 0.55
+   for reference), slider maps C/O -> dco = ln(C/O/CO_BASELINE), and
+   `fisher.display_sigma("dlnCO", s, co_eval=)` returns sigma_CO = C/O *
+   sigma_lnCO (co_eval = CO_BASELINE*exp(dco), from params_json). display_sigma
+   RAISES for dlnCO without co_eval (no silent wrong scale); transits_to_target
+   threads co_eval.
+
+3. **Log-unit correctness.** Display symbols now match their log base:
+   metallicity [M/H] and log Kzz are reported in dex (never "ln"-named while
+   dex-valued); `forward.PARAM_SYMBOLS` + `forward.param_axis` drive every
+   user-facing header ("[M/H] [dex]", "C/O", "T_iso [K]"). Input log sliders
+   were already log10-labeled.
+
+4. **RT molecule listing + loud add-path.** The opacity expander now lists the
+   always-on base set and the opt-in extras; an out-of-set molecule raises with
+   the how-to (extend `retrieval_framework.forward.config.MOLECULES` + the
+   SNCHO network + `forward.EXTRA_MOLECULES`).
+
+5. **Text edits.** Removed: the WASP-39b "validated system / SO2 story" note
+   (now a neutral physical description), "Element totals re-anchored...", the
+   "What this observation should achieve..." science-goal caption, and the
+   significance-level help tooltip. Condensation note shortened and clarified
+   (it runs as a forward model in the retrieval framework but is not reliably
+   differentiable anywhere, so it is disabled for gradient inference repo-wide
+   and cannot feed the Fisher forecast). The photochemistry-on requirement for
+   the Fisher forecast is now explained inline, and the disabled "compute
+   parameter constraints" checkbox shows why it is locked (photo off).
+
+Suite: fast numpy suite 103 -> 110 (+7: resolution-knob gating in
+test_forward_params.py, display_sigma unit conversions in test_fisher.py);
+test_closure.py drops the retired `quality="fast"` (defaults are the same
+tier). Verified end-to-end with Streamlit AppTest (detect + constrain renders,
+Rayleigh default ON, default C/O -> dco=0).

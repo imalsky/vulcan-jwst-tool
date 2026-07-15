@@ -39,7 +39,10 @@ import numpy as np
 
 _LN10 = np.log(10.0)
 
-# report-unit conversion: sigma in ln-units -> display units
+# report-unit conversion: sigma in internal ln-units -> display units. lnZ/lnKzz
+# are natural-log internally but REPORTED in dex (log10), so divide by ln10. C/O
+# is handled separately in display_sigma (its display factor is the atmosphere's
+# absolute C/O, not a constant -- see below).
 _TO_DISPLAY = {"lnZ": 1.0 / _LN10, "lnKzz": 1.0 / _LN10}
 
 # Relative eigenvalue threshold, applied to the WHITENED (unit-diagonal,
@@ -119,7 +122,19 @@ def _marg_sigmas(F: np.ndarray, n_report: int,
     return out
 
 
-def display_sigma(name: str, sigma: float) -> float:
+def display_sigma(name: str, sigma: float, co_eval: float | None = None) -> float:
+    """Internal-unit sigma -> display-unit sigma.
+
+    C/O (``dlnCO``) is reported as an ABSOLUTE number ratio: the internal sigma is
+    in delta-ln(C/O), so to first order sigma_CO = C/O * sigma_lnCO. ``co_eval``
+    is the atmosphere's C/O at the evaluation point (CO_BASELINE * exp(dco));
+    it is REQUIRED for dlnCO (a loud error beats a silently-wrong scale)."""
+    if name == "dlnCO":
+        if co_eval is None:
+            raise ValueError(
+                "display_sigma('dlnCO', ...) needs co_eval (the atmosphere's C/O) "
+                "to report an absolute C/O uncertainty: sigma_CO = C/O * sigma_lnCO.")
+        return sigma * co_eval
     return sigma * _TO_DISPLAY.get(name, 1.0)
 
 
@@ -214,7 +229,8 @@ def combined_forecast(results: list[dict], free_names: list[str],
 
 
 def transits_to_target(result: dict, free_names: list[str], gp: str,
-                       target_display: float, sigma_at_transits) -> dict:
+                       target_display: float, sigma_at_transits,
+                       co_eval: float | None = None) -> dict:
     """Smallest transit count at which the marginalized (display-unit) forecast on
     ``gp`` reaches ``target_display`` -- with the systematic floor respected.
 
@@ -231,7 +247,7 @@ def transits_to_target(result: dict, free_names: list[str], gp: str,
         r2 = dict(result)
         r2["sigma"] = sigma
         r2["cov"] = cov
-        return display_sigma(gp, mode_forecast(r2, free_names)[gp])
+        return display_sigma(gp, mode_forecast(r2, free_names)[gp], co_eval=co_eval)
 
     sig_inf = _sig_with(np.maximum(np.asarray(result["floor"]), 1e-30),
                         _detect.cov_at_transits(result, 1, floor_only=True))

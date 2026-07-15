@@ -51,9 +51,9 @@ actionable error messages, then launches the Streamlit GUI. Equivalent:
 `streamlit run src/jwst_tool/app.py` from the repository root.
 
 The first run of a new parameter set takes about 2 minutes at the default
-"fast" fidelity (about 3 minutes at "high"), plus 20 to 60 seconds per freed
-Fisher parameter. All results are disk-cached under `output/`; repeat runs
-are instant.
+resolution (100 layers, native R about 1500), rising to about 3 minutes at the
+150-layer / R about 3000 ceiling, plus 20 to 60 seconds per freed Fisher
+parameter. All results are disk-cached under `output/`; repeat runs are instant.
 
 ## Backend configuration
 
@@ -193,13 +193,15 @@ validated and cache-keyed:
 
 - **VULCAN chemistry inputs.** Temperature structure: isothermal (T_iso) or
   Guillot (2010) T-P — this profile is shared with the radiative transfer.
-  Composition: metallicity (exact elemental scaling about the 10x solar
-  baseline), delta ln(C/O). Vertical mixing: a constant Kzz. Photochemistry
-  on/off, photolysis zenith angle, diurnal averaging factor, molecular
-  diffusion on/off, stellar UV spectrum. Condensation is not offered (it is
-  not reliably differentiable in VULCAN, so it cannot enter the Fisher
-  forecast — see Known limitations); for aerosol opacity use the
-  differentiable ExoJAX cloud deck instead.
+  Composition: metallicity (reported in dex, [M/H]) and the C/O ratio (the
+  absolute carbon/oxygen number ratio N_C/N_O; baseline = Lodders 2019 solar
+  0.46, entered as a fixed-O carbon enrichment). Vertical mixing: a constant
+  Kzz. Photochemistry on/off, photolysis zenith angle, diurnal averaging
+  factor, molecular diffusion on/off, stellar UV spectrum, and the numerical
+  grid (chemistry layers -- shared with the RT grid -- and convergence
+  tolerance). Condensation is not offered (it is not reliably differentiable in
+  VULCAN, so it cannot enter the Fisher forecast -- see Known limitations); for
+  aerosol opacity use the differentiable ExoJAX cloud deck instead.
 - **ExoJAX radiative-transfer inputs.** The opacity molecule set, H2/He
   Rayleigh scattering, an optional power-law cloud deck, and the
   line-broadening perturber (terrestrial air or H2/He, cache-keyed; molecules
@@ -211,9 +213,13 @@ The WASP-39 b GCM T-P and GCM-scaled Kzz baseline modes were REMOVED
 (2026-07-13): every planet, including WASP-39 b, uses an isothermal
 structural baseline with the explicit isothermal / Guillot profile evaluated
 on-graph, and a constant Kzz. No GCM profile is ever silently substituted.
-Two fidelity tiers ("fast" and "high") trade grid resolution for runtime at
-identical physics. Out-of-window temperature profiles and non-converged
-chemistry solves raise errors; nothing is clipped or silently carried.
+Numerical resolution is set by explicit knobs (the old fast/high fidelity
+switch was retired): the number of vertical layers (chemistry and radiative
+transfer share one layer count, in the VULCAN section) and the convergence
+tolerance, plus the native spectral sampling in the ExoJAX section -- all trade
+grid resolution for runtime at identical physics. Out-of-window temperature
+profiles and non-converged chemistry solves raise errors; nothing is clipped or
+silently carried.
 
 ## Planets
 

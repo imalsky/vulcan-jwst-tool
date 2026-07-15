@@ -71,3 +71,32 @@ def test_isothermal_guillot_const_are_accepted():
         cp = forward.canonical_params(_p(tp_mode=tp, **extra))
         assert cp["tp_mode"] == tp
         assert cp["kzz_mode"] == "const"
+
+
+def test_resolution_defaults_replace_quality():
+    # the fidelity "quality" tier is gone; explicit nz/nu_pts/yconv default to
+    # the old "fast" tier, and the RT layer count is derived (not a cache field)
+    cp = forward.canonical_params(_p())
+    assert cp["nz"] == forward.NZ_DEFAULT == 100
+    assert cp["nu_pts"] == forward.NU_PTS_DEFAULT == 4000
+    assert cp["yconv_cri"] == forward.YCONV_DEFAULT == 1.0e-2
+    assert "quality" not in cp        # retired
+    assert "art_nlayer" not in cp     # locked to nz in run_model, not cache-keyed
+
+
+def test_resolution_ceiling_accepted():
+    cp = forward.canonical_params(_p(nz=150, nu_pts=8000, yconv_cri=1.0e-3))
+    assert (cp["nz"], cp["nu_pts"], cp["yconv_cri"]) == (150, 8000, 1.0e-3)
+
+
+def test_resolution_out_of_range_raises():
+    for bad in (dict(nz=40), dict(nz=200), dict(nu_pts=1000),
+                dict(nu_pts=20000), dict(yconv_cri=1.0), dict(yconv_cri=1.0e-6)):
+        with pytest.raises(ValueError):
+            forward.canonical_params(_p(**bad))
+
+
+def test_unknown_rt_molecule_points_to_engine():
+    # an out-of-set RT molecule is refused loudly with how to add it
+    with pytest.raises(ValueError, match="config.MOLECULES"):
+        forward.canonical_params(_p(extra_mols=["PH3"]))

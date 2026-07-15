@@ -201,3 +201,18 @@ def test_mode_forecast_matches_schur_complement():
     cov = np.linalg.inv(S)
     assert got["p0"] == pytest.approx(np.sqrt(cov[0, 0]), rel=1e-9)
     assert got["p1"] == pytest.approx(np.sqrt(cov[1, 1]), rel=1e-9)
+
+
+def test_display_sigma_units():
+    """Report-unit conventions: metallicity/Kzz in dex (log10), C/O as an
+    ABSOLUTE number ratio (sigma_CO = C/O * sigma_lnCO), temperature in K."""
+    # internal natural-log sigma of ln(10) -> exactly 1 dex
+    assert fisher.display_sigma("lnZ", np.log(10.0)) == pytest.approx(1.0)
+    assert fisher.display_sigma("lnKzz", np.log(10.0)) == pytest.approx(1.0)
+    # C/O: absolute ratio, scaled by the atmosphere's C/O
+    assert fisher.display_sigma("dlnCO", 0.1, co_eval=0.5) == pytest.approx(0.05)
+    # dlnCO WITHOUT co_eval is refused loudly -- never a silent wrong scale
+    with pytest.raises(ValueError, match="co_eval"):
+        fisher.display_sigma("dlnCO", 0.1)
+    # a plain temperature is unit-1 (K in, K out)
+    assert fisher.display_sigma("T_iso", 42.0) == 42.0

@@ -90,9 +90,9 @@ def test_jacobian_row_matches_finite_difference():
     it replaced the removed GCM-baseline dT shift 2026-07-13 (same
     single-scalar theta[3] slot, same FD design).
 
-    Agreement gate is deliberately loose: 'fast' quality certifies chemistry
-    at yconv 1e-2, and the FD endpoints re-converge cold while the jvp rides
-    the warm continuation -- shape correlation plus ~15% scale is what
+    Agreement gate is deliberately loose: the default resolution certifies
+    chemistry at yconv 1e-2, and the FD endpoints re-converge cold while the jvp
+    rides the warm continuation -- shape correlation plus ~15% scale is what
     steady-state uniqueness guarantees at this tolerance."""
     from jwst_tool import forward
 
@@ -100,7 +100,7 @@ def test_jacobian_row_matches_finite_difference():
         return None
 
     T0 = 1100.0
-    base = dict(planet="wasp39b", quality="fast", tp_mode="isothermal",
+    base = dict(planet="wasp39b", tp_mode="isothermal",
                 T_iso=T0, fisher_params=["T_iso"], use_photo=True)
     if forward.load_result(base) is None:
         forward.run_model(base, log=quiet)

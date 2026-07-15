@@ -4,7 +4,7 @@ Launch via the console script ``jwst-tool`` (installed with vulcan-jwst-tool), o
 directly:  streamlit run src/jwst_tool/app.py  (from the repo root).
 
 Pipeline per run: VULCAN-JAX photochemistry -> ExoJax transmission spectrum
-(local subprocess, disk-cached; ~1.5-2 min at the default "fast" fidelity) ->
+(local subprocess, disk-cached; ~1.5-2 min at the default 100-layer resolution) ->
 Pandeia ETC noise per instrument mode (subprocess in its own conda env, disk-cached) ->
 science-goal scoring per mode. Two goal types: DETECT a molecule (nested-model
 delta-chi2 significance) or CONSTRAIN a parameter (Fisher forecast from the
@@ -112,8 +112,8 @@ st.caption(f"**{ins.BACKEND_STATUS}** — every result records the exact "
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 
-# default target precision per parameter (display units: dex / K / ln-units)
-_TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.30,
+# default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
+_TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
                    "log_kappa": 0.30, "log_gamma": 0.30}
 
@@ -227,13 +227,31 @@ with st.sidebar:
                                                -1.0, 0.05, key=_k("lg"))
 
     with st.expander("Composition"):
-        st.caption("Element totals re-anchored from the 10× solar FastChem baseline.")
         met = st.select_slider(
             "Metallicity (× solar)",
             options=[1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0, 50.0, 100.0],
-            value=10.0, key=K("met"))
-        dco = st.slider("Δ ln(C/O) (carbon enrichment)", -0.5, 0.5, 0.0, 0.05,
-                        key=K("dco"))
+            value=10.0, key=K("met"),
+            help="Uniform metal enrichment; the constraint forecast reports it "
+                 "in dex ([M/H]).")
+        # Absolute C/O = N_C/N_O (the standard exoplanet-atmosphere quantity, a
+        # number ratio -- not a log, not [C/H]/[O/H]). The chemistry knob is
+        # fixed-O carbon enrichment with dco = ln(C/O / C/O_baseline) EXACTLY, so
+        # this slider maps straight onto it. Options span the validated dco range
+        # [-0.5, 0.5]; the baseline option is exactly CO_BASELINE -> dco = 0.
+        _co_opts = [0.30, 0.35, 0.40, forward.CO_BASELINE, 0.50, 0.55, 0.60,
+                    0.65, 0.70, 0.75]
+        co_ratio = st.select_slider(
+            "C/O (carbon/oxygen number ratio)", options=_co_opts,
+            value=forward.CO_BASELINE, key=K("co"),
+            format_func=lambda x: (f"{x:.2f} (solar)"
+                                   if abs(x - forward.CO_BASELINE) < 1e-6
+                                   else f"{x:.2f}"),
+            help="Total carbon/oxygen number ratio N_C/N_O. Baseline 0.46 = "
+                 "Lodders 2019 solar (this network's abundance set; the more "
+                 "commonly quoted Asplund 2009 solar is 0.55). Fixed-O carbon "
+                 "enrichment: O/H is held fixed, C/H scales. C/O = 1 (the "
+                 "H2O/CH4-vs-CO transition) is beyond the validated range.")
+        dco = float(np.log(co_ratio / forward.CO_BASELINE))
 
     with st.expander("Vertical mixing (K_zz)"):
         # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
@@ -247,9 +265,13 @@ with st.sidebar:
     with st.expander("Photochemistry & transport"):
         use_photo = st.checkbox(
             "Photochemistry (UV photolysis)", value=True, key=K("photo"),
-            help="Off = thermochemistry + transport only (no SO2 story, no "
-                 "photolysis products). The Fisher forecast requires ON — the "
-                 "warm-started jvp is only validated in the photo-on regime.")
+            help="Off = thermochemistry + transport only (no photolysis products "
+                 "such as SO2). Parameter constraints (the Fisher forecast) "
+                 "require this ON: the forecast uses a warm-started forward-mode "
+                 "derivative of the steady state, and that tangent only relaxes "
+                 "to the true sensitivity in the photo-on regime (validated jvp "
+                 "vs finite-difference <0.1% there; with photo off it is "
+                 "under-relaxed/unstable). Detection goals work either way.")
         sl_angle_deg = st.slider(
             "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
             disabled=not use_photo,
@@ -265,21 +287,32 @@ with st.sidebar:
             help="Species-dependent molecular diffusion competing with Kzz "
                  "(sets the homopause; matters high up).")
 
-    with st.expander("Condensation (not offered — why)"):
+    with st.expander("Numerical grid (layers & convergence)"):
+        st.caption("Grid resolution and solver tolerance — same physics, finer "
+                   "grids (this replaced the old fast/high fidelity switch).")
+        nz = st.slider(
+            "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
+            forward.NZ_DEFAULT, 10, key=K("nz"),
+            help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
+                 "grid is LOCKED to the same count. More layers resolve steep "
+                 "photochemical gradients. Roughly 1.5 min at 100, 3 min at 150.")
+        yconv_cri = st.select_slider(
+            "Convergence tolerance (yconv)", options=[1.0e-2, 1.0e-3],
+            value=forward.YCONV_DEFAULT, key=K("yconv"),
+            format_func={1.0e-2: "1e-2 (fast, VULCAN default)",
+                         1.0e-3: "1e-3 (strict)"}.get,
+            help="Steady-state convergence criterion. 1e-2 is the VULCAN master "
+                 "default; use 1e-3, with more layers, for final mid-IR numbers.")
+
+    with st.expander("Condensation (not offered)"):
         st.caption(
-            "Condensation is intentionally not available. VULCAN reaches a "
-            "condensing steady state only with a condensation window plus a "
-            "whole-column fix-species pin that freezes the condensed reservoir "
-            "(S₈ / S₈(s) on this network) at a transient state. That pinned "
-            "state depends on the exact accepted-step sequence, so it is not "
-            "reliably differentiable — forward-mode and finite-difference "
-            "derivatives disagree by ~90% — and the active-condensation layers "
-            "and cold-trap level switch discretely with temperature, exactly "
-            "the smooth derivatives this tool's Fisher forecast needs. An "
-            "open-system \"smooth rainout\" replacement built to fix that was "
-            "measured NO-GO (it could not reach a strict flux-balanced steady "
-            "state within its gate). For aerosol / haze opacity, use the "
-            "differentiable ExoJAX **power-law cloud** below instead.")
+            "Condensation through VULCAN is not offered in this tool. It runs as "
+            "a forward model in the sibling retrieval framework, but a condensing "
+            "column's steady state is not reliably differentiable (forward-mode "
+            "vs finite-difference derivatives disagree by ~90%), so gradient-based "
+            "inference through it is disabled everywhere — it cannot enter this "
+            "tool's Fisher forecast. For aerosol / haze opacity, use the "
+            "differentiable ExoJAX **power-law cloud** below.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -288,13 +321,19 @@ with st.sidebar:
                "line broadening.")
 
     with st.expander("Opacity, scattering & clouds"):
+        st.caption(
+            "RT opacity always includes the base set "
+            f"**{' · '.join(forward.MOLECULES)}** (solved on every run). The "
+            f"opt-in extras are **{' · '.join(forward.EXTRA_MOLECULES)}**. A "
+            "molecule outside these sets is refused with instructions for adding "
+            "it to the forward engine.")
         extra_mols = st.multiselect(
             "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
             key=K("xmols"),
-            help="Added to the base H2O/CO2/CO/CH4/SO2 opacity set (the "
-                 "chemistry always solves them). C2H2/HCN matter at high C/O, "
-                 "H2S at 3.8–4.6 µm, NH3 on cool (≲900 K) planets. First use "
-                 "downloads the HITRAN lines (~10–15 s each per run).")
+            help="Added to the base opacity set (the chemistry always solves "
+                 "them). C2H2/HCN matter at high C/O, H2S at 3.8–4.6 µm, NH3 on "
+                 "cool (≲900 K) planets. First use downloads the HITRAN lines "
+                 "(~10–15 s each per run).")
         use_rayleigh = st.checkbox(
             "H₂/He Rayleigh scattering", value=True, key=K("rayl"),
             help="Zero-free-parameter known physics; matters shortward of "
@@ -325,6 +364,15 @@ with st.sidebar:
                  "'h2he' = planetary H₂/He blend — first use downloads "
                  "separate line-list caches, and molecules with no H₂/He "
                  "coverage raise loudly instead of silently falling back.")
+        nu_pts = st.select_slider(
+            "Native spectral sampling (nu_pts)", options=[4000, 6000, 8000],
+            value=forward.NU_PTS_DEFAULT, key=K("nupts"),
+            format_func={4000: "4000 (native R≈1500)",
+                         6000: "6000 (native R≈2200)",
+                         8000: "8000 (native R≈3000)"}.get,
+            help="Wavenumber grid points across 1–15 µm, before binning to your "
+                 "chosen display R below. Higher sampling sharpens narrow "
+                 "features (the weak mid-IR bands) at more runtime.")
 
     avail_free = forward.CHEM_PARAM_NAMES + forward.TP_PARAM_NAMES[tp_mode]
     mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
@@ -332,8 +380,6 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### Science goal")
-    st.caption("What this observation should achieve, and the forecast "
-               "settings. These do NOT change the underlying spectrum.")
 
     with st.expander("Goal", expanded=True):
         goal = st.radio(
@@ -356,39 +402,24 @@ with st.sidebar:
                            "which needs photochemistry ON (VULCAN section).")
             goal_param = st.selectbox(
                 "Constrain parameter", avail_free, key=K(f"gp_{tp_mode}"),
-                format_func=lambda n: f"{forward.PARAM_LABELS[n]} ({n})",
+                format_func=lambda n: forward.PARAM_LABELS[n],
                 help="Constraint is marginalized over the other free parameters "
                      "(Fisher forecast section) and a reference-radius nuisance.")
             unit = forward.PARAM_UNITS[goal_param]
+            # label uses the unit when there is one (dex / K), else the bare
+            # symbol -- C/O is a dimensionless number ratio
+            _tgt_lbl = (f"Target precision (±{unit})" if unit else
+                        f"Target precision (±{forward.PARAM_SYMBOLS[goal_param]})")
             if unit == "K":
-                target_prec = st.number_input(f"Target precision (±{unit})",
-                                              5.0, 500.0,
+                target_prec = st.number_input(_tgt_lbl, 5.0, 500.0,
                                               _TARGET_DEFAULT[goal_param], 5.0,
                                               key=K(f"tgt_{goal_param}"))
             else:
-                target_prec = st.number_input(f"Target precision (±{unit})",
-                                              0.01, 3.0,
+                target_prec = st.number_input(_tgt_lbl, 0.01, 3.0,
                                               _TARGET_DEFAULT[goal_param], 0.01,
                                               key=K(f"tgt_{goal_param}"))
         target_sig = st.number_input(
-            "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"),
-            help="3σ is a common planning threshold, 5σ a firmer target; these "
-                 "are Gaussian-equivalent √Δχ² labels, not Bayesian evidence. "
-                 "Detection verdicts require this significance; a precision "
-                 "target must be met AT it (so the 1σ error must be "
-                 "precision/level); Fisher intervals are quoted at it.")
-
-    with st.expander("Model fidelity"):
-        quality = st.radio(
-            "Fidelity", ["fast", "high"], index=0, key=K("quality"),
-            format_func={"fast": "Fast (default)", "high": "High"}.get,
-            captions=["100 chemistry layers (60 RT layers), native R≈1500 — "
-                      "≈1.5 min per new setup",
-                      "150 chemistry layers (60 RT layers), native R≈3000 — "
-                      "≈3 min per new setup"],
-            help="Same physics, coarser grids. Fast matches High on the headline "
-                 "numbers (G395H SO2 3.6σ vs 3.8σ) but mutes the weak MIRI "
-                 "mid-IR SO2 bands — switch to High for final numbers.")
+            "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"))
 
     with st.expander("Fisher forecast"):
         st.caption(
@@ -411,6 +442,11 @@ with st.sidebar:
                 key=K("dofish"), disabled=not use_photo,
                 help="One warm-started forward-mode jvp per parameter "
                      "(~20–60 s each). Needs photochemistry ON.")
+            if not use_photo:
+                st.caption("Locked because **photochemistry is OFF** (VULCAN "
+                           "chemistry section). The constraint uses a forward-mode "
+                           "derivative that is only valid in the photo-on regime — "
+                           "turn photochemistry on to unlock it.")
             fisher_params = st.multiselect(
                 "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
                 default=["lnZ", "dlnCO", "lnKzz"]) if (do_fisher and use_photo) else []
@@ -529,7 +565,7 @@ with st.sidebar:
     st.button("Reset all settings", on_click=_reset_all,
               help="Back to the defaults (also clears the current results).")
 
-params = dict(planet=planet_key, quality=quality,
+params = dict(planet=planet_key, nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               rp_rjup=rp, gs_cgs=g_ms2 * 100.0, rstar_rsun=rstar,
               orbit_au=orbit_au, sflux=sflux,
               met_x_solar=met, dco=dco,
@@ -552,22 +588,27 @@ except ValueError as e:          # e.g. stale widget combo mid-rerun
     cached, params_error = False, str(e)
 
 n_jvp = len(fisher_params)
-base_min = 1.8 if quality == "fast" else 2.8
-if met != 10.0 or dco != 0.0:
-    base_min += 0.6 if quality == "fast" else 0.9
+# rough runtime hint keyed off the resolution knobs (old fast ~1.8, high ~2.8 min)
+base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
+if yconv_cri <= 1.5e-3:              # strict convergence costs extra iterations
+    base_min += 0.5
+if met != 10.0 or dco != 0.0:        # composition step -> two-stage chemistry
+    base_min += 0.6 * (nz / 100.0)
 base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
 # cool columns (<~900 K) converge much more slowly (WASP-107b: ~5 min measured)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
           "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0)}.get(tp_mode, 1100.0)
 if t_char < 900.0:
     base_min += 2.5
-per_jvp = 0.5 if quality == "fast" else 0.8
+per_jvp = 0.8 if (nz >= 140 or yconv_cri <= 1.5e-3) else 0.5
+native_r = int(round(nu_pts * 2950 / 8000 / 50) * 50)
+grid_lbl = f"{nz}-layer, native R≈{native_r}"
 est = "instant (cached)" if cached else (
-    f"~{base_min + per_jvp * n_jvp:.0f} min (local {quality}-fidelity run"
+    f"~{base_min + per_jvp * n_jvp:.0f} min (local {grid_lbl} run"
     + (f" + {n_jvp} Jacobian directions" if n_jvp else "") + ")")
 col_btn, col_note = st.columns([1, 3])
 run_clicked = col_btn.button("Run", type="primary", width="stretch")
-col_note.caption(f"**{planet_label}**, {quality} fidelity — model spectrum: "
+col_note.caption(f"**{planet_label}**, {grid_lbl} — model spectrum: "
                  f"**{est}**. ETC noise is cached per star.")
 
 
@@ -691,6 +732,10 @@ out = st.session_state["out"]
 meta = st.session_state["out_meta"]
 model, results = out["model"], out["results"]
 goal_r = meta.get("goal", "detect")
+# the atmosphere's absolute C/O, for the dlnCO -> absolute-C/O display conversion
+# (sigma_CO = C/O * sigma_lnCO); params_json carries this run's dco
+_cpj = json.loads(str(model["params_json"]))
+co_eval = float(forward.CO_BASELINE * np.exp(float(_cpj.get("dco", 0.0))))
 
 for k, err in out["failed"]:
     first = str(err).strip().splitlines()[-1] if "Traceback" in str(err) else \
@@ -749,6 +794,7 @@ if goal_r == "detect":
 else:
     gp = meta["goal_param"]
     unit = forward.PARAM_UNITS[gp]
+    usp = (" " + unit) if unit else ""       # " dex"/" K", or "" for C/O (ratio)
     glabel = forward.PARAM_LABELS[gp]
     target = float(meta["target_prec"])
     tsig = float(meta.get("target_sig") or 3.0)
@@ -759,11 +805,12 @@ else:
     usable_jac = [r for r in with_jac if not r["saturated"]]
     per_mode = {}          # tsig-sigma half-widths, display units
     for r in usable_jac:
-        s = fisher_mod.display_sigma(gp, fisher_mod.mode_forecast(r, fisher_names)[gp])
+        s = fisher_mod.display_sigma(gp, fisher_mod.mode_forecast(r, fisher_names)[gp],
+                                     co_eval=co_eval)
         if np.isfinite(s):
             per_mode[r["mode_key"]] = tsig * s
     comb = (tsig * fisher_mod.display_sigma(
-        gp, fisher_mod.combined_forecast(usable_jac, fisher_names)[gp])
+        gp, fisher_mod.combined_forecast(usable_jac, fisher_names)[gp], co_eval=co_eval)
         if len(usable_jac) >= 2 else np.inf)
     if not per_mode:
         st.error(f"No selected mode constrains {glabel} — its Jacobian has no "
@@ -774,19 +821,20 @@ else:
     ntr = meta["n_transits"]
     verdict = (f"**Best mode for constraining {glabel} on "
                f"{meta.get('planet', '?')}: {ins.MODES[bk]['label']}** — "
-               f"±{bs:.3g} {unit} at {tsig:g}σ in {ntr} transit"
-               f"{'s' if ntr > 1 else ''} (target ±{target:g} {unit} "
+               f"±{bs:.3g}{usp} at {tsig:g}σ in {ntr} transit"
+               f"{'s' if ntr > 1 else ''} (target ±{target:g}{usp} "
                f"at {tsig:g}σ).")
     if bs <= target:
         st.success(verdict + "  Meets the target.")
     elif np.isfinite(comb) and comb <= target:
         st.warning(verdict + f"  No single mode reaches the target, but the "
                    f"combination of all selected modes does "
-                   f"(±{comb:.3g} {unit} at {tsig:g}σ).")
+                   f"(±{comb:.3g}{usp} at {tsig:g}σ).")
     else:
         best_r = next(r for r in usable_jac if r["mode_key"] == bk)
         tt = fisher_mod.transits_to_target(best_r, fisher_names, gp,
-                                           target / tsig, detect.sigma_at_transits)
+                                           target / tsig, detect.sigma_at_transits,
+                                           co_eval=co_eval)
         if tt["reachable"]:
             st.error(verdict + f"  Missing the target — {tt['n']} transits of "
                      f"{ins.MODES[bk]['label']} would reach it (floor-aware "
@@ -794,7 +842,7 @@ else:
         else:
             st.error(verdict + f"  Missing the target — and NO number of transits "
                      f"reaches it: the systematic floor caps this mode at "
-                     f"±{tsig * tt['sig_inf']:.3g} {unit} at {tsig:g}σ. Lower the "
+                     f"±{tsig * tt['sig_inf']:.3g}{usp} at {tsig:g}σ. Lower the "
                      "floor, combine modes, or relax the target.")
 
 # --- spectrum figure -------------------------------------------------------
@@ -864,7 +912,7 @@ with col1:
             names.append("ALL SELECTED (combined)")
             vals.append(comb)
             cols.append("#555555")
-        xrefs, xlabel = (), (f"expected ±{gp} at {tsig:g}σ [{unit}] "
+        xrefs, xlabel = (), (f"expected ±{forward.param_axis(gp)} at {tsig:g}σ "
                              f"({meta['n_transits']} transit"
                              f"{'s' if meta['n_transits'] > 1 else ''}; "
                              "lower is better)")
@@ -895,7 +943,7 @@ with col1:
 
 with col2:
     st.subheader("T-P profile")
-    cpj = json.loads(str(model["params_json"]))
+    cpj = _cpj
     fig3, ax3 = plt.subplots(figsize=(3.4, 3.6), dpi=150)
     ax3.plot(model["T"], model["p_bar"], color="#2a78d6", lw=1.6)
     for tlim in (320.0, 2980.0):
@@ -959,13 +1007,14 @@ for r in sorted(results, key=key_order):
             row["transits → target"] = "—"
     else:
         s = per_mode.get(r["mode_key"], np.inf)
-        row[f"±{gp} at {tsig:g}σ [{unit}]"] = (f"{s:.3g}" if np.isfinite(s)
-                                               else ("saturated" if r["saturated"]
-                                                     else "unconstrained"))
+        row[f"±{forward.param_axis(gp)} at {tsig:g}σ"] = (
+            f"{s:.3g}" if np.isfinite(s)
+            else ("saturated" if r["saturated"] else "unconstrained"))
         if np.isfinite(s) and not r["saturated"]:
             _tt = fisher_mod.transits_to_target(r, fisher_names, gp,
                                                 target / tsig,
-                                                detect.sigma_at_transits)
+                                                detect.sigma_at_transits,
+                                                co_eval=co_eval)
             row["transits → target"] = (str(_tt["n"]) if _tt["reachable"] else
                                         f"never (floor caps at ±{tsig * _tt['sig_inf']:.3g})")
         else:
@@ -1019,7 +1068,7 @@ if fisher_names and "jac" in model:
     with_jac = [r for r in results if r.get("jac_bins") is not None]
 
     def _cell(n, s):
-        v = tsig_f * fisher_mod.display_sigma(n, s)
+        v = tsig_f * fisher_mod.display_sigma(n, s, co_eval=co_eval)
         return "unconstrained" if not np.isfinite(v) or v > 1e4 else f"{v:.3g}"
 
     frows = []
@@ -1029,18 +1078,18 @@ if fisher_names and "jac" in model:
             # shown for completeness, but a saturated mode contributes no usable
             # data -- same exclusion policy as the verdict + combined row
             frows.append({"mode": r["label"] + "  [saturated — excluded]",
-                          **{f"±{n} at {tsig_f:g}σ [{forward.PARAM_UNITS[n]}]": "—"
+                          **{f"±{forward.param_axis(n)} at {tsig_f:g}σ": "—"
                              for n in fisher_names}})
             continue
         sig = fisher_mod.mode_forecast(r, fisher_names)
         frows.append({"mode": r["label"],
-                      **{f"±{n} at {tsig_f:g}σ [{forward.PARAM_UNITS[n]}]":
+                      **{f"±{forward.param_axis(n)} at {tsig_f:g}σ":
                          _cell(n, sig[n]) for n in fisher_names}})
     fdiag = {}
     if len(usable_f) >= 2:
         sig = fisher_mod.combined_forecast(usable_f, fisher_names, diag=fdiag)
         frows.append({"mode": "ALL SELECTED (combined, non-saturated)",
-                      **{f"±{n} at {tsig_f:g}σ [{forward.PARAM_UNITS[n]}]":
+                      **{f"±{forward.param_axis(n)} at {tsig_f:g}σ":
                          _cell(n, sig[n]) for n in fisher_names}})
     st.dataframe(frows, width="stretch", hide_index=True)
     if fdiag:
@@ -1070,8 +1119,9 @@ if fisher_names and "jac" in model:
             "honest.\n"
             "- **No priors** are applied: a parameter with no spectral response "
             "in a mode's band reads *unconstrained* rather than a fake number.\n"
-            "- lnZ and lnKzz are reported in **dex** (factors of 10); dlnCO in "
-            "natural-log units (0.1 ≈ 10%).\n"
+            "- Metallicity **[M/H]** and vertical mixing **log Kzz** are reported "
+            "in **dex** (factors of 10); **C/O** is the absolute carbon/oxygen "
+            "number ratio N_C/N_O (baseline = Lodders 2019 solar ≈ 0.46).\n"
             "- σ is evaluated at the transit count you set. Only the "
             "photon/detector term averages down with more transits; the "
             "systematic floor does not — use the 'transits → target' column, "
