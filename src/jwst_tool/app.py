@@ -161,8 +161,10 @@ with st.sidebar:
         teff = st.number_input("Star T_eff (K)", 3000.0, 7000.0,
                                pdef["star"]["teff"], 50.0, key=_k("teff"),
                                help="PHOENIX SED for the ETC (with log g, [Fe/H]).")
-        logg = st.number_input("Star log g", 3.5, 5.5, pdef["star"]["log_g"], 0.1,
-                               key=_k("logg"))
+        logg = st.number_input("Star log g (cgs, log10 cm/s^2)", 3.5, 5.5,
+                               pdef["star"]["log_g"], 0.1, key=_k("logg"),
+                               help="Stellar surface gravity as log10(g) in cgs "
+                                    "(g in cm/s^2); feeds the PHOENIX SED for the ETC.")
         feh = st.number_input("Star [Fe/H]", -2.0, 0.5,
                               pdef["star"]["metallicity"], 0.1, key=_k("feh"))
         ks_mag = st.number_input("Ks mag (2MASS)", 4.0, 16.0,
@@ -306,13 +308,9 @@ with st.sidebar:
 
     with st.expander("Condensation (not offered)"):
         st.caption(
-            "Condensation through VULCAN is not offered in this tool. It runs as "
-            "a forward model in the sibling retrieval framework, but a condensing "
-            "column's steady state is not reliably differentiable (forward-mode "
-            "vs finite-difference derivatives disagree by ~90%), so gradient-based "
-            "inference through it is disabled everywhere — it cannot enter this "
-            "tool's Fisher forecast. For aerosol / haze opacity, use the "
-            "differentiable ExoJAX **power-law cloud** below.")
+            "Condensation through VULCAN is not offered in this tool: a "
+            "condensing column's steady state is not reliably differentiable, "
+            "so it cannot enter the Fisher forecast.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -324,9 +322,8 @@ with st.sidebar:
         st.caption(
             "RT opacity always includes the base set "
             f"**{' · '.join(forward.MOLECULES)}** (solved on every run). The "
-            f"opt-in extras are **{' · '.join(forward.EXTRA_MOLECULES)}**. A "
-            "molecule outside these sets is refused with instructions for adding "
-            "it to the forward engine.")
+            f"opt-in extras are **{' · '.join(forward.EXTRA_MOLECULES)}**. "
+            "Adding more is currently in development.")
         extra_mols = st.multiselect(
             "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
             key=K("xmols"),
