@@ -21,7 +21,9 @@ conda create -n pandeia_2026 python=3.11
 conda run -n pandeia_2026 pip install pandeia.engine==2026.2
 ```
 
-3. Tell the tool where to keep data and caches:
+3. Tell the tool where to keep data and caches. Add these lines to your
+shell profile (`~/.zshrc` on macOS, `~/.bashrc` on Linux) so they persist
+across sessions, then open a new terminal or `source` the file:
 
 ```
 export VULCAN_PROJECT_ROOT="$HOME/vulcan"
