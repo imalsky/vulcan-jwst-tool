@@ -881,3 +881,15 @@ changed). Adjoint results cache separately (`output/adjoint_cache`,
   threading and do not match the new trace, so the first cache-armed run
   pays the compile once and persists it). Also saves the ~40 s runner
   warm-up on repeat forward runs.
+
+## v20: 2026-07-16 README rewrite + TestPyPI 0.10.0 release chain
+
+README rewritten to 110 lines of current usage in the paper's plain
+narrative voice (history stays here, rules stay in CLAUDE.md), with
+TestPyPI as the default install path and editable checkouts demoted to a
+development note. Released vulcan-jax 0.3.0, vulcan-retrieval 0.10.0, and
+vulcan-jwst-tool 0.10.0 to TestPyPI (the previously recorded 0.9.0/0.2.0
+uploads had never actually landed; the index was at 0.8.2/0.1.18).
+Dependency floors now encode the real API needs: this tool requires
+vulcan-retrieval>=0.10.0 (run_diag return_atm) and vulcan-jax>=0.3.0
+(steady_state_grad, load_config).

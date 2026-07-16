@@ -33,7 +33,8 @@ dependencies = [
     "numpy>=1.26",
     "matplotlib",
     "jax>=0.6.2",
-    "vulcan-retrieval>=0.9.0",  # 0.9.0 tracks the vulcan-jax 0.2.0 YAML-config / Mp+Rp gravity migration (vulcan-jax>=0.2.0)
+    "vulcan-retrieval>=0.10.0",  # 0.10.0 adds run_diag(return_atm=True), which adjoint_diag requires
+    "vulcan-jax>=0.3.0",  # direct imports: load_config (CO_BASELINE check) + steady_state_grad (adjoint_diag)
 ]
 
 [project.urls]
