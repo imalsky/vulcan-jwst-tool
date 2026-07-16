@@ -124,10 +124,10 @@ one it used everywhere a number appears:
   workflow). Slower than automatic differentiation but transparent and
   self-verifying; cross-validated against the AD rows to 0.07-1.6%.
 - Every Jacobian row can optionally use the ~1.7-4x-faster **forward-mode
-  AD** path (warm-started jvp, photochemistry on) -- a per-run menu choice,
-  with the method recorded per row and physically invalid combinations
-  refused loudly (AD through condensation; the C/O direction on
-  carbon-rich baselines).
+  AD** path (warm-started jvp, photochemistry on). The method is a per-run
+  menu choice, recorded per row, and physically invalid combinations are
+  refused loudly, such as AD through condensation or the C/O direction on
+  carbon-rich baselines.
 - **Reverse-mode AD (adjoint) diagnostics** answer the high-dimensional
   questions finite differences cannot afford: the sensitivity of a
   molecule's abundance to every reaction rate and every layer's temperature
@@ -144,8 +144,8 @@ The forecasts are **deliberately optimistic** in three ways:
 
 It is a **planning tool, not an atmospheric retrieval**, and it does not model
 time-correlated instrument systematics such as visit-long trends, 1/f residuals,
-detrending covariance, or stellar heterogeneity. Condensation (S8 rainout) is
-offered for detection goals only -- it can never be combined with a
+detrending covariance, or stellar heterogeneity. Condensation (S8 rainout)
+is offered for detection goals only. It can never be combined with a
 derivative-based forecast, under either differentiation method.
             """
         )
@@ -241,8 +241,6 @@ def K(name: str) -> str:
 
 with st.sidebar:
     st.markdown("### Planet & star")
-    st.caption("The target system (physical identity + host star). Defines the "
-               "object; the atmosphere model is set in the sections below.")
     planet_key = st.selectbox(
         "Planet", list(planets.PLANETS) + ["custom"], key=K("planet"),
         format_func=lambda k: planets.PLANETS[k]["label"] if k in planets.PLANETS
@@ -308,30 +306,25 @@ with st.sidebar:
         "How derivatives are computed", ["fd", "ad"], index=0, key=K("jacm"),
         format_func={"fd": "Certified finite differences (default)",
                      "ad": "Automatic differentiation (forward-mode)"}.get,
-        help="Used wherever the tool needs d(spectrum)/d(parameter): the "
-             "Fisher constraint forecast and its projected detection score. "
-             "FD: central differences of independently re-converged, "
-             "convergence-certified solves, evaluated at two step sizes "
-             "that must agree -- transparent, self-verifying, and valid "
-             "everywhere (any composition, photochemistry on or off, and "
-             "the only method compatible with condensation-on detection "
-             "runs). AD: one warm-started forward-mode derivative through "
-             "the solver per row, ~1.7-4x faster; requires photochemistry ON "
-             "(locked below while selected), disables condensation, and "
-             "its C/O row is undefined on carbon-rich baselines (the run "
-             "refuses loudly rather than reporting it). Cross-validated "
-             "against FD to 0.07-1.6% per row on the WASP-39b defaults; "
-             "the method used is recorded per Jacobian row with the "
-             "results. Reverse-mode AD (the adjoint) separately powers the "
-             "post-run diagnostics panel regardless of this choice.")
-    if jac_method == "ad":
-        st.caption(
-            "AD selected: photochemistry is locked ON (the validated "
-            "tangent regime) and condensation is unavailable. The "
-            "metallicity row is the fixed-structural-grid derivative "
-            "(1.6% from FD on the defaults, the hydrostatic-grid rebuild "
-            "term); every row is labeled with its method in the results.")
-
+        help="This choice applies wherever the tool needs the derivative "
+             "of the spectrum with respect to a parameter, which means the "
+             "Fisher constraint forecast and its projected detection "
+             "score. Finite differences re-run the certified model at "
+             "shifted parameter values and difference the results, "
+             "checking two step sizes against each other. They are "
+             "transparent and self-verifying, and they work everywhere, "
+             "at any composition, with photochemistry on or off. They are "
+             "also the only method compatible with condensation. "
+             "Automatic differentiation carries one exact derivative "
+             "through the solver per row and is about 1.7 to 4 times "
+             "faster. It requires photochemistry, which is locked on "
+             "below while AD is selected. It disables condensation, and "
+             "it refuses the C/O row on carbon-rich baselines rather "
+             "than reporting a bad number. The two methods agree to "
+             "0.07-1.6% per row on the WASP-39b defaults, and every "
+             "result row is labeled with the method that produced it. "
+             "The post-run adjoint diagnostics panel uses reverse-mode "
+             "AD regardless of this choice.")
     st.markdown("### VULCAN chemistry")
     st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward model "
                "(composition + transport + photochemistry → steady-state "
@@ -399,7 +392,7 @@ with st.sidebar:
                  "Any value works, including carbon-rich (> 1); near the "
                  "C/O = 1 transition the chemistry stiffens and solves get "
                  "slower, and derivatives there are physically "
-                 "ill-conditioned -- constrain C/O per side, not across it.")
+                 "ill-conditioned. Constrain C/O per side, not across it.")
 
     with st.expander("Vertical mixing (K_zz)"):
         # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
@@ -470,7 +463,7 @@ with st.sidebar:
             help="Steady-state convergence criterion. 1e-2 is the VULCAN master "
                  "default; 1e-3 (with more layers) is the validated strict tier "
                  "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
-                 "runtime -- a solve that cannot reach the tolerance errors "
+                 "runtime. A solve that cannot reach the tolerance errors "
                  "loudly instead of returning an unconverged spectrum.")
 
     with st.expander("Condensation (detection-only)"):
@@ -480,29 +473,32 @@ with st.sidebar:
         use_condense = st.checkbox(
             "S8 condensation (sulfur rainout)", value=False, key=K("conden"),
             disabled=not _conden_allowed,
-            help="The certified VULCAN recipe: a condensation window, then "
-                 "S8 + condensed S8 are pinned whole-column and the rest of "
-                 "the chemistry converges (longdy-gated as usual). "
-                 "DETECTION-ONLY: enabling this disables the constraint "
-                 "goal and the Fisher forecast below -- the pinned "
-                 "reservoir makes the state non-reproducible, so no "
-                 "differentiation method is valid through it. Caveat: on a "
-                 "column too hot to condense, the pin still freezes S8 at "
-                 "its end-of-window value (it does not reduce to "
-                 "condensation-off) -- enable this only for columns cool "
-                 "enough for sulfur to genuinely condense.")
+            help="Sulfur rainout with the standard VULCAN treatment. The "
+                 "solver runs a condensation window, pins S8 and its "
+                 "condensate across the whole column, and then converges "
+                 "the remaining chemistry under the usual certification "
+                 "gate. This is a forward-model option for detection "
+                 "goals only. It cannot support parameter constraints, "
+                 "because the pinned reservoir depends on the solver's "
+                 "step history rather than on the input parameters alone, "
+                 "so no derivative through it is trustworthy. One warning "
+                 "applies. If the column is too hot to condense, the pin "
+                 "still freezes sulfur at an arbitrary early value instead "
+                 "of reducing to the no-condensation result. Use this only "
+                 "for planets cool enough aloft for sulfur to condense.")
         if not _conden_allowed:
             st.caption(
-                "Requires photochemistry ON (a cold no-photo condensing "
-                "column has no certifiable steady state), molecular "
-                "diffusion ON (the growth term is the molecular-diffusion "
-                "coefficient), and the finite-difference method (with AD "
-                "selected you have asked for derivatives, which "
-                "condensation cannot provide).")
+                "Condensation needs photochemistry and molecular diffusion "
+                "switched on, and the finite-difference method selected at "
+                "the top. A cold column without photochemistry never "
+                "reaches a certifiable steady state. The condensation "
+                "growth rate comes from the molecular-diffusion "
+                "coefficient. Selecting AD means you want derivatives, "
+                "which condensation cannot provide.")
         use_condense = bool(use_condense and _conden_allowed)
         st.caption(
-            "For aerosol opacity in a constraint forecast, use the "
-            "differentiable ExoJAX cloud deck below instead.")
+            "If you need aerosol opacity in a constraint forecast, use the "
+            "ExoJAX cloud deck in the radiative-transfer section instead.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -599,11 +595,13 @@ with st.sidebar:
             disabled=use_condense,
             format_func={"detect": "Detect a molecule",
                          "constrain": "Constrain a parameter"}.get,
-            help="Detect: significance of molecule X being present (Δχ² between "
-                 "the spectrum with and without it). Constrain: how tightly a "
-                 "parameter (metallicity, C/O, Kzz, …) could be measured, a "
-                 "Fisher forecast whose Jacobian uses the differentiation "
-                 "method selected above (slow: minutes per freed parameter).")
+            help="Detecting a molecule scores the significance of its "
+                 "presence, the Δχ² between the spectrum with and without "
+                 "it. Constraining a parameter forecasts how tightly "
+                 "metallicity, C/O, Kzz, or a temperature could be "
+                 "measured, via a Fisher forecast whose Jacobian uses the "
+                 "differentiation method selected above. Constraints cost "
+                 "minutes per freed parameter.")
         if use_condense:
             goal = "detect"
             st.caption(
@@ -649,15 +647,17 @@ with st.sidebar:
             fisher_params = []
         else:
             st.caption(
-                "Expected 1σ constraints on atmosphere parameters from this "
-                "observation, a linearized retrieval (Cramér-Rao bound) "
-                "built from d(spectrum)/d(parameter) using the "
-                "**differentiation method selected at the top** of the "
-                "sidebar. FD (default): a composition row re-solves the "
-                "chemistry 4 times from scratch (~6-8 min), a Kzz/T row "
-                "adds 4 cold solves (~3-5 min). AD: one warm-started "
-                "forward-mode derivative per row (~1-2 min each). No MCMC, "
-                "no priors.")
+                "Expected 1σ constraints on atmosphere parameters from "
+                "this observation, a linearized retrieval (Cramér-Rao "
+                "bound) built from the spectrum's parameter derivatives "
+                "using the **differentiation method selected at the top** "
+                "of the sidebar. With finite differences, a composition "
+                "row re-solves the chemistry four times from scratch and "
+                "takes about 6 to 8 minutes, and a Kzz or temperature row "
+                "adds four cold solves at 3 to 5 minutes each run. With "
+                "AD, each row is one warm-started derivative and takes "
+                "about 1 to 2 minutes. There is no MCMC and there are no "
+                "priors.")
             if goal == "constrain":
                 fisher_extra = st.multiselect(
                     "Jointly free parameters", avail_free,
@@ -1482,7 +1482,7 @@ if fisher_names and "jac" in model:
             f"{forward.FD_CONSISTENCY_TOL}); **AD** rows are warm-started "
             "forward-mode derivatives through the solver (photo-on regime, "
             "cross-validated against FD to 0.07-1.6% per row on W39b "
-            "defaults -- the 1.6% is the metallicity row's stated "
+            "defaults, where the 1.6% is the metallicity row's stated "
             f"fixed-grid difference). Rows: {', '.join(_parts)}.")
     with st.expander("How to read this table"):
         st.markdown(
@@ -1499,7 +1499,7 @@ if fisher_names and "jac" in model:
             "the chemistry at the perturbed elemental abundances, the "
             "standard VULCAN workflow), or **warm-started forward-mode "
             "automatic differentiation** (the AD metallicity row holds the "
-            "structural hydrostatic grid fixed -- a stated 1.6%-level "
+            "structural hydrostatic grid fixed, a stated 1.6%-level "
             "difference from FD on the defaults).\n"
             "- Each per-mode row also fits (and marginalizes over) a reference-"
             "radius nuisance **lnR0** plus one absolute-depth **offset per "
@@ -1534,16 +1534,13 @@ with st.expander("Which reactions and temperatures control a molecule?"):
     st.caption(
         "One **reverse-mode adjoint solve** through the converged VULCAN-JAX "
         "state gives the sensitivity of a molecule's photosphere abundance "
-        "to **every reaction rate** in the network (~800 rows) and to "
-        "**every layer's temperature** at once -- the high-dimensional "
-        "questions where automatic differentiation is the only practical "
-        "tool (the Fisher Jacobians above, over a handful of parameters, "
-        "use certified finite differences instead). The adjoint is "
-        "validated upstream to 0.2-0.8% against finite differences on the "
-        "WASP-39b SO2 / HD189733b CH4 benchmarks; every run here is "
-        "preceded by a scope audit that refuses states the adjoint cannot "
-        "represent, and the numerical certification (fixed-point tightness, "
-        "solve residual, twin-ensemble spread) is reported with the result.")
+        "to **every reaction rate** in the network and to **every layer's "
+        "temperature** at once. These are the high-dimensional questions "
+        "where automatic differentiation is the only practical tool. The "
+        "Fisher Jacobians above, over a handful of parameters, use "
+        "certified finite differences instead. The adjoint is validated "
+        "upstream to 0.2-0.8% against finite differences on the WASP-39b "
+        "SO2 and HD 189733 b CH4 benchmarks.")
     _adj_mols = [str(m) for m in model["mols"]]
     _adj_tgt = str(meta.get("target") or "")
     _adj_default = (_adj_tgt if _adj_tgt in _adj_mols
@@ -1557,8 +1554,8 @@ with st.expander("Which reactions and temperatures control a molecule?"):
         st.info(
             "Adjoint diagnostics are unavailable for this model: it was run "
             "with condensation, whose pinned reservoir is frozen at a "
-            "step-sequence-dependent transient -- no derivative through it "
-            "is trustworthy. Re-run with condensation off to use this "
+            "step-sequence-dependent transient, so no derivative through "
+            "it is trustworthy. Re-run with condensation off to use this "
             "panel.")
         # st.stop() halts the whole render from here on: this panel MUST
         # remain the last section of the page (nothing below to lose)
@@ -1567,11 +1564,11 @@ with st.expander("Which reactions and temperatures control a molecule?"):
     if adj is None:
         st.caption(
             "Not cached for this model + molecule. Cost: one chemistry "
-            "re-solve (extended budget) + the adjoint ensemble. The FIRST "
-            "adjoint run on a machine also compiles the solver's "
-            "step-VJP -- potentially HOURS on CPU -- and stores it in the "
-            "persistent JAX compile cache, so later runs skip straight to "
-            "the solve.")
+            "re-solve with an extended budget, plus the adjoint ensemble. "
+            "The FIRST adjoint run on a machine also compiles the solver's "
+            "step-VJP, which can take hours on CPU. The result lands in "
+            "the persistent JAX compile cache, so later runs skip straight "
+            "to the solve.")
         if st.button("Run adjoint diagnostics", key=K("adjrun")):
             with st.status("Running reverse-mode adjoint diagnostics …",
                            expanded=True) as status:
@@ -1639,7 +1636,7 @@ with st.expander("Which reactions and temperatures control a molecule?"):
             f"abundance. Under a uniform Agundez (2025) class-B rate "
             f"uncertainty ({float(adj['uq_class_dex']):g} dex per "
             "reaction), the implied abundance spread is sigma(log10 VMR) "
-            f"= {float(adj['uq_sigma_log10']):.2f} dex -- a stated "
+            f"= {float(adj['uq_sigma_log10']):.2f} dex. That is a stated "
             "assumption, not a per-reaction uncertainty assessment.")
         fig_adj, ax_adj = plt.subplots(figsize=(6.0, 3.4))
         _pb = np.asarray(adj["p_bar"], float)
@@ -1654,11 +1651,11 @@ with st.expander("Which reactions and temperatures control a molecule?"):
         st.pyplot(fig_adj, width="stretch")
         st.caption(
             "Chemistry-path gradient: how the target's photosphere "
-            "abundance responds to warming each layer (photolysis cross "
+            "abundance responds to warming each layer. Photolysis cross "
             "sections and the diffusion/geometry rebuild are frozen by "
-            "design -- upstream contract; rebuild consistency "
-            f"{float(adj['rebuild_consistency']):.1e}). Dotted line: the "
-            "loss layer.")
+            "design, the upstream contract, with rebuild consistency "
+            f"{float(adj['rebuild_consistency']):.1e}. The dotted line "
+            "marks the loss layer.")
         _a1, _a2 = st.columns(2)
         _a1.download_button(
             "Reactions (CSV)", _csv_bytes(pd.DataFrame({
