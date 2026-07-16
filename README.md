@@ -42,7 +42,7 @@ infrared and 33 to 56 percent for MIRI LRS
 than absolute ppm. Planet registry values are literature planning defaults
 meant to be edited. Solves that miss the convergence gate raise instead of
 returning a bad spectrum. History and validation numbers are in
-`notes.md`; operational rules are in `CLAUDE.md`.
+`notes.md`.
 
 ## Layout
 
