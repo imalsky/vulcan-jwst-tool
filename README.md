@@ -17,17 +17,44 @@ goal types are supported:
   profiled out. This is conditional on the assumed atmospheric state and
   upper-bounds any retrieval detection; it is labeled accordingly throughout.
 - **Constrain a parameter.** A Fisher-information forecast built from
-  parameter derivatives of the spectrum computed as central finite
-  differences of independently converged, convergence-certified solves.
-  Composition derivatives (metallicity, C/O) re-initialize the chemistry at
-  the perturbed elemental abundances -- the standard VULCAN workflow -- and
-  every row is evaluated at two step sizes that must agree (the run errors
-  otherwise) before the Richardson-combined row is reported. This is slower
-  than the retired autodiff path but conceptually transparent and
-  self-verifying, and it works at any composition, including carbon-rich,
-  with photochemistry on or off. Forecast uncertainties are local
-  Cramer-Rao lower bounds under the stated noise model, marginalized over
-  calibration nuisances; they are not posterior widths.
+  parameter derivatives of the spectrum. By default every derivative is a
+  central finite difference of independently converged,
+  convergence-certified solves. Composition derivatives (metallicity, C/O)
+  re-initialize the chemistry at the perturbed elemental abundances -- the
+  standard VULCAN workflow -- and every row is evaluated at two step sizes
+  that must agree (the run errors otherwise) before the Richardson-combined
+  row is reported. This is slower than automatic differentiation but
+  conceptually transparent and self-verifying, and it works at any
+  composition, including carbon-rich, with photochemistry on or off.
+  Every row can optionally use the faster forward-mode AD path instead
+  (measured 1.7x on Kzz/temperature rows, ~4x on composition rows;
+  warm-started jvp, photochemistry on; a top-level
+  "Differentiation method" menu in the GUI). Cross-validation against FD
+  on the WASP-39b defaults: Kzz/temperature rows 0.07-0.14%, lnR0 0.01%,
+  C/O 0.07%, metallicity 1.6% (the AD metallicity row is the
+  fixed-structural-grid derivative -- the 1.6% is the hydrostatic-grid
+  rebuild term only FD includes). Physically invalid method-science
+  combinations are refused loudly rather than computed: AD with
+  photochemistry off, AD's C/O direction on carbon-rich baselines (the
+  fixed-O reservoir bound), and any Fisher forecast through condensation
+  (under either method). The method actually used is recorded per row
+  (`jac_row_method` in the cache, shown in the GUI provenance line).
+  Forecast uncertainties are local Cramer-Rao lower bounds under the
+  stated noise model, marginalized over calibration nuisances; they are
+  not posterior widths.
+
+After a run, an **adjoint diagnostics** panel answers the high-dimensional
+questions finite differences cannot afford: one reverse-mode adjoint solve
+(VULCAN-JAX `steady_state_reaction_sensitivity` /
+`steady_state_input_sensitivity`, validated upstream to 0.2-0.8% against
+finite differences) gives the sensitivity of a molecule's photosphere
+abundance to every reaction rate in the network and to every layer's
+temperature. Each run is preceded by the adjoint scope audit (states the
+adjoint cannot represent are refused, not reported) and ships its numerical
+certification: fixed-point tightness, solve residual, twin-ensemble spread
+(magnitudes are labeled trustworthy only inside the upstream gates,
+otherwise the table is labeled a ranking), plus a delta-method abundance
+spread under a stated uniform rate-uncertainty class.
 
 ## Installation
 
@@ -77,10 +104,13 @@ actionable error messages, then launches the Streamlit GUI. Equivalent:
 
 The first run of a new parameter set takes about 2 minutes at the default
 resolution (100 layers, native R about 1500), rising to about 3 minutes at the
-150-layer / R about 3000 ceiling. Fisher rows are finite differences of full
-re-solves and dominate the runtime when enabled: roughly 6 to 8 minutes per
-composition parameter (metallicity, C/O) and 3 to 5 minutes per Kzz or
-temperature parameter. All results are disk-cached under `output/`; repeat
+150-layer / R about 3000 ceiling. Fisher rows dominate the runtime when
+enabled: with the default FD method, roughly 6 to 8 minutes per composition
+parameter (metallicity, C/O) and 3 to 5 minutes per Kzz or temperature
+parameter; with the AD method, roughly 1 to 2 minutes per row. The adjoint
+diagnostics panel costs one chemistry re-solve plus the adjoint ensemble;
+its first run on a machine also compiles the step-VJP (~10-20 minutes,
+cached persistently). All results are disk-cached under `output/`; repeat
 runs are instant.
 
 Every result is exportable from the GUI: each figure (spectrum, mode
@@ -267,9 +297,10 @@ validated and cache-keyed:
   factor, molecular diffusion on/off, upwind molecular-diffusion advection
   (vm_mol, off by default), stellar UV spectrum, and the numerical
   grid (chemistry layers -- shared with the RT grid -- and convergence
-  tolerance). Condensation is not offered (it is not reliably differentiable in
-  VULCAN, so it cannot enter the Fisher forecast -- see Known limitations); for
-  aerosol opacity use the differentiable ExoJAX cloud deck instead.
+  tolerance). Condensation (S8 rainout) is available for detection goals
+  only, never with a derivative-based forecast (see Known limitations);
+  for aerosol opacity in a forecast use the differentiable ExoJAX cloud
+  deck instead.
 - **ExoJAX radiative-transfer inputs.** The opacity molecule set, H2/He
   Rayleigh scattering, an optional power-law cloud deck, and the
   line-broadening perturber (terrestrial air or H2/He, cache-keyed; molecules
@@ -387,19 +418,29 @@ Pending release gates, tracked explicitly rather than assumed:
 - All planets use an isothermal or Guillot T-P and a constant Kzz; the
   WASP-39 b GCM baseline modes were removed (no GCM profile is silently
   substituted).
-- Condensation is intentionally not offered. VULCAN reaches a condensing
-  steady state only via a condensation window followed by a whole-column
-  fix-species pin that freezes the condensed reservoir (S8 / S8_l_s on the
-  SNCHO network) at a step-sequence-dependent transient. That state is not
-  reliably differentiable (the forward-mode Jacobian disagrees with finite
-  differences by ~90%), and the active-condensation layers and cold-trap
-  level switch discretely with temperature, so condensation cannot enter the
-  Fisher forecast this tool is built around. An open-system "smooth rainout"
+- Condensation (S8 sulfur rainout, the SNCHO network's one condensation
+  channel) is offered for DETECTION goals only, via the certified VULCAN
+  recipe: a condensation window followed by a whole-column fix-species pin,
+  then a longdy-certified converge of the remaining chemistry
+  (photochemistry and molecular diffusion required). It can never be
+  combined with a derivative: the pin freezes the condensed reservoir at a
+  step-sequence-dependent transient, so the converged state is not a
+  reproducible function of the input parameters -- the measured
+  forward-mode tangent is about 91% wrong against finite differences (a
+  relative error of ~0.91, an order-unity failure -- not a 0.91 agreement
+  ratio and not a 9% mismatch), and finite differences of pinned
+  transients are equally untrustworthy. The active-condensation layers and
+  cold-trap level also switch discretely with temperature. Requesting
+  condensation together with a Fisher forecast therefore raises, under
+  either differentiation method, as does condensation with photochemistry
+  off (no certifiable steady state) or molecular diffusion off. Known
+  caveat (in the GUI help): a column too hot to condense still pins S8 at
+  its end-of-window value -- enable condensation only where sulfur
+  genuinely condenses. An open-system "smooth rainout"
   replacement built to restore differentiability was measured NO-GO (it could
   not reach a strict flux-balanced steady state within its gate); that
   campaign is preserved on the `research/smooth-rainout-fisher` branch of the
-  sibling repos, not shipped here. Requesting condensation
-  (`use_condense=True`) raises. For aerosol / haze opacity, the
+  sibling repos, not shipped here. For aerosol / haze opacity, the
   Fisher-compatible route is a **differentiable ExoJAX cloud**: the existing
   power-law cloud deck is already wired into the RT; freeing its parameters
   (or adding a gray deck) as Fisher parameters is a natural future addition.
@@ -408,9 +449,9 @@ Pending release gates, tracked explicitly rather than assumed:
 ## Repository layout
 
 `src/jwst_tool/` package (GUI `app.py`, forward-model driver `forward.py`,
-Pandeia worker `pandeia_worker.py`, noise/detect/fisher/binning modules,
-instrument registry, data-availability detector `datacheck.py` backing
-`jwst-tool data` and the GUI status panel); `data/` input CDBS tree; `output/` generated runtime
+adjoint diagnostics `adjoint_diag.py`, Pandeia worker `pandeia_worker.py`,
+noise/detect/fisher/binning modules, instrument registry, data-availability
+detector `datacheck.py` backing `jwst-tool data` and the GUI status panel); `data/` input CDBS tree; `output/` generated runtime
 caches (model spectra + Pandeia noise, gitignored). All tests and validation
 live under `tests/`: `tests/unit/` the fast numpy suite (`python -m pytest
 tests -q`), `tests/parity/` the PandExo parity gate, split into `scripts/`

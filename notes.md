@@ -769,3 +769,115 @@ derivative in this tool; reverse-mode AD (VULCAN-JAX
 steady_state_reaction_sensitivity / steady_state_input_sensitivity,
 validated 0.2-0.8%) remains the only feasible route for per-reaction and
 per-layer sensitivities and is deliberately not wired into the forecasts.
+
+## v19: 2026-07-15 jac_method toggle + adjoint diagnostics panel (forward v14)
+
+All cached spectra invalidated (`_VERSION = 14`: the canonical key set
+changed). Adjoint results cache separately (`output/adjoint_cache`,
+`_ADJ_VERSION = 1`).
+
+- **jac_method toggle.** [SUPERSEDED the same day by the addendum below,
+  before anything shipped: AD now covers EVERY row including the
+  composition directions and lnR0, comp-only "ad" stays "ad", and only an
+  empty fisher list neutralizes the knob.] First-wave design: the warm-jvp
+  AD path returned as an opt-in (`jac_method="ad"`) for lnKzz and the T-P
+  parameters only (~1.7x faster per row, photo-on only --
+  canonical_params raises otherwise), with composition rows FD in both
+  modes and lnR0 the RT-only central difference. Per-row
+  provenance ships as `jac_row_method` ("fd-central" / "ad-jvp" / "fd-rt")
+  in the npz and in the GUI provenance caption; AD rows carry fd_h=0 /
+  fd_err=NaN (no step to vary). Live check: the v14 AD rows reproduce the
+  captured v12 warm-jvp baseline rows (see the verification addendum below).
+- **Adjoint diagnostics panel** (`adjoint_diag.py` + a GUI section): the
+  high-dimensional reverse-mode sensitivities -- dL/dlnk over every reaction
+  and dL/dT over every layer, one adjoint solve each -- for the target
+  molecule's photosphere abundance (log10 VMR at its peak-VMR layer within
+  1e-5..0.1 bar). This is the "done right" replacement for the stale
+  jax_paper reference caller (adj_w39b_so2.py: pre-YAML cfg_examples import,
+  manual 5-field geometry splice): the state comes from the SAME
+  forward._assemble_chem build path as the forecasts; the sibling
+  vulcan-retrieval gained `chem.run_diag(theta, return_atm=True)` so the
+  runner's actual theta-dependent AtmStatic is linearized (the setup-time
+  baseline would be stale_geometry); the splice is `make_body_terms`; the
+  scope audit runs FIRST and audit errors REFUSE the run; photolysis
+  feedback via `make_photo_recompute_k` whenever photo is on. Reported with
+  every result: fp_err, adjoint residual (median), twin-ensemble spread
+  (magnitudes labeled trustworthy only at resid<=0.2 AND spread<=0.15, the
+  upstream gates; otherwise the table is labeled a RANKING), the scope-audit
+  defects, detailed-balance pair-summed reaction rows with formulas, a
+  delta-method sigma(log10 VMR) under a UNIFORM Agundez class-B rate
+  uncertainty (0.65 dex -- a stated assumption, so labeled), and the dL/dT
+  rebuild-consistency metric (the call refuses above 1e-3 relative).
+- **Condensation number misread-proofed.** The measured jvp-vs-FD 0.91 for
+  the pinned condensation reservoir is a RELATIVE ERROR (the tangent is
+  ~91% wrong), which one reading mistook for a 0.91 agreement ratio (9%
+  off). Every surface that quotes it (forward.py docstring + refusal
+  message, app.py caption, README, CLAUDE.md, the shared
+  condensation_differentiation.md) now says "about 91% wrong -- not a 9%
+  mismatch" explicitly, and a unit test pins the refusal-message wording.
+
+## v19 addendum: same day, second wave (still forward v14, nothing shipped between)
+
+- **jac_method covers EVERY row.** On request ("make AD optional for the
+  spectral jacobian too") the AD option now applies to the composition
+  directions and lnR0 as well -- jac_method="ad" computes the whole
+  Jacobian by warm jvp. The composition caveats are stated, not hidden:
+  the lnZ jvp is the fixed-structural-grid derivative (1.6% from FD on
+  defaults = the hydrostatic-grid rebuild term), and the dlnCO jvp rides
+  the fixed-O differential direction, refused at run time when the build's
+  co_bz_bound <= 0 (C-rich). 'ad' with comp-only rows now stays 'ad';
+  only an empty fisher list neutralizes the knob.
+- **Condensation is back, DETECTION-ONLY.** The v7 CONDEN_CFG recipe
+  (S8 -> S8_l_s, whole-column pin, mtol_conv 1e-15, sulfur-allotrope
+  conver_ignore, trun_min) is reinstated behind a method-science
+  compatibility matrix: conden + fisher_params raises under ANY jac_method
+  (FD does NOT rescue the pinned transient -- the state is not a
+  reproducible function of the parameters), conden + photo-off raises (no
+  certifiable steady state), conden + moldiff-off raises, and
+  adjoint_diag refuses condensing states. GUI ships the too-hot-to-condense
+  footgun warning.
+- **Differentiation method is a top-level GUI menu** (after Planet & star)
+  that gates downstream widgets: AD locks photochemistry ON and disables
+  the condensation checkbox; condensation-on locks the goal to detect and
+  empties the Fisher expander. The GUI gating is convenience; the
+  canonical_params matrix is the hard guard.
+- **Adjoint panel hardening from the live validation.** Run 1: the scope
+  audit correctly REFUSED the tool's loosely-certified state (fixed-point
+  defect 0.32 on an H2S trace cell at ymix ~ 2e-13). Run 2: forcing
+  yconv_min=1e-3 is UNREACHABLE (longdy plateaus at ~0.09 after 8000 steps
+  with |dy/dt| ~ 1e-11 -- physically steady; longdy is floored by relative
+  creep of near-zero cells). Probe: the defect is oscillatory in the probe
+  step -- 0.65 at body_dt 1e6, 0.32 at 1e7, 0.023 (PASS) at 3e7, loss
+  footprint <= 9e-3 throughout. Fix: solve at the canonical gate with
+  extended budget + stall exit disabled, then scan the upstream-sanctioned
+  BODY_MAP_DT_CANDIDATES and run the gradient at the first probe step
+  whose audit passes; the scan trail is cached (audit_trail_json) and the
+  chosen body_dt recorded.
+- **All-rows AD verification (v14, measured)**: jac_method="ad" with
+  fisher_params [lnZ, dlnCO, lnKzz, T_iso] on W39b defaults (yconv 1e-3)
+  reproduces the captured v12 warm-jvp baseline BIT-EXACTLY on every row
+  including lnR0 (corr 1.000000, scale 1.000000, max rel diff 0.0), with
+  jac_row_method = "ad-jvp" on all five rows and fd_err = NaN (no step to
+  vary). The AD path is the v12 code, not a reimplementation.
+- **Condensation live validation (v14, measured)**: the tool path was
+  verified on WASP-107b's default Guillot profile (T [637, 1103] K --
+  S8 condenses aloft, kinetics alive at depth, the same planet/profile
+  class as the retrieval's conden E2E): converged in 7548 steps
+  (longdy 0.0999 < gate 0.1), depth 2.5-3.9%, use_condense round-trips
+  through the cache. An isothermal 550 K W39b column was tried first and
+  correctly REFUSED (longdy stalled at 0.165 after 30k steps -- a
+  kinetically frozen deep column has no certifiable steady state; the
+  gate never returned the unconverged spectrum). Guidance: condensation
+  wants a profile that is warm at depth and cool aloft, not a uniformly
+  cold column.
+- **Adjoint compile cost (measured 2026-07-16)**: the step-VJP cold
+  compile exceeds 2 h on this machine's CPU (killed once at 122 min CPU;
+  the upstream "10-20 min" note does not transfer). Root cause of the
+  first slow run: adjoint_diag never armed JAX's persistent compilation
+  cache, so it recompiled from scratch with no reuse and no persistence.
+  Fixed in forward._assemble_chem (shared by run_model and run_adjoint):
+  jax_compilation_cache_dir = ~/.cache/jax_vulcan (the July adjoint
+  campaign's dir; its jit_a_eta artifacts predate the body_terms
+  threading and do not match the new trace, so the first cache-armed run
+  pays the compile once and persists it). Also saves the ~40 s runner
+  warm-up on repeat forward runs.

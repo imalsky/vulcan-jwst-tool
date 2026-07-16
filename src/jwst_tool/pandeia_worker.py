@@ -275,8 +275,9 @@ def _check_backend_match(engine_version, refdata):
             f"{ref_ver} (from {source}) at {refdata}. STScI requires the "
             "engine and refdata releases to be the same. Fix the pair: point "
             "JWST_TOOL_PANDEIA_PYTHON at an env whose engine matches "
-            "JWST_TOOL_PANDEIA_REFDATA (this repo's validated pair is engine "
-            "3.0 + pandeia_data-3.0rc3 in the picaso_base env).")
+            "JWST_TOOL_PANDEIA_REFDATA (the default validated pair is engine "
+            "2026.2 + pandeia_data-2026.2-jwst in the pandeia_2026 env; the "
+            "legacy backend pins 3.0 + 3.0rc3 in picaso_base).")
     return {"refdata_version": ref_ver, "refdata_version_source": source}
 
 

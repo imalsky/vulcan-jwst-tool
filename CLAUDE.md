@@ -22,8 +22,9 @@
   below.
 - `data/cdbs/grid/phoenix` is a symlink to an external picaso tree; dangling on other
   machines (the pandeia preflight fails loudly). Do not replace it with a copy.
-- `forward._VERSION` is the cache-buster for model_cache spectra (v5 = 2026-07-11
-  exact-elemental map); bump it whenever the physics changes.
+- `forward._VERSION` is the cache-buster for model_cache spectra (v14 as of
+  2026-07-15; the full version history lives in notes.md); bump it whenever
+  the physics or the canonical key set changes.
 - `noise.noise_job`'s `worker_version` (**5** as of 2026-07-12) + the backend
   fingerprint (engine version, refdata VERSION hashes) bust the noise_cache;
   bump worker_version whenever `pandeia_worker.py` output changes. v4 =
@@ -227,16 +228,18 @@
   `co_ratio` (absolute N_C/N_O, 0.1-2.0, sets `C_H = co_ratio * O_H`);
   run_model pins the abundances into cfg_overrides and FastChem
   re-initializes AT the requested composition, upstream-VULCAN style. There
-  is NO differential dco knob, NO warm two-stage composition continuation,
-  NO b_z bound, and NO detection-only C-rich restriction -- C/O > 1 is the
+  is NO differential dco PARAMETER, NO warm two-stage composition
+  continuation, and NO detection-only C-rich restriction -- C/O > 1 is the
   same code path (verified live at 1.5: longdy 0.011, SO2 -> 0 ppm). theta
   keeps the `[lnZ, dlnCO, lnKzz, tp...]` layout for the vulcan_chem
   contract but its two composition entries are ALWAYS 0. `CO_BASELINE`
   (= cfg C_H/O_H = 0.549, Tsai 2023 10x-solar; the FastChem
   `solar_element_abundances.dat` 0.458 was the v10 wrong-basis bug) is only
   the GUI default + display baseline, cross-checked against the live cfg.
-  Never reintroduce a perturbative composition knob here; the AD machinery
-  lives on in the sibling retrieval repo, where SMC needs it.
+  Never reintroduce a perturbative composition PARAMETER (a knob that sets
+  the atmosphere's state differentially); the differential directions do
+  return in v14 as opt-in AD *Jacobian rows* only, with the b_z guard --
+  see the jac_method bullet below.
 - **Fisher Jacobians are certified central FINITE DIFFERENCES (v13)**: each
   composition row (lnZ, dlnCO) = 4 FastChem-re-init build+solve cycles
   (~6-8 min); each theta row (lnKzz, T-P) = 4 cold solves on the baseline
@@ -244,12 +247,60 @@
   longdy-certified; every row must pass the h-vs-2h consistency gate
   (`FD_CONSISTENCY_TOL`, RuntimeError on failure -- an FD row dominated by
   convergence noise is NEVER reported) and the reported row is the
-  Richardson combination. Steps in `forward.FD_STEPS`; per-row consistency
-  saved as `fd_h`/`fd_err` in the npz and shown in the GUI. Directions:
+  Richardson combination. Steps in `forward.FD_STEPS`; per-row provenance
+  saved in the npz (`fd_h`/`fd_err`; the GUI shows `fd_err` +
+  `jac_row_method`). Directions:
   lnZ = all metals together (C/O preserved), dlnCO = carbon at fixed O
-  (same direction as the retired warm-jvp knob, rows 1:1 comparable). The
-  photo-on Fisher gate is RETIRED -- FD needs no tangent regime, so
-  constraints work photo-off too.
+  (same direction as the warm-jvp knob, rows 1:1 comparable). The
+  photo-on Fisher gate is RETIRED for FD -- no tangent regime needed, so
+  FD constraints work photo-off too.
+- **jac_method menu (v14)**: `jac_method="fd"` (default) or `"ad"` -- the
+  warm-jvp path is an OPT-IN for EVERY Jacobian row (measured 1.7x on
+  Kzz/T-P rows, ~4x on composition rows;
+  cross-validated vs FD on W39b defaults: theta rows 0.07-0.14%, lnR0
+  0.9999, dlnCO 0.07%, lnZ 1.6%; VERIFIED at v14 to reproduce the captured
+  v12 AD rows). Composition AD caveats are STATED, not hidden: the lnZ jvp
+  is the fixed-structural-grid derivative (the 1.6% gap is the
+  hydrostatic-grid rebuild only FD includes), and the dlnCO jvp rides the
+  fixed-O differential direction -- run_model REFUSES it when the build's
+  `co_bz_bound <= 0` (C-rich baseline; FD is valid everywhere). `"ad"`
+  requires photo ON (canonical_params raises), is refused with
+  condensation, and is normalized to `"fd"` when no Jacobian is requested
+  (cache hygiene). Per-row provenance saved as `jac_row_method`
+  ("fd-central"/"ad-jvp"/"fd-rt") and shown in the GUI. The GUI exposes
+  this as a top-level "Differentiation method" menu that LOCKS
+  incompatible downstream widgets (photo forced ON under AD; condensation
+  disabled under AD; conden-on disables constrain/Fisher) -- the GUI
+  gating is convenience, canonical_params stays the hard guard.
+- **Adjoint diagnostics (`adjoint_diag.py`, 2026-07-15)**: reverse-mode AD
+  for the HIGH-DIMENSIONAL sensitivities only (dL/dlnk over every
+  reaction, dL/dT per layer) via VULCAN-JAX
+  `steady_state_reaction_sensitivity` / `steady_state_input_sensitivity`;
+  it replaces the stale pre-YAML jax_paper reference caller
+  (adj_w39b_so2.py imported the deleted cfg_examples and used the manual
+  5-field geometry splice). Contract: same build path as the forecasts
+  (`forward._assemble_chem`), state + runner atm from the sibling's
+  `chem.run_diag(theta, return_atm=True)` (added 2026-07-15),
+  `make_body_terms` splice (never the manual one), scope audit FIRST with
+  refusal on audit errors, certification (fp_err/resid_median/
+  ensemble_spread) stored in the npz + GUI with the magnitudes-vs-ranking
+  label at the upstream gates (0.2 / 0.15), photo feedback via
+  `make_photo_recompute_k` whenever photo is on. Two measured subtleties
+  (2026-07-15): the tool's loose longdy certification is NOT tight enough
+  to push to 1e-3 (W39b plateaus at longdy ~0.09 with |dy/dt| ~ 1e-11 --
+  physically steady), so the adjoint solve keeps the canonical gate with
+  an extended budget + stall exit disabled; and near-zero trace cells
+  OSCILLATE under small audit probe steps (max defect 0.65 at body_dt 1e6
+  vs 0.023 at 3e7 with the loss footprint clean throughout), so the audit
+  scans the upstream-sanctioned BODY_MAP_DT_CANDIDATES and the gradient
+  runs at the first passing body_dt (scan trail cached as
+  `audit_trail_json`). Refuses condensing states up front. dL/dT uses the upstream
+  frozen-cascade rebuild recipe (photolysis rows spliced frozen); its
+  rebuild-consistency metric is stored. The loss is log10 VMR at the
+  peak-VMR photosphere layer (1e-5 to 0.1 bar). Own cache
+  (`output/adjoint_cache`, `_ADJ_VERSION`), keyed on the CHEMISTRY subset
+  of canonical params (RT-only knobs excluded). This panel is additive
+  diagnostics -- the Fisher forecast path stays FD/warm-jvp as above.
 - **Wider explicit ranges + info surfacing (2026-07-15)**: metallicity
   slider 0.1-100x solar, YCONV_RANGE floor 1e-4, C/O options 0.25-2.00.
   Safe because the longdy gate (61cdf7b) rejects any non-steady solve
@@ -263,37 +314,43 @@
   raises on them; defaults are isothermal/const; every planet including W39b
   gets an isothermal structural baseline; no GCM profile is ever silently
   substituted). The slow `test_closure.py` FD test now drives `T_iso`
-  (same single-scalar theta[3] design the retired `dT` had). GUI is organized
-  into five clearly-labeled sections: Planet & star; VULCAN chemistry (T-P,
-  composition, Kzz, photochem, numerical grid; condensation is a why-not note);
-  ExoJAX RT (opacity/scattering/clouds/broadening/native sampling); Science
-  goal (goal, Fisher); Instrument & noise (modes, transits, saturation, noise
-  model). Verified with Streamlit `AppTest`
-  (`session_state['intro_ack']=True` skips the how-it-works gate).
-- **Condensation is REMOVED as an option (2026-07-14).** `use_condense` is no
-  longer a parameter; `canonical_params` RAISES on a truthy `use_condense`
-  (do not re-add a silent path), `CONDEN_CFG` is gone, and the GUI shows a
-  read-only "why it's not offered" note instead of a checkbox. Why: a
-  condensing VULCAN column reaches steady state only via a condensation
-  window + whole-column fix-species pin that freezes the condensed reservoir
-  (S8 / S8_l_s) at a step-sequence-dependent transient, which is not reliably
-  differentiable (forward-mode jvp vs FD ~0.91) and switches discretely in T
-  — unusable for this tool's Fisher forecast. The open-system smooth-rainout
-  replacement that tried to fix this was measured B0C NO-GO and is preserved
-  on the sibling repos' `research/smooth-rainout-fisher` branch (+ tag
-  `smooth-rainout-b0c-no-go-2026-07-14`), NOT on main and NOT here. For
-  aerosol opacity the Fisher-compatible route is a differentiable ExoJAX
-  cloud (the power-law `cloud_on` deck is already wired; freeing it or adding
-  a gray deck as a Fisher parameter is the recommended future addition —
-  never re-introduce condensation as the answer). `forward._VERSION` bumped
-  to 8 (use_condense dropped from the cache key). The engine's live-T(P)
-  `vulcan_chem._prep` condensation rebuild still exists in the sibling
-  retrieval repo for forward-model use; this tool simply does not expose it.
+  (same single-scalar theta[3] design the retired `dT` had). GUI sections
+  as of v14: Planet & star; Differentiation method (the top-level fd/ad
+  menu); VULCAN chemistry (T-P, composition, Kzz, photochem, numerical
+  grid, condensation checkbox -- detection-only); ExoJAX RT
+  (opacity/scattering/clouds/broadening/native sampling); Science goal
+  (goal, Fisher); Instrument & noise (modes, transits, saturation, noise
+  model); and a post-run Adjoint diagnostics panel. Verified with
+  Streamlit `AppTest` (`session_state['intro_ack']=True` skips the
+  how-it-works gate).
+- **Condensation is DETECTION-ONLY (v14; fully removed v8-v13).**
+  `use_condense` is a canonical parameter again, wired through `CONDEN_CFG`
+  (the certified S8 recipe: whole-column fix-species pin
+  `from_coldtrap_lev=False`, `mtol_conv=1e-15`, sulfur-allotrope
+  `conver_ignore`, `trun_min = stop_conden_time`) and gated by the
+  method-science compatibility matrix in `canonical_params`: REFUSED with
+  `fisher_params` under ANY jac_method (the pinned reservoir is frozen at a
+  step-sequence-dependent transient -- the state is not a reproducible
+  function of the parameters, so the AD tangent is ~91% wrong (jvp-vs-FD
+  relative error ~0.91, an order-unity failure, NOT a 9% mismatch) AND
+  finite differences of pinned transients are equally untrustworthy; the
+  layer set / cold-trap index also switch discretely in T); REFUSED with
+  photo OFF (a cold no-photo condensing column has no certifiable longdy
+  steady state -- upstream integrates those to a runtime cap, which this
+  tool never presents as converged); REFUSED with moldiff OFF (the growth
+  term IS the molecular-diffusion coefficient). `adjoint_diag` refuses
+  condensing states too. Documented footgun kept in the GUI help: on a
+  column too hot to condense the pin still freezes S8 at its end-of-window
+  transient -- conden-on does NOT reduce to conden-off. The open-system
+  smooth-rainout replacement was measured B0C NO-GO and stays on the
+  sibling repos' `research/smooth-rainout-fisher` branch. For aerosol
+  opacity in a FORECAST the route remains the differentiable ExoJAX cloud
+  deck -- never condensation.
 - Suite: `python -m pytest tests -q` (numpy-only, fast, no pandeia/JAX
   needed). One env-gated slow test (`JWST_TOOL_RUN_SLOW=1`) FD-closes a
   Jacobian row with 3 real forward runs — Isaac schedules it, never run it
-  unprompted. `test_forward_params.py` pins the condensation-unsupported /
-  T-P / Kzz gating (pure Python, no stack).
+  unprompted. `test_forward_params.py` pins the condensation compatibility
+  matrix / T-P / Kzz gating (pure Python, no stack).
 - **σ_detect terminology is settled** (2026-07-12 sweep): "conditional
   template S/N" everywhere user-facing (chart header/axis, pyproject
   description, __init__, README) — never reintroduce bare "detection

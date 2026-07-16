@@ -27,7 +27,7 @@ import streamlit as st
 
 TOOL_DIR = Path(__file__).resolve().parent   # forward.py subprocess lives here
 
-from jwst_tool import datacheck, detect, fisher as fisher_mod, forward
+from jwst_tool import adjoint_diag, datacheck, detect, fisher as fisher_mod, forward
 from jwst_tool import noise as noise_mod
 from jwst_tool import instruments as ins
 from jwst_tool import planets
@@ -112,18 +112,26 @@ noise forecast for JWST exoplanet spectra, but replaces the assumed input
 spectrum with a live forward model whose chemistry follows the
 **VULCAN** photochemical kinetics code at
 [github.com/exoclime/VULCAN](https://github.com/exoclime/VULCAN) (ported to JAX
-as VULCAN-JAX and chained into ExoJAX radiative transfer). The spectral
-Jacobian that feeds the **Fisher-information forecast** is built by
-**certified finite differences**: every parameter derivative is a central
-difference of independently converged, convergence-certified solves,
-evaluated at two step sizes that must agree before the row is reported
-(composition derivatives re-initialize the chemistry at the perturbed
-elemental abundances, the standard VULCAN workflow). This choice is
-deliberate: it is slower than automatic differentiation but transparent and
-self-verifying, and it was cross-validated against the retired AD path to
-0.07-1.6% per row. AD remains the right tool for high-dimensional
-sensitivities (per-reaction, per-layer) and lives in VULCAN-JAX, not in
-this tool's forecasts.
+as VULCAN-JAX and chained into ExoJAX radiative transfer). Derivatives are
+computed by the method suited to each question, and the tool states which
+one it used everywhere a number appears:
+
+- The spectral Jacobian feeding the **Fisher-information forecast** defaults
+  to **certified finite differences**: central differences of independently
+  converged, convergence-certified solves, evaluated at two step sizes that
+  must agree before a row is reported (composition derivatives re-initialize
+  the chemistry at the perturbed elemental abundances, the standard VULCAN
+  workflow). Slower than automatic differentiation but transparent and
+  self-verifying; cross-validated against the AD rows to 0.07-1.6%.
+- Every Jacobian row can optionally use the ~1.7-4x-faster **forward-mode
+  AD** path (warm-started jvp, photochemistry on) -- a per-run menu choice,
+  with the method recorded per row and physically invalid combinations
+  refused loudly (AD through condensation; the C/O direction on
+  carbon-rich baselines).
+- **Reverse-mode AD (adjoint) diagnostics** answer the high-dimensional
+  questions finite differences cannot afford: the sensitivity of a
+  molecule's abundance to every reaction rate and every layer's temperature
+  in one solve, scope-audited and certification-reported.
 
 The forecasts are **deliberately optimistic** in three ways:
 
@@ -136,7 +144,9 @@ The forecasts are **deliberately optimistic** in three ways:
 
 It is a **planning tool, not an atmospheric retrieval**, and it does not model
 time-correlated instrument systematics such as visit-long trends, 1/f residuals,
-detrending covariance, or stellar heterogeneity. Condensation is not supported.
+detrending covariance, or stellar heterogeneity. Condensation (S8 rainout) is
+offered for detection goals only -- it can never be combined with a
+derivative-based forecast, under either differentiation method.
             """
         )
         st.write("")
@@ -200,6 +210,7 @@ with st.expander("Data status: what this machine has installed"
         "probe the Pandeia env's engine version).")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
+_ADJ_PROG_RE = re.compile(r"\[adj\] PROG ([0-9.]+) (.*)")
 
 # default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
@@ -291,6 +302,36 @@ with st.sidebar:
                                   "vulcan-jax install; the run would refuse it.")
 
     teq = float(pdef["teq_k"])
+    st.divider()
+    st.markdown("### Differentiation method")
+    jac_method = st.selectbox(
+        "How derivatives are computed", ["fd", "ad"], index=0, key=K("jacm"),
+        format_func={"fd": "Certified finite differences (default)",
+                     "ad": "Automatic differentiation (forward-mode)"}.get,
+        help="Used wherever the tool needs d(spectrum)/d(parameter): the "
+             "Fisher constraint forecast and its projected detection score. "
+             "FD: central differences of independently re-converged, "
+             "convergence-certified solves, evaluated at two step sizes "
+             "that must agree -- transparent, self-verifying, and valid "
+             "everywhere (any composition, photochemistry on or off, and "
+             "the only method compatible with condensation-on detection "
+             "runs). AD: one warm-started forward-mode derivative through "
+             "the solver per row, ~1.7-4x faster; requires photochemistry ON "
+             "(locked below while selected), disables condensation, and "
+             "its C/O row is undefined on carbon-rich baselines (the run "
+             "refuses loudly rather than reporting it). Cross-validated "
+             "against FD to 0.07-1.6% per row on the WASP-39b defaults; "
+             "the method used is recorded per Jacobian row with the "
+             "results. Reverse-mode AD (the adjoint) separately powers the "
+             "post-run diagnostics panel regardless of this choice.")
+    if jac_method == "ad":
+        st.caption(
+            "AD selected: photochemistry is locked ON (the validated "
+            "tangent regime) and condensation is unavailable. The "
+            "metallicity row is the fixed-structural-grid derivative "
+            "(1.6% from FD on the defaults, the hydrostatic-grid rebuild "
+            "term); every row is labeled with its method in the results.")
+
     st.markdown("### VULCAN chemistry")
     st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward model "
                "(composition + transport + photochemistry → steady-state "
@@ -370,18 +411,23 @@ with st.sidebar:
         kzz_const, kzz_x = 10.0 ** log_kzz, 1.0
 
     with st.expander("Photochemistry & transport"):
+        if jac_method == "ad":
+            st.session_state[K("photo")] = True   # AD needs photolysis ON
         use_photo = st.checkbox(
             "Photochemistry (UV photolysis)", value=True, key=K("photo"),
+            disabled=(jac_method == "ad"),
             help="Off = thermochemistry + transport only (no photolysis "
-                 "products such as SO2). Both detection goals and the Fisher "
-                 "forecast work either way: since v13 every Jacobian row is a "
-                 "finite difference of independently converged solves, so no "
-                 "photo-on tangent regime is required.")
+                 "products such as SO2). Detection and the default "
+                 "finite-difference Fisher forecast work either way; the AD "
+                 "differentiation method requires photolysis ON (its "
+                 "validated tangent regime), so this is locked while AD is "
+                 "selected.")
         sl_angle_deg = st.slider(
             "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
             disabled=not use_photo,
             help="Slant path of the stellar UV. 83° = terminator slant "
-                 "(Tsai et al. 2023 W39b); ~57° ≈ dayside average.")
+                 "(Tsai et al. 2023 W39b); smaller angles = more direct "
+                 "illumination.")
         f_diurnal = st.slider(
             "Diurnal photolysis factor", 0.1, 1.0, 1.0, 0.05, key=K("fdiur"),
             disabled=not use_photo,
@@ -410,7 +456,8 @@ with st.sidebar:
             forward.NZ_DEFAULT, 10, key=K("nz"),
             help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
                  "grid is LOCKED to the same count. More layers resolve steep "
-                 "photochemical gradients. Roughly 1.5 min at 100, 3 min at 150.")
+                 "photochemical gradients. Roughly 2 min at 100 layers, "
+                 "2.5 min at 150 (other settings at defaults).")
         yconv_cri = st.select_slider(
             "Convergence tolerance (yconv)",
             options=[1.0e-2, 3.0e-3, 1.0e-3, 3.0e-4, 1.0e-4],
@@ -426,17 +473,36 @@ with st.sidebar:
                  "runtime -- a solve that cannot reach the tolerance errors "
                  "loudly instead of returning an unconverged spectrum.")
 
-    with st.expander("Condensation (not offered)"):
+    with st.expander("Condensation (detection-only)"):
+        _conden_allowed = use_photo and use_moldiff and jac_method == "fd"
+        if not _conden_allowed:
+            st.session_state[K("conden")] = False
+        use_condense = st.checkbox(
+            "S8 condensation (sulfur rainout)", value=False, key=K("conden"),
+            disabled=not _conden_allowed,
+            help="The certified VULCAN recipe: a condensation window, then "
+                 "S8 + condensed S8 are pinned whole-column and the rest of "
+                 "the chemistry converges (longdy-gated as usual). "
+                 "DETECTION-ONLY: enabling this disables the constraint "
+                 "goal and the Fisher forecast below -- the pinned "
+                 "reservoir makes the state non-reproducible, so no "
+                 "differentiation method is valid through it. Caveat: on a "
+                 "column too hot to condense, the pin still freezes S8 at "
+                 "its end-of-window value (it does not reduce to "
+                 "condensation-off) -- enable this only for columns cool "
+                 "enough for sulfur to genuinely condense.")
+        if not _conden_allowed:
+            st.caption(
+                "Requires photochemistry ON (a cold no-photo condensing "
+                "column has no certifiable steady state), molecular "
+                "diffusion ON (the growth term is the molecular-diffusion "
+                "coefficient), and the finite-difference method (with AD "
+                "selected you have asked for derivatives, which "
+                "condensation cannot provide).")
+        use_condense = bool(use_condense and _conden_allowed)
         st.caption(
-            "Condensation through VULCAN is not offered in this tool: a "
-            "condensing column converges only via a window + fix-species pin "
-            "that freezes the condensed reservoir at a step-sequence-dependent "
-            "transient -- the result is not a reproducible function of the "
-            "input parameters, which breaks derivatives of every kind "
-            "(the AD tangent disagreed with finite differences by ~90% on the "
-            "pinned sulfur reservoir, and finite differences of pinned "
-            "transients are equally untrustworthy). For aerosol opacity use "
-            "the ExoJAX cloud deck instead.")
+            "For aerosol opacity in a constraint forecast, use the "
+            "differentiable ExoJAX cloud deck below instead.")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -526,15 +592,25 @@ with st.sidebar:
     st.markdown("### Science goal")
 
     with st.expander("Goal", expanded=True):
+        if use_condense:
+            st.session_state[K("goal")] = "detect"
         goal = st.radio(
             "Goal", ["detect", "constrain"], horizontal=True, key=K("goal"),
+            disabled=use_condense,
             format_func={"detect": "Detect a molecule",
                          "constrain": "Constrain a parameter"}.get,
             help="Detect: significance of molecule X being present (Δχ² between "
                  "the spectrum with and without it). Constrain: how tightly a "
                  "parameter (metallicity, C/O, Kzz, …) could be measured, a "
-                 "Fisher forecast from certified finite-difference Jacobians "
-                 "(slow: minutes per freed parameter).")
+                 "Fisher forecast whose Jacobian uses the differentiation "
+                 "method selected above (slow: minutes per freed parameter).")
+        if use_condense:
+            goal = "detect"
+            st.caption(
+                "Condensation is detection-only: parameter constraints need "
+                "d(spectrum)/d(parameter), and no differentiation method is "
+                "valid through the condensation pin (see the condensation "
+                "note above).")
         goal_param, target_prec = None, None
         if goal == "detect":
             target_mol = st.selectbox("Detect molecule", mol_options,
@@ -564,36 +640,48 @@ with st.sidebar:
             "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"))
 
     with st.expander("Fisher forecast"):
-        st.caption(
-            "Expected 1σ constraints on atmosphere parameters from this "
-            "observation, a linearized retrieval (Cramér-Rao bound) built "
-            "from d(spectrum)/d(parameter). Each derivative is a central "
-            "finite difference of independently converged, certified solves "
-            "(evaluated at two step sizes that must agree, else the run "
-            "errors) -- conceptually simple and self-verifying, but "
-            "expensive: a composition row re-solves the chemistry 4 times "
-            "from scratch (~6-8 min), a Kzz/T row adds 4 cold solves "
-            "(~3-5 min). No MCMC, no priors.")
-        if goal == "constrain":
-            fisher_extra = st.multiselect(
-                "Jointly free parameters", avail_free,
-                default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
-                key=K(f"fx_{tp_mode}"),
-                help="The goal parameter is always included. More free "
-                     "parameters = a more honest (wider) forecast; each adds "
-                     "minutes of finite-difference solves (see above).")
-            fisher_params = sorted(set(fisher_extra) | {goal_param})
+        if use_condense:
+            st.caption(
+                "Unavailable with condensation on: the Fisher forecast "
+                "needs d(spectrum)/d(parameter), and no differentiation "
+                "method is valid through the condensation pin. Turn "
+                "condensation off to free parameters.")
+            fisher_params = []
         else:
-            do_fisher = st.checkbox(
-                "Compute parameter constraints too", value=False,
-                key=K("dofish"),
-                help="Central-difference Jacobian rows from certified "
-                     "re-solves: ~6-8 min per composition parameter, "
-                     "~3-5 min per Kzz/T parameter. Works with "
-                     "photochemistry on or off.")
-            fisher_params = st.multiselect(
-                "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
-                default=["lnZ", "dlnCO", "lnKzz"]) if do_fisher else []
+            st.caption(
+                "Expected 1σ constraints on atmosphere parameters from this "
+                "observation, a linearized retrieval (Cramér-Rao bound) "
+                "built from d(spectrum)/d(parameter) using the "
+                "**differentiation method selected at the top** of the "
+                "sidebar. FD (default): a composition row re-solves the "
+                "chemistry 4 times from scratch (~6-8 min), a Kzz/T row "
+                "adds 4 cold solves (~3-5 min). AD: one warm-started "
+                "forward-mode derivative per row (~1-2 min each). No MCMC, "
+                "no priors.")
+            if goal == "constrain":
+                fisher_extra = st.multiselect(
+                    "Jointly free parameters", avail_free,
+                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
+                    key=K(f"fx_{tp_mode}"),
+                    format_func=lambda n: forward.PARAM_LABELS[n],
+                    help="The goal parameter is always included. More free "
+                         "parameters = a more honest (wider) forecast; each "
+                         "adds minutes of solves (see above).")
+                fisher_params = sorted(set(fisher_extra) | {goal_param})
+            else:
+                do_fisher = st.checkbox(
+                    "Compute parameter constraints too", value=False,
+                    key=K("dofish"),
+                    help="Adds Jacobian rows by the method selected at the "
+                         "top: FD ~6-8 min per composition parameter and "
+                         "~3-5 min per Kzz/T parameter (photochemistry on "
+                         "or off); AD ~1-2 min per row (photochemistry "
+                         "on).")
+                fisher_params = st.multiselect(
+                    "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
+                    default=["lnZ", "dlnCO", "lnKzz"],
+                    format_func=lambda n: forward.PARAM_LABELS[n],
+                    ) if do_fisher else []
 
     st.divider()
     st.markdown("### Instrument & noise")
@@ -715,9 +803,11 @@ params = dict(planet=planet_key, nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               met_x_solar=met, co_ratio=float(co_ratio),
               kzz_mode=kzz_mode, kzz_x=kzz_x, kzz_const=kzz_const,
               tp_mode=tp_mode, fisher_params=fisher_params,
+              jac_method=jac_method,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
               use_vm_mol=use_vm_mol and use_moldiff,
+              use_condense=use_condense,
               use_rayleigh=use_rayleigh, broadening=broadening,
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,
@@ -737,22 +827,28 @@ base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
 if yconv_cri <= 1.5e-3:              # strict convergence costs extra iterations
     base_min += 0.5
 base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
-# cool columns (<~900 K) converge much more slowly (WASP-107b: ~5 min measured)
+# cool columns (<~900 K) converge much more slowly (a W107b run took ~5 min)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
           "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0)}.get(tp_mode, 1100.0)
 if t_char < 900.0:
     base_min += 2.5
-# FD Jacobians: composition rows = 4 re-init build+solve cycles each; Kzz/T-P
-# rows = 4 cold solves each (see forward.FD_STEPS block)
+# condensing solves carry the window + pin + stricter gate overhead
+if use_condense:
+    base_min += 1.5
+# Jacobian rows: fd = 4 re-init build+solve cycles per composition row and
+# 4 cold solves per Kzz/T-P row; ad = ~1 warm jvp per row
 _solve_min = max(1.0, base_min * 0.5)
-n_fd_comp = sum(1 for n in fisher_params if n in forward.FD_COMP_PARAMS)
-n_fd_theta = len(fisher_params) - n_fd_comp
-fd_min = n_fd_comp * 4 * (_solve_min + 0.8) + n_fd_theta * 4 * _solve_min
+if jac_method == "ad":
+    fd_min = len(fisher_params) * 1.7 * _solve_min
+else:
+    n_fd_comp = sum(1 for n in fisher_params if n in forward.FD_COMP_PARAMS)
+    n_fd_theta = len(fisher_params) - n_fd_comp
+    fd_min = n_fd_comp * 4 * (_solve_min + 0.8) + n_fd_theta * 4 * _solve_min
 native_r = int(round(nu_pts * 2950 / 8000 / 50) * 50)
 grid_lbl = f"{nz}-layer, native R≈{native_r}"
 est = "instant (cached)" if cached else (
     f"~{base_min + fd_min:.0f} min (local {grid_lbl} run"
-    + (f" + {len(fisher_params)} FD Jacobian rows" if fisher_params else "")
+    + (f" + {len(fisher_params)} Jacobian rows" if fisher_params else "")
     + ")")
 col_btn, col_note = st.columns([1, 3])
 run_clicked = col_btn.button("Run", type="primary", width="stretch")
@@ -1365,17 +1461,29 @@ if fisher_names and "jac" in model:
             + (" **Rank-deficient, degenerate directions are reported as "
                "unconstrained, not as fake finite numbers.**" if rank < dim else ""))
     if "fd_err" in model:
-        # FD provenance: every row passed the h-vs-2h consistency gate at
-        # run time (a failed row raises and no model is cached)
-        _fd = ", ".join(
-            f"{n} {e:.3f}" for n, e in zip(model["jac_names"],
-                                           np.asarray(model["fd_err"], float))
-            if str(n) != "lnR0")
+        # per-row provenance: FD rows passed the h-vs-2h consistency gate at
+        # run time (a failed row raises and no model is cached); AD rows are
+        # warm-started jvp (no step to vary, so no consistency metric)
+        _methods = ([str(m) for m in model["jac_row_method"]]
+                    if "jac_row_method" in model
+                    else ["fd-central"] * len(model["jac_names"]))
+        _parts = []
+        for n, m, e in zip(model["jac_names"], _methods,
+                           np.asarray(model["fd_err"], float)):
+            if str(n) == "lnR0":
+                continue
+            _sym = forward.PARAM_SYMBOLS.get(str(n), str(n))
+            _parts.append(f"{_sym} AD (warm jvp)" if m == "ad-jvp"
+                          else f"{_sym} FD {e:.3f}")
         st.caption(
-            "Jacobian provenance: central finite differences of certified "
-            "solves, Richardson-combined; per-row h-vs-2h consistency (0 = "
-            f"perfect, gate {forward.FD_CONSISTENCY_TOL}): {_fd}. lnR0 is an "
-            "RT-only analytic direction.")
+            "Jacobian provenance, per row: **FD** rows are central finite "
+            "differences of certified solves, Richardson-combined, shown "
+            "with their h-vs-2h consistency (0 = perfect, gate "
+            f"{forward.FD_CONSISTENCY_TOL}); **AD** rows are warm-started "
+            "forward-mode derivatives through the solver (photo-on regime, "
+            "cross-validated against FD to 0.07-1.6% per row on W39b "
+            "defaults -- the 1.6% is the metallicity row's stated "
+            f"fixed-grid difference). Rows: {', '.join(_parts)}.")
     with st.expander("How to read this table"):
         st.markdown(
             f"- Each cell is the **expected ±uncertainty at {tsig_f:g}σ** "
@@ -1383,9 +1491,16 @@ if fisher_names and "jac" in model:
             "all listed parameters *simultaneously* to that mode's simulated "
             "data, a linearized best case (Cramér-Rao bound), so real "
             "retrieval posteriors can only be wider.\n"
-            "- The sensitivities d(spectrum)/d(parameter) come from **automatic "
-            "differentiation through the full VULCAN-JAX chemistry + ExoJAX RT "
-            "chain** (photochemistry on), not from finite-difference re-runs.\n"
+            "- The sensitivities d(spectrum)/d(parameter) use the method "
+            "you picked in the sidebar's **Differentiation method** menu, "
+            "shown per row in the provenance line above: **certified "
+            "central finite differences** of independently re-converged "
+            "VULCAN-JAX solves (default; composition rows re-initialize "
+            "the chemistry at the perturbed elemental abundances, the "
+            "standard VULCAN workflow), or **warm-started forward-mode "
+            "automatic differentiation** (the AD metallicity row holds the "
+            "structural hydrostatic grid fixed -- a stated 1.6%-level "
+            "difference from FD on the defaults).\n"
             "- Each per-mode row also fits (and marginalizes over) a reference-"
             "radius nuisance **lnR0** plus one absolute-depth **offset per "
             "detector segment**, so the two-detector NIRSpec gratings (G395H, "
@@ -1408,3 +1523,153 @@ if fisher_names and "jac" in model:
 elif out.get("fisher_names"):
     st.info("Fisher forecast requested but the cached model has no Jacobian, "
             "press Run.")
+
+# --- Adjoint diagnostics (reverse-mode AD) ----------------------------------
+# High-dimensional sensitivities of the model just run: one reverse-mode
+# adjoint solve gives dL/dlnk over EVERY reaction and dL/dT over EVERY layer
+# -- questions finite differences cannot afford (thousands of re-runs).
+# Analyzes the CACHED model's canonical params (_cpj), never the live sidebar.
+st.subheader("Adjoint diagnostics (reverse-mode AD)")
+with st.expander("Which reactions and temperatures control a molecule?"):
+    st.caption(
+        "One **reverse-mode adjoint solve** through the converged VULCAN-JAX "
+        "state gives the sensitivity of a molecule's photosphere abundance "
+        "to **every reaction rate** in the network (~800 rows) and to "
+        "**every layer's temperature** at once -- the high-dimensional "
+        "questions where automatic differentiation is the only practical "
+        "tool (the Fisher Jacobians above, over a handful of parameters, "
+        "use certified finite differences instead). The adjoint is "
+        "validated upstream to 0.2-0.8% against finite differences on the "
+        "WASP-39b SO2 / HD189733b CH4 benchmarks; every run here is "
+        "preceded by a scope audit that refuses states the adjoint cannot "
+        "represent, and the numerical certification (fixed-point tightness, "
+        "solve residual, twin-ensemble spread) is reported with the result.")
+    _adj_mols = [str(m) for m in model["mols"]]
+    _adj_tgt = str(meta.get("target") or "")
+    _adj_default = (_adj_tgt if _adj_tgt in _adj_mols
+                    else "SO2" if "SO2" in _adj_mols else _adj_mols[0])
+    adj_species = st.selectbox(
+        "Target molecule", _adj_mols, index=_adj_mols.index(_adj_default),
+        key=K("adjsp"),
+        help="L = log10 VMR of this molecule at its peak-abundance layer "
+             "inside the transit photosphere (1e-5 to 0.1 bar).")
+    if _cpj.get("use_condense"):
+        st.info(
+            "Adjoint diagnostics are unavailable for this model: it was run "
+            "with condensation, whose pinned reservoir is frozen at a "
+            "step-sequence-dependent transient -- no derivative through it "
+            "is trustworthy. Re-run with condensation off to use this "
+            "panel.")
+        # st.stop() halts the whole render from here on: this panel MUST
+        # remain the last section of the page (nothing below to lose)
+        st.stop()
+    adj = adjoint_diag.load_result(_cpj, adj_species)
+    if adj is None:
+        st.caption(
+            "Not cached for this model + molecule. Cost: one chemistry "
+            "re-solve (extended budget) + the adjoint ensemble. The FIRST "
+            "adjoint run on a machine also compiles the solver's "
+            "step-VJP -- potentially HOURS on CPU -- and stores it in the "
+            "persistent JAX compile cache, so later runs skip straight to "
+            "the solve.")
+        if st.button("Run adjoint diagnostics", key=K("adjrun")):
+            with st.status("Running reverse-mode adjoint diagnostics …",
+                           expanded=True) as status:
+                bar = st.progress(0.0, text="starting …")
+                adjoint_diag.ADJOINT_CACHE.mkdir(parents=True, exist_ok=True)
+                _apf = (adjoint_diag.ADJOINT_CACHE /
+                        f"{adjoint_diag.adjoint_key(_cpj, adj_species)}"
+                        ".params.json")
+                _apf.write_text(json.dumps(_cpj))
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "jwst_tool.adjoint_diag",
+                     str(_apf), adj_species],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True)
+                box = st.empty()
+                lines = []
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    m = _ADJ_PROG_RE.match(line)
+                    if m:
+                        bar.progress(min(1.0, float(m.group(1))),
+                                     text=m.group(2))
+                    else:
+                        lines.append(line)
+                        box.code("\n".join(lines[-10:]))
+                proc.wait()
+                if proc.returncode != 0:
+                    status.update(label="Adjoint diagnostics failed",
+                                  state="error")
+                    st.error("Adjoint diagnostics failed:\n\n```\n"
+                             + "\n".join(lines[-25:]) + "\n```")
+                else:
+                    status.update(label="Adjoint diagnostics done",
+                                  state="complete")
+                    st.rerun()
+    else:
+        _trust = bool(adj["magnitudes_trusted"])
+        st.caption(
+            f"Loss: log10 VMR({adj_species}) = "
+            f"{float(adj['loss_log10_vmr']):.2f} at "
+            f"P = {float(adj['loss_p_bar']):.1e} bar. Certification: "
+            f"fixed-point error {float(adj['fp_err']):.1e}, adjoint "
+            f"residual (median) {float(adj['resid_median']):.3g}, "
+            f"twin-ensemble spread {float(adj['ensemble_spread']):.3g} "
+            f"over {int(adj['n_solves'])} solves; scope-audit worst "
+            f"defect {float(adj['audit_max_rel_defect']):.1e} "
+            f"(loss footprint {float(adj['audit_loss_footprint_defect']):.1e})"
+            f"; photolysis feedback "
+            f"{'ON' if bool(adj['photo_feedback']) else 'off'}. "
+            + ("**Magnitudes are trustworthy** (residual <= 0.2 and "
+               "spread <= 0.15, the upstream gates)." if _trust else
+               "**Treat as a RANKING**: residual or spread exceeds the "
+               "upstream trust gates, so magnitudes are indicative only."))
+        _adj_df = pd.DataFrame({
+            "reaction": [str(x) for x in adj["top_label"][:10]],
+            "type": [str(x) for x in adj["top_kind"][:10]],
+            "dL/dln k": [f"{v:+.3g}" for v in
+                         np.asarray(adj["top_S"], float)[:10]],
+        })
+        st.dataframe(_adj_df, width="stretch", hide_index=True)
+        st.caption(
+            "Physical (detailed-balance pair-summed) sensitivities of the "
+            "loss to each reaction's rate constant, top 10 of the full "
+            "network. Sign: positive means a faster rate increases the "
+            f"abundance. Under a uniform Agundez (2025) class-B rate "
+            f"uncertainty ({float(adj['uq_class_dex']):g} dex per "
+            "reaction), the implied abundance spread is sigma(log10 VMR) "
+            f"= {float(adj['uq_sigma_log10']):.2f} dex -- a stated "
+            "assumption, not a per-reaction uncertainty assessment.")
+        fig_adj, ax_adj = plt.subplots(figsize=(6.0, 3.4))
+        _pb = np.asarray(adj["p_bar"], float)
+        _dt = np.asarray(adj["dLdT"], float)
+        ax_adj.plot(_dt * 1.0e3, _pb, lw=1.4)
+        ax_adj.axhline(float(adj["loss_p_bar"]), ls=":", lw=0.8, color="gray")
+        ax_adj.set_yscale("log")
+        ax_adj.invert_yaxis()
+        ax_adj.set_xlabel(f"d log10 VMR({adj_species}) / dT  [1e-3 per K]")
+        ax_adj.set_ylabel("Pressure [bar]")
+        ax_adj.set_title("Per-layer temperature sensitivity (adjoint)")
+        st.pyplot(fig_adj, width="stretch")
+        st.caption(
+            "Chemistry-path gradient: how the target's photosphere "
+            "abundance responds to warming each layer (photolysis cross "
+            "sections and the diffusion/geometry rebuild are frozen by "
+            "design -- upstream contract; rebuild consistency "
+            f"{float(adj['rebuild_consistency']):.1e}). Dotted line: the "
+            "loss layer.")
+        _a1, _a2 = st.columns(2)
+        _a1.download_button(
+            "Reactions (CSV)", _csv_bytes(pd.DataFrame({
+                "reaction": [str(x) for x in adj["top_label"]],
+                "type": [str(x) for x in adj["top_kind"]],
+                "dL_dlnk": np.asarray(adj["top_S"], float),
+            })),
+            f"{_fname_base}_adjoint_{adj_species}_reactions.csv",
+            "text/csv", key=K("dl_adj_csv"))
+        _a2.download_button(
+            "dL/dT profile (CSV)", _csv_bytes(pd.DataFrame({
+                "p_bar": _pb, "dlog10vmr_dT_perK": _dt})),
+            f"{_fname_base}_adjoint_{adj_species}_dLdT.csv",
+            "text/csv", key=K("dl_adj_dt_csv"))

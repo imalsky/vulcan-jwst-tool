@@ -2,13 +2,16 @@
 
 A live-forward-model instrument selector (PandExo-style GUI): pick a science
 goal (detect molecule X on a WASP-39b-like planet), and the tool runs the
-live VULCAN-JAX + ExoJax forward model locally, builds parameter Jacobians as
-certified central finite differences of independently converged solves (each
-row ships its own step-size consistency bound -- see forward.py's FD block),
+live VULCAN-JAX + ExoJax forward model locally, builds parameter Jacobians
+as certified central finite differences of independently converged solves
+by default (each row ships its own step-size consistency bound -- see
+forward.py's FD block) with an opt-in warm-jvp AD path for every row,
 simulates each JWST instrument mode's transit-depth precision with the real
 STScI Pandeia ETC engine, and ranks the modes by conditional
 matched-template S/N (not a retrieval detection significance -- see
-detect.py) plus rank-aware Fisher forecasts.
+detect.py) plus rank-aware Fisher forecasts. adjoint_diag.py adds
+reverse-mode adjoint diagnostics (per-reaction dL/dlnk, per-layer dL/dT)
+with a scope audit and full numerical certification.
 
 Lives in src/jwst_tool/ (dist: vulcan-jwst-tool); the shared
 forward-model modules come from the sibling vulcan-retrieval package

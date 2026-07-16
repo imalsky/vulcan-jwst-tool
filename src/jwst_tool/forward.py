@@ -44,7 +44,8 @@ retrieval framework uses):
       co_ratio     absolute C/O = N_C/N_O -- sets C_H = co_ratio * O_H
     Physics (cfg_overrides / RT flags; defaults = the previous hard-coded values):
       use_photo     photochemistry on/off (off = thermochem + transport only;
-                    FD Fisher works either way since v13)
+                    FD Fisher works either way since v13; jac_method="ad"
+                    requires ON -- the validated jvp regime)
       sl_angle_deg  photolysis zenith angle (deg; 83 = Tsai 2023 terminator slant)
       f_diurnal     diurnal photolysis factor (1.0 = permanent dayside)
       use_moldiff   molecular diffusion on/off (homopause)
@@ -57,22 +58,25 @@ retrieval framework uses):
 Any T-P that leaves the modelable premodit window [320, 2980] K on either grid is
 REJECTED with a clear error (never clipped) -- same rule as the retrieval.
 
-Condensation is intentionally UNSUPPORTED. `canonical_params` raises on a
-truthy ``use_condense``. Why it is hard in VULCAN: a condensing column only
-reaches a steady state via a condensation WINDOW followed by a whole-column
-fix-species PIN that freezes the condensed reservoir (on the SNCHO network,
-S8 / S8_l_s) at its end-of-window transient. That pinned state is
-step-sequence-dependent, so the model is not reliably differentiable through
-it -- the forward-mode jvp disagrees with finite differences at O(1) (~0.91
-relative, measured) -- and the active-condensation layer set and cold-trap
-index are DISCRETE in temperature. Those are exactly the smooth derivatives a
-Fisher forecast needs, so condensation cannot enter the Fisher path. An
-open-system "smooth rainout" replacement built to restore differentiability
-(a true flux-balanced steady state) was prototyped and measured NO-GO -- it
-could not reach strict cold certification / flux balance within its sanctioned
-gate. That campaign is preserved on the ``research/smooth-rainout-fisher``
-branch (+ tag ``smooth-rainout-b0c-no-go-2026-07-14``) of the sibling repos,
-not shipped here.
+Condensation is DETECTION-ONLY (v14; fully removed v8-v13): S8 rainout via
+the certified conden-window + whole-column fix-species pin recipe
+(CONDEN_CFG). It can never meet a derivative. The pin freezes the reservoir
+at a step-sequence-dependent transient, so the converged state is not a
+reproducible function of the inputs, and the condensing-layer set /
+cold-trap index switch discretely in T. That breaks EVERY differentiation
+method: the measured jvp-vs-FD relative error is ~0.91 -- the tangent is
+about 91% WRONG (an order-unity failure, NOT a 0.91 agreement ratio or a
+9% mismatch) -- and finite differences of pinned transients are equally
+untrustworthy. `canonical_params` therefore refuses use_condense with
+fisher_params (any jac_method), with photo OFF (a cold no-photo condensing
+column has no certifiable longdy steady state), and with use_moldiff OFF
+(the growth term IS the molecular-diffusion coefficient); adjoint_diag
+refuses condensing states too. The open-system "smooth rainout"
+replacement that tried to restore differentiability was measured NO-GO
+(preserved on the sibling repos' ``research/smooth-rainout-fisher``
+branch, not shipped). GUI-documented footgun: a column too hot to condense
+still pins S8 at its end-of-window value -- conden-on does NOT reduce to
+conden-off; enable it only where sulfur genuinely condenses.
 
 Aerosol opacity, the Fisher-compatible way: represent clouds/haze as a
 DIFFERENTIABLE opacity rather than as chemistry. The ExoJax power-law cloud
@@ -82,11 +86,28 @@ deck) as Fisher parameters would let an aerosol term enter the forecast
 directly -- a natural future addition, and the recommended path instead of
 condensation.
 
-Fisher machinery: with ``fisher_params`` set, the runner also computes the
-spectrum Jacobian d(depth)/d(param) with one warm-started forward-mode jvp per
-parameter (the validated sensitivity pattern: continuation from the converged
-column, photochemistry ON), plus an RT-only lnR0 (reference-radius nuisance)
-column. ``fisher.py`` turns that + the Pandeia noise into parameter forecasts.
+Fisher machinery: with ``fisher_params`` set, the runner computes the spectrum
+Jacobian d(depth)/d(param) row by row, by one of two methods
+(``jac_method``); the method is recorded per row in the npz
+(``jac_row_method``) and shown in the GUI:
+
+* "fd" (DEFAULT) -- certified central finite differences ("fd-central"):
+  composition rows (lnZ, dlnCO) re-initialize the chemistry per FD point
+  (the upstream-VULCAN workflow, valid at ANY composition); lnKzz/T-P rows
+  perturb theta on the baseline build; every row passes the h-vs-2h
+  consistency gate; lnR0 is an RT-only central difference ("fd-rt").
+* "ad" -- one warm-started forward-mode jvp per row ("ad-jvp": the
+  validated sensitivity pattern -- continuation from the converged column,
+  photochemistry ON required), ~1.7-4x faster per row. Cross-validated
+  against the FD rows on W39b defaults: T_iso 0.14%, dlnCO 0.07%, lnKzz
+  exact, lnR0 0.9999, lnZ 1.6%. Two stated caveats: the lnZ jvp is the
+  FIXED-STRUCTURAL-GRID derivative (the 1.6% gap is the hydrostatic-grid
+  rebuild only FD includes), and the dlnCO jvp uses the fixed-O
+  differential direction, which is undefined on C-rich baselines where its
+  oxygen-reservoir bound b_z <= 0 -- run_model refuses that corner loudly
+  (use "fd", which is valid everywhere).
+
+``fisher.py`` turns the Jacobian + the Pandeia noise into parameter forecasts.
 
 Per-molecule "removed" spectra (for detection significance) zero that molecule's
 VMR in the RT only -- atmospheric structure (T, mmw) is kept, the standard
@@ -116,35 +137,15 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 13  # bump to invalidate all cached spectra (v5: exact-elemental
-               # abundance map, on-graph Dzz/geometry rebuild, He CIA required,
-               # broadening knob in the RT; v6: use_condense knob in the cache
-               # key; v7: GCM baseline/scale modes REMOVED -- every planet on
-               # an isothermal structural baseline; v8: condensation REMOVED as
-               # an option -- use_condense is no longer a parameter (raises if
-               # requested), so the cache key changes and pre-v8 spectra are
-               # stale; v9: VULCAN-JAX SNCHO CH2CN+H+M association k0 typo fix
-               # (1.00E-20 -> 1.00E-29) changes the chemistry, so pre-v9 spectra
-               # are stale; v10: fidelity "quality" tier replaced by explicit
-               # nz/nu_pts/yconv_cri knobs, and the RT layer count art_nlayer is
-               # now LOCKED equal to nz (was fixed at 60) -- the cache key changed
-               # and the RT grid differs, so pre-v10 spectra are stale; v11:
-               # use_vm_mol is now an EXPLICIT canonical parameter, default False.
-               # VULCAN-JAX flipped its own default to hybrid vm_mol on 2026-07-14
-               # (vm_branch port), which this tool silently inherited for ~a day:
-               # v9/v10 spectra were solved with upwind molecular-diffusion
-               # advection the tool's validated baselines never had. Default False
-               # restores the pre-flip chemistry; True opts into the upwind
-               # scheme, un-re-baselined for this tool's forecasts; v12:
-               # CO_BASELINE corrected 0.458 -> 0.549 (cfg C_H/O_H basis, the
-               # FastChem file was the wrong set), cfg C_H now pinned
-               # explicitly, and co_baseline (structural re-init C/O, incl.
-               # C-rich > 1, detection-only) joins the canonical params;
-               # v13: LEGACY COMPOSITION MACHINERY REMOVED -- dco/co_baseline
-               # replaced by one structural co_ratio (any value, one path),
-               # warm-jvp Jacobians replaced by certified central-FD rows
-               # with the h-vs-2h consistency gate (see the FD_STEPS block),
-               # two-stage continuation and the photo-on Fisher gate retired)
+_VERSION = 14  # Bump whenever the physics or the canonical key set changes:
+               # invalidates all cached spectra. Full v1-v13 history lives in
+               # notes.md. v13: structural composition (one co_ratio path,
+               # any value incl. C-rich) + certified central-FD Jacobians
+               # with the h-vs-2h gate. v14: jac_method fd/ad for EVERY row
+               # (per-row jac_row_method provenance, b_z guard on the dlnCO
+               # AD row) + use_condense back as a DETECTION-ONLY forward
+               # option (certified S8 recipe, refused with any derivative);
+               # the key set changed, so pre-v14 caches are stale.
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
@@ -181,22 +182,30 @@ CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
 # The reported row is the Richardson combination (4 J_h - J_2h)/3. Cost: a
 # composition row is 4 build+solve cycles (~6-8 min), a theta row 4 cold
 # solves (~3-5 min); the price of certified, machinery-free derivatives.
-# VALIDATED 2026-07-15 against the retired warm-jvp AD rows on W39b defaults
+# VALIDATED 2026-07-15 against the warm-jvp AD rows on W39b defaults
 # (yconv 1e-3): corr >= 0.9999 and scale within 0.07-1.6% on every row
 # (T_iso 0.14%, dlnCO 0.07%, lnKzz exact, lnZ 1.6% -- the lnZ gap is the
 # hydrostatic-grid rebuild the FD row includes and the fixed-grid AD chain
 # approximated); h-vs-2h consistency 0.004-0.113, all far under the gate.
-# Where AD remains the right tool -- high-dimensional sensitivities
-# (dL/d ln k over ~800 reactions, dL/dT(P) per layer), one adjoint solve vs
-# thousands of FD solves -- use VULCAN-JAX steady_state_reaction_sensitivity /
-# steady_state_input_sensitivity (validated 0.2-0.8% there); deliberately NOT
-# wired into this tool's forecasts.
+# Since v14 that warm-jvp AD path is available again as an OPT-IN
+# (jac_method="ad") for EVERY row (~1.7-4x faster per row, photo-on only):
+# theta rows and lnR0 agree with FD to 0.07-0.14% / 0.9999; the composition
+# directions carry the two stated caveats from the module docstring (lnZ =
+# the fixed-structural-grid derivative, 1.6% vs FD; dlnCO = the fixed-O
+# differential direction, guarded by the b_z bound on C-rich baselines --
+# run_model refuses that corner loudly). FD stays the default: certified,
+# assumption-free, valid everywhere. Where AD is the ONLY practical tool --
+# high-dimensional sensitivities (dL/d ln k over ~800 reactions, dL/dT(P)
+# per layer), one adjoint solve vs thousands of FD solves -- see
+# VULCAN-JAX steady_state_reaction_sensitivity /
+# steady_state_input_sensitivity (validated 0.2-0.8% there).
 FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.10,      # ln-space steps
             "T_iso": 10.0, "Tirr": 10.0, "Tint": 10.0,      # Kelvin
             "log_kappa": 0.05, "log_gamma": 0.05}           # dex
 FD_COMP_PARAMS = ("lnZ", "dlnCO")     # need a chemistry re-init per FD point
 FD_CONSISTENCY_TOL = 0.25
 FD_LNR0_STEP = 0.01                   # lnR0 is RT-only (smooth, analytic)
+JAC_METHODS = ("fd", "ad")            # certified-FD default / warm-jvp opt-in
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -252,6 +261,56 @@ def param_axis(name: str) -> str:
     representation (e.g. '[M/H] [dex]', 'C/O', 'T_iso [K]')."""
     u = PARAM_UNITS[name]
     return f"{PARAM_SYMBOLS[name]} [{u}]" if u else PARAM_SYMBOLS[name]
+
+
+# VULCAN condensation channel on the SNCHO network (detection-only, v14; see
+# the module docstring for why it can never meet a derivative): the one
+# condensation reaction is S8 -> S8_l_s (H2O/NH3 condensation is NOT available
+# on this network -- no H2O_l_s/NH3_l_s species). Particle properties:
+# rainout-sized 50 um orthorhombic-sulfur particles (rho = 2.07 g/cm^3; r_p
+# matches the shipped cfgs' H2O_l_s value) -- smaller aerosol radii make the
+# growth term stiffer than Ros2 can resolve to convergence. Convergence
+# methodology is upstream VULCAN's conden-window + fix_species pin:
+# condensation runs on [start_conden_time, stop_conden_time], then S8 +
+# S8_l_s are pinned WHOLE-COLUMN (from_coldtrap_lev=False -- the cold-trap
+# argmin degenerates on isothermal columns) and the rest of the chemistry
+# converges. Without the pin the steady state is transport-limited (the
+# upper S8 reservoir drains through the condensation front on the Kzz
+# timescale ~1e9 s while dt stays capped) and every solve would exhaust
+# count_max. Caveat, documented: on planets too hot to condense, enabling
+# condensation still pins S8/S8_l_s at their t = stop_conden_time transient.
+CONDEN_CFG = {
+    "use_condense": True,
+    "condense_sp": ["S8"],
+    "non_gas_sp": ["S8_l_s"],
+    "r_p": {"S8_l_s": 5.0e-3},
+    "rho_p": {"S8_l_s": 2.07},
+    "use_relax": [],
+    "use_settling": False,
+    "fix_species": ["S8", "S8_l_s"],
+    "fix_species_from_coldtrap_lev": False,
+    "start_conden_time": 0.0,
+    "stop_conden_time": 1.0e6,
+    # Convergence mixing-ratio floor for cold (condensing) atmospheres: at
+    # the 1e-20 default, kinetically-glacial trace species (e.g. NH3 forming
+    # from N2 at ~400 K, drifting at ~1e-18 VMR) gate longdy forever. 1e-15
+    # is still orders below any RT-relevant abundance.
+    "mtol_conv": 1.0e-15,
+    # Default heavy-hydrocarbon conver_ignore list + the trace sulfur
+    # allotropes: against a pinned S8 they re-equilibrate on cold-top thermal
+    # timescales measured at >=1e15 s (physically unreachable), at abundances
+    # far below RT relevance -- none is an RT molecule; the observable sulfur
+    # species (SO2, H2S, SO) STAY in the gate. Measured in vulcan-retrieval
+    # tests/test_condensation_live_tp.py.
+    "conver_ignore": ["C6H6", "C2H2", "C6H5", "C2H", "C2H4", "C2H5", "C2H6",
+                      "C3H2", "C3H3", "C4H5", "CH2NH", "CH3NH2", "H2CCO",
+                      "S", "S2", "S3", "S4"],
+    # Bound certification from below so the conden window + pin always
+    # complete before the convergence gate may fire (the certified S8 state
+    # is the deterministic end-of-window rainout).
+    "trun_min": 1.0e6,
+}
+
 
 def canonical_params(params: dict) -> dict:
     tp_mode = str(params.get("tp_mode", "isothermal"))
@@ -333,8 +392,15 @@ def canonical_params(params: dict) -> dict:
         "cloud_on": bool(params.get("cloud_on", False)),
         "log_kappa_cloud": round(float(params.get("log_kappa_cloud", -1.0)), 3),
         "alpha_cloud": round(float(params.get("alpha_cloud", 0.0)), 2),
+        # Detection-only condensation (v14): the certified S8 forward recipe.
+        # The compatibility matrix below refuses it with ANY derivative.
+        "use_condense": bool(params.get("use_condense", False)),
         "extra_mols": sorted(str(m) for m in (params.get("extra_mols") or [])),
         "fisher_params": sorted(str(p) for p in (params.get("fisher_params") or [])),
+        # Jacobian method: "fd" (certified central FD, default, valid
+        # everywhere) or "ad" (one warm-started jvp per row, photo-on only;
+        # see the module docstring for the per-row caveats).
+        "jac_method": str(params.get("jac_method", "fd")),
         "version": _VERSION,
     }
     if not 0.0 <= cp["sl_angle_deg"] <= 89.0:
@@ -368,24 +434,55 @@ def canonical_params(params: dict) -> dict:
             f"unknown Fisher parameter(s) {sorted(bad_fp)} for tp_mode="
             f"{tp_mode!r}: choose from ['lnZ', 'dlnCO', 'lnKzz'] + "
             f"{TP_PARAM_NAMES[tp_mode]}")
-    if params.get("use_condense"):
-        # Condensation is intentionally UNSUPPORTED (loud, no silent ignore).
-        # A condensing VULCAN column reaches steady state only via a window +
-        # whole-column fix-species pin that freezes the condensed reservoir at
-        # a step-sequence-dependent transient, which is not reliably
-        # differentiable (jvp vs FD ~0.91) and switches discretely in T --
-        # unusable for the Fisher forecast this tool is built around. The
-        # open-system smooth-rainout replacement was measured NO-GO (see the
-        # module docstring / research/smooth-rainout-fisher branch). For
-        # aerosol opacity use the differentiable ExoJax cloud deck instead.
+    if cp["jac_method"] not in JAC_METHODS:
         raise ValueError(
-            "condensation (use_condense) is not supported: VULCAN reaches a "
-            "condensing steady state only with a window + fix-species pin "
-            "whose frozen reservoir is not reliably differentiable (jvp vs "
-            "FD ~0.91) and switches discretely in temperature, so it cannot "
-            "enter the Fisher forecast. The open-system smooth-rainout "
-            "replacement was measured NO-GO. Represent aerosols with the "
-            "differentiable ExoJax cloud deck (cloud_on) instead.")
+            f"jac_method={cp['jac_method']!r}: choose 'fd' (certified central "
+            "finite differences, the default) or 'ad' (one warm-started jvp "
+            "per Jacobian row)")
+    if cp["jac_method"] == "ad" and not cp["fisher_params"]:
+        cp["jac_method"] = "fd"   # no Jacobian requested: inert knob --
+        #                           normalize so it can't fragment the cache
+    if cp["jac_method"] == "ad" and not cp["use_photo"]:
+        raise ValueError(
+            "jac_method='ad' (warm-started jvp Jacobian rows) is validated "
+            "only in the photo-on regime. Enable photochemistry, or use the "
+            "default certified finite differences (jac_method='fd'), which "
+            "work photo-off too.")
+    # --- condensation: detection-only -- refuse every derivative combo -----
+    # (why: module docstring; the raises below carry the full user-facing
+    # explanation, and the '91% wrong' wording is test-pinned)
+    if cp["use_condense"]:
+        if cp["fisher_params"]:
+            raise ValueError(
+                "condensation (use_condense) cannot be combined with a "
+                "Fisher forecast under ANY Jacobian method: the pinned "
+                "condensed reservoir is frozen at a step-sequence-dependent "
+                "transient (the state is not a reproducible function of the "
+                "parameters) and the condensing-layer set switches "
+                "discretely in temperature. The AD tangent through it is "
+                "about 91% wrong (jvp-vs-FD relative error ~0.91 -- an "
+                "order-unity failure, not a 9% mismatch), and finite "
+                "differences of pinned transients are equally "
+                "untrustworthy. Clear the Fisher parameter list (detection "
+                "works), or turn condensation off. For aerosol opacity in a "
+                "forecast use the differentiable ExoJax cloud deck "
+                "(cloud_on) instead.")
+        if not cp["use_photo"]:
+            raise ValueError(
+                "condensation (use_condense) requires photochemistry ON: a "
+                "cold no-photo condensing column has no certifiable longdy "
+                "steady state (well-mixed CO2 creeps toward equilibrium on "
+                ">= 1e17 s -- the quench regime; upstream integrates those "
+                "to a runtime cap, which this tool refuses to present as a "
+                "converged spectrum). Enable photochemistry or turn "
+                "condensation off.")
+        if not cp["use_moldiff"]:
+            raise ValueError(
+                "condensation (use_condense) requires molecular diffusion "
+                "(use_moldiff): the condensation growth term IS the species' "
+                "molecular-diffusion coefficient, so with it off every "
+                "condensation rate would silently be zero. Enable molecular "
+                "diffusion, or turn condensation off.")
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
@@ -418,8 +515,13 @@ def cache_path(params: dict) -> Path:
 
 
 def load_result(params: dict):
-    """Cached spectrum dict or None. Keys: wl_um, depth, mols, depth_wo (nmol, n_nu),
-    and (if Fisher was requested) jac (n_par, n_nu) + jac_names."""
+    """Cached spectrum dict or None.
+
+    Always present: wl_um, depth, depth_wo (nmol, n_nu), mols, ymix, p_bar,
+    T, theta, theta_names, params_json, and the convergence certificate
+    (conv_stages, conv_accept, conv_longdy, conv_gate). With Fisher
+    requested: jac (n_par, n_nu), jac_names, jac_row_method, fd_h, fd_err.
+    """
     p = cache_path(params)
     if not p.exists():
         return None
@@ -470,13 +572,15 @@ def _make_progress(cp: dict, log):
     stages += [("solving photochemistry", 35.0)]
     stages += [("full transmission spectrum", 8.0)]
     stages += [(f"spectrum without {m}", 4.0) for m in mols]
-    # FD Jacobians: a composition row = 4 re-init build+solve cycles; a
-    # lnKzz/T-P row = 4 cold solves on the baseline build
-    stages += [(f"FD Jacobian d/d({n})",
-                420.0 if n in FD_COMP_PARAMS else 260.0)
+    # Jacobian rows: fd = 4 re-init build+solve cycles per composition row /
+    # 4 cold solves per lnKzz/T-P row; ad = one warm jvp per row
+    _ad = cp["jac_method"] == "ad"
+    stages += [((f"AD Jacobian d/d({n})", 110.0) if _ad else
+                (f"FD Jacobian d/d({n})",
+                 420.0 if n in FD_COMP_PARAMS else 260.0))
                for n in cp["fisher_params"]]
     if cp["fisher_params"]:
-        stages += [("FD Jacobian d/d(lnR0)", 8.0)]
+        stages += [(("AD" if _ad else "FD") + " Jacobian d/d(lnR0)", 8.0)]
     total = sum(w for _, w in stages)
     state = {"i": 0, "done": 0.0}
 
@@ -492,16 +596,27 @@ def _make_progress(cp: dict, log):
     return advance, finish
 
 
-def run_model(params: dict, log=print) -> Path:
+def _assemble_chem(cp: dict, log):
+    """Shared heavy-path assembly (run_model AND adjoint_diag): the resolved
+    run profile with the structural composition pinned into cfg_overrides,
+    the on-graph T-P hook, theta, and a chemistry-build factory. One code
+    path -- the adjoint diagnostics must analyze exactly the model the
+    forecasts ran. Imports the engine (import order load-bearing)."""
     # import order is load-bearing: vulcan_chem (env + x64) before jax/exojax
+    from types import SimpleNamespace
+
     from retrieval_framework.forward import config
     from retrieval_framework.forward import vulcan_chem
-    import jax.numpy as jnp
-    from retrieval_framework.forward import exojax_rt
-    from retrieval_framework.forward import interp_map
+    import jax
 
-    cp = canonical_params(params)
-    advance, finish = _make_progress(cp, log)
+    # Persistent XLA compile cache (shared with the jax_paper adjoint
+    # campaign's artifacts): saves the ~40 s runner warm-up on repeat runs
+    # and is ESSENTIAL for adjoint_diag, whose step-VJP is a multi-hour
+    # cold compile on CPU (measured 2026-07-16).
+    jax.config.update("jax_compilation_cache_dir",
+                      str(Path.home() / ".cache" / "jax_vulcan"))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+
     tp_eval, n_tp, tp_vals, theta_names = _build_tp(cp, cp["gs_cgs"])
     # theta layout [lnZ, dlnCO, lnKzz, tp...] is the vulcan_chem contract; the
     # two composition entries are ALWAYS 0 since v13 -- composition is set
@@ -558,6 +673,14 @@ def run_model(params: dict, log=print) -> Path:
     if cp["use_photo"]:                  # photolysis geometry/averaging knobs
         ovr["sl_angle"] = float(np.deg2rad(cp["sl_angle_deg"]))
         ovr["f_diurnal"] = cp["f_diurnal"]
+    if cp["use_condense"]:
+        # canonical_params confirmed detection-only (no fisher), photo on,
+        # moldiff on. The engine rebuilds the condensation arrays on-graph
+        # from the live T(P) per solve (vulcan_chem._prep), so isothermal
+        # and Guillot are both self-consistent; the channel config
+        # (S8 -> S8_l_s + particle properties + the certified convergence
+        # recipe) is CONDEN_CFG.
+        ovr.update(CONDEN_CFG)
     # Isothermal structural baseline for EVERY planet (including WASP-39b; the
     # GCM structural baseline was removed): the on-graph tp_eval supplies the
     # actual T(P) for chemistry+RT, the structural profile only sets the
@@ -613,13 +736,18 @@ def run_model(params: dict, log=print) -> Path:
         log(f"[fwd] chemistry model ({tag}) ready in {time.time()-t_b:.0f} s")
         return chem_b
 
-    t0 = time.time()
-    advance()
-    log("[fwd] building chemistry model (VULCAN-JAX warm-up ~40 s) ...")
-    chem = _build_chem()
+    return SimpleNamespace(
+        profile=profile, theta=theta, theta_names=theta_names,
+        tp_eval=tp_eval, n_tp=n_tp, build_chem=_build_chem,
+        abundance_overrides=_abundance_overrides, config=config)
 
-    # --- T-P validity: REJECT (never clip) out-of-window profiles ------------
-    T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(chem.p_bar)))
+
+def _check_t_window(tp_eval, theta, p_bar, log):
+    """T-P validity on the chemistry grid: REJECT (never clip) out-of-window
+    profiles. Returns the evaluated T(P) as a numpy array."""
+    import jax.numpy as jnp
+
+    T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(p_bar)))
     tmin, tmax = float(T_check.min()), float(T_check.max())
     if tmin < T_WINDOW[0] or tmax > T_WINDOW[1]:
         raise RuntimeError(
@@ -628,6 +756,31 @@ def run_model(params: dict, log=print) -> Path:
             "Adjust the profile parameters -- out-of-window layers are rejected, "
             "not clipped (opacity tables end there).")
     log(f"[fwd] T-P in window: [{tmin:.0f}, {tmax:.0f}] K")
+    return T_check
+
+
+def run_model(params: dict, log=print) -> Path:
+    cp = canonical_params(params)
+    advance, finish = _make_progress(cp, log)
+    A = _assemble_chem(cp, log)
+    # heavy imports AFTER _assemble_chem: vulcan_chem must init env/x64 first
+    import jax
+    import jax.numpy as jnp
+    from retrieval_framework.forward import exojax_rt
+    from retrieval_framework.forward import interp_map
+
+    config = A.config
+    profile, theta, theta_names = A.profile, A.theta, A.theta_names
+    tp_eval, _abundance_overrides, _build_chem = (
+        A.tp_eval, A.abundance_overrides, A.build_chem)
+    mols_active = list(profile["molecules"])
+
+    t0 = time.time()
+    advance()
+    log("[fwd] building chemistry model (VULCAN-JAX warm-up ~40 s) ...")
+    chem = _build_chem()
+
+    T_check = _check_t_window(tp_eval, theta, chem.p_bar, log)
 
     t0 = time.time()
     advance()
@@ -719,15 +872,18 @@ def run_model(params: dict, log=print) -> Path:
         depth_wo[i] = np.asarray(depth_from_y(y_sol, th0, drop_mol=mol))
         log(f"[fwd] spectrum without {mol} in {time.time()-t1:.0f} s")
 
-    # --- Fisher Jacobian: central FD of certified solves (v13) ---------------
-    # See the FD_STEPS block at module top: composition rows re-initialize the
-    # chemistry per FD point (the upstream-VULCAN workflow); lnKzz/T-P rows
-    # perturb theta on the baseline build. Every point is longdy-certified,
-    # every row must pass the h-vs-2h consistency gate, and the reported row
-    # is the Richardson combination (4 J_h - J_2h)/3.
+    # --- Fisher Jacobian: certified FD (default) / warm-jvp AD (opt-in) ------
+    # See the FD_STEPS block at module top. "fd": composition rows
+    # re-initialize the chemistry per FD point (the upstream-VULCAN
+    # workflow), lnKzz/T-P rows perturb theta on the baseline build; every
+    # FD point is longdy-certified, every FD row must pass the h-vs-2h
+    # consistency gate, and the reported FD row is the Richardson
+    # combination (4 J_h - J_2h)/3. "ad": EVERY row is one warm-started jvp
+    # (module docstring has the per-row caveats). The method used for each
+    # row is recorded in jac_row_method.
     jac_names = list(cp["fisher_params"])
     jac = np.zeros((len(jac_names) + 1, depth.shape[0])) if jac_names else None
-    fd_h, fd_err = [], []
+    fd_h, fd_err, row_method = [], [], []
     if jac_names:
         def _certified_depth(chem_b, th, stage):
             y_b, ac_b, ld_b = chem_b.converged_y(jnp.asarray(th),
@@ -756,9 +912,54 @@ def run_model(params: dict, log=print) -> Path:
                     "reported.")
             return (4.0 * j1 - j2) / 3.0, err   # Richardson, O(h^4)
 
+        def _ad_theta_depth(th):
+            # warm continuation from the converged column: the primal is a
+            # no-op re-converge, the jvp is the validated steady-state
+            # tangent (photo ON -- gated in canonical_params). The baseline
+            # theta composition entries are 0 (structural composition), so
+            # lnZ_ref/c_o_ref are 0; an lnZ/dlnCO TANGENT direction through
+            # them is the validated differential map at this baseline.
+            y_w = chem.converged_y(th, warm_y=y_sol, lnZ_ref=0.0, c_o_ref=0.0)
+            return depth_from_y(y_w, th)
+
+        if cp["jac_method"] == "ad" and "dlnCO" in jac_names:
+            # The dlnCO jvp rides the fixed-O differential direction, which
+            # exists only while its oxygen-reservoir bound b_z is positive --
+            # on a sufficiently C-rich structural baseline it is not, and no
+            # tangent direction exists. FD re-initializes instead and is
+            # valid at any composition.
+            _bz = getattr(chem, "co_bz_bound", None)
+            if _bz is not None and float(_bz) <= 0.0:
+                raise RuntimeError(
+                    "AD Jacobian for dlnCO is undefined at this composition: "
+                    f"the fixed-O differential direction's oxygen-reservoir "
+                    f"bound b_z = {float(_bz):.3g} <= 0 (C-rich baseline, "
+                    f"C/O = {cp['co_ratio']:g}). Use jac_method='fd' -- the "
+                    "certified FD row re-initializes the chemistry and is "
+                    "valid at any composition.")
+
         for j, name in enumerate(jac_names):
             t1 = time.time()
             advance()
+            if cp["jac_method"] == "ad":
+                # AD row: one warm-started forward-mode jvp along this
+                # theta direction (composition directions included -- the
+                # cross-validated differential map; lnZ is the fixed-
+                # structural-grid derivative, see the module docstring)
+                i_par = theta_names.index(name)
+                e = np.zeros_like(theta)
+                e[i_par] = 1.0
+                _, dd = jax.jvp(_ad_theta_depth, (th0,), (jnp.asarray(e),))
+                jac[j] = np.asarray(dd)
+                if not np.isfinite(jac[j]).all():
+                    raise RuntimeError(
+                        f"AD Jacobian for {name}: non-finite entries")
+                fd_h.append(0.0)          # no FD step: AD row
+                fd_err.append(np.nan)     # no h-vs-2h metric: AD row
+                row_method.append("ad-jvp")
+                log(f"[fwd] AD Jacobian d(depth)/d({name}) in "
+                    f"{time.time()-t1:.0f} s (warm-started jvp)")
+                continue
             h = FD_STEPS[name]
             dvals = {}
             if name in FD_COMP_PARAMS:
@@ -797,22 +998,33 @@ def run_model(params: dict, log=print) -> Path:
                                   dvals[2], dvals[-2], h)
             fd_h.append(h)
             fd_err.append(err)
+            row_method.append("fd-central")
             log(f"[fwd] FD Jacobian d(depth)/d({name}) in "
                 f"{time.time()-t1:.0f} s (h-vs-2h consistency {err:.3f} < "
                 f"{FD_CONSISTENCY_TOL})")
 
         t1 = time.time()
         advance()
-        # lnR0 is RT-only (smooth, analytic in lnR0): one central difference
-        # through the radiative transfer, no chemistry and no gate needed.
-        d_rp = np.asarray(depth_from_y(y_sol, th0, lnR0=+FD_LNR0_STEP))
-        d_rm = np.asarray(depth_from_y(y_sol, th0, lnR0=-FD_LNR0_STEP))
-        jac[-1] = (d_rp - d_rm) / (2.0 * FD_LNR0_STEP)
+        # lnR0 is RT-only (smooth, analytic in lnR0). "fd": one central
+        # difference through the radiative transfer, no chemistry and no
+        # gate needed; "ad": the RT jvp (the two agree to 0.9999, measured).
+        if cp["jac_method"] == "ad":
+            _, dd = jax.jvp(lambda r: depth_from_y(y_sol, th0, lnR0=r),
+                            (jnp.asarray(0.0),), (jnp.asarray(1.0),))
+            jac[-1] = np.asarray(dd)
+            fd_h.append(0.0)
+            fd_err.append(np.nan)
+            row_method.append("ad-jvp")
+        else:
+            d_rp = np.asarray(depth_from_y(y_sol, th0, lnR0=+FD_LNR0_STEP))
+            d_rm = np.asarray(depth_from_y(y_sol, th0, lnR0=-FD_LNR0_STEP))
+            jac[-1] = (d_rp - d_rm) / (2.0 * FD_LNR0_STEP)
+            fd_h.append(FD_LNR0_STEP)
+            fd_err.append(0.0)
+            row_method.append("fd-rt")
         jac_names.append("lnR0")
-        fd_h.append(FD_LNR0_STEP)
-        fd_err.append(0.0)
-        log(f"[fwd] FD Jacobian d(depth)/d(lnR0) [RT-only nuisance] in "
-            f"{time.time()-t1:.0f} s")
+        log(f"[fwd] {cp['jac_method'].upper()} Jacobian d(depth)/d(lnR0) "
+            f"[RT-only nuisance] in {time.time()-t1:.0f} s")
 
     MODEL_CACHE.mkdir(parents=True, exist_ok=True)
     out = cache_path(params)
@@ -835,8 +1047,11 @@ def run_model(params: dict, log=print) -> Path:
     if jac is not None:
         arrays["jac"] = jac
         arrays["jac_names"] = np.array(jac_names, dtype="U16")
-        # FD provenance: step and h-vs-2h consistency metric per row (lnR0's
-        # is 0 by construction -- RT-only, no gate)
+        # Per-row provenance: the method actually used ("fd-central" /
+        # "ad-jvp" / "fd-rt"), the FD step, and the h-vs-2h consistency
+        # metric (0 for lnR0 by construction -- RT-only, no gate; NaN for
+        # AD rows -- there is no step to vary)
+        arrays["jac_row_method"] = np.array(row_method, dtype="U16")
         arrays["fd_h"] = np.array(fd_h, dtype=np.float64)
         arrays["fd_err"] = np.array(fd_err, dtype=np.float64)
     np.savez_compressed(out, **arrays)

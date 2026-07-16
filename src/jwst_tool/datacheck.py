@@ -26,7 +26,7 @@ import importlib
 import importlib.util
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from jwst_tool import instruments as ins
@@ -106,12 +106,6 @@ def _engine_config():
         return importlib.import_module("retrieval_framework.forward.config")
     except Exception as e:                      # ImportError or its RuntimeError
         return e
-
-
-def engine_molecule_specs() -> dict | None:
-    """{RT molecule: spec} from the engine config, or None if unavailable."""
-    cfg = _engine_config()
-    return None if isinstance(cfg, Exception) else dict(cfg.MOLECULES)
 
 
 def linelist_path(mol: str, broadening: str = "air") -> Path | None:

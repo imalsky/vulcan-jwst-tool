@@ -442,4 +442,4 @@ def depth_error_bins(mode_result: dict, edges: np.ndarray,
     sigma = np.maximum(np.sqrt(var_phot), floor)
     return dict(wl_center=op["wl_center"], sigma=sigma, n_pix=op["n_pix"],
                 var_phot=var_phot, floor=floor,
-                n_transits=int(max(1, int(n_transits))))
+                n_transits=int(n_transits))

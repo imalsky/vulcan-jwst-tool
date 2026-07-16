@@ -63,7 +63,7 @@ N_TRANSITS_CAP = 500
 # (lnZ, dlnCO, lnKzz) are the science axes -- projecting them out would eat
 # the very signal being scored. Must track forward.TP_PARAM_NAMES.
 _NUISANCE_JAC = frozenset(
-    {"dT", "T_iso", "Tirr", "Tint", "log_kappa", "log_gamma", "lnR0"})
+    {"T_iso", "Tirr", "Tint", "log_kappa", "log_gamma", "lnR0"})
 
 
 def _segment_rows(seg: np.ndarray) -> list[np.ndarray]:
