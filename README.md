@@ -37,12 +37,7 @@ This is a planner, not a retrieval. Detection scores assume one fixed
 atmosphere. The Fisher forecast is linear and local, so real posteriors
 can only be wider. The noise model omits time-correlated systematics and
 is conservative against PandExo by roughly 2 to 24 percent in the near
-infrared and 33 to 56 percent for MIRI LRS
-(`tests/parity/outputs/REPORT.md`), so mode rankings are more trustworthy
-than absolute ppm. Planet registry values are literature planning defaults
-meant to be edited. Solves that miss the convergence gate raise instead of
-returning a bad spectrum. History and validation numbers are in
-`notes.md`.
+infrared and 33 to 56 percent for MIRI LRS.
 
 ## Layout
 
