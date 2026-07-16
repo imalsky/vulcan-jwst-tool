@@ -67,17 +67,3 @@ molecule's opacity, with calibration nuisances profiled out. It
 upper-bounds any real retrieval detection. Constraint builds a
 Fisher-information forecast from the spectrum's parameter derivatives and
 reports local Cramer-Rao lower bounds, not posterior widths.
-
-## Derivatives
-
-Every reported number is labeled with the method that produced it. The
-default is central finite differences of independently re-converged
-solves, checked at two step sizes, valid at any composition. A
-forward-mode AD path is available for every row and is 1.7 to 4 times
-faster, but requires photochemistry and refuses invalid corners. A
-post-run adjoint panel gives the sensitivity of a molecule's abundance to
-every reaction rate and every layer's temperature from one reverse-mode
-solve, with a scope audit run first. Its first run per machine compiles
-the solver's step-VJP, which can take hours and is then cached.
-Condensation (S8 rainout) is detection-only. Its pin freezes a
-step-history-dependent state, so no derivative is valid through it.
