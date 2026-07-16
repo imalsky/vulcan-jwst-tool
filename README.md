@@ -8,22 +8,39 @@ the transits required. Import name `jwst_tool`, console script `jwst-tool`.
 
 ## Installation
 
-From TestPyPI, with the sibling packages resolved automatically:
+1. Install from TestPyPI. The sibling packages resolve automatically:
 
 ```
-pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple 'vulcan-jwst-tool[gui]>=0.10.1'
+pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple 'vulcan-jwst-tool[gui]>=0.10.3'
 ```
 
-The Pandeia backend lives in its own conda environment:
+2. Create the Pandeia engine environment (once):
 
 ```
 conda create -n pandeia_2026 python=3.11
 conda run -n pandeia_2026 pip install pandeia.engine==2026.2
 ```
 
-Set `VULCAN_PROJECT_ROOT`, `JWST_TOOL_DATA_DIR`, `JWST_TOOL_OUTPUT_DIR`,
-and `JWST_TOOL_PANDEIA_PYTHON`. Reference data is not in the wheels. Run
-`jwst-tool data` for a live report with the remedy for anything missing.
+3. Tell the tool where to keep data and caches:
+
+```
+export VULCAN_PROJECT_ROOT="$HOME/vulcan"
+export JWST_TOOL_DATA_DIR="$HOME/vulcan/jwst_data"
+export JWST_TOOL_OUTPUT_DIR="$HOME/vulcan/jwst_output"
+export JWST_TOOL_PANDEIA_PYTHON="$(conda run -n pandeia_2026 which python)"
+```
+
+4. Fetch the reference data:
+
+```
+jwst-tool fetch
+```
+
+This downloads every dataset with a public URL (CIA tables, the PHOENIX
+grid, CALSPEC pieces) and prints the two STScI Box downloads it cannot
+script, with the exact paths to extract them to. Everything else fetches
+itself on first use. `jwst-tool data` shows a live status report with a
+remedy per item at any time.
 
 ## Running
 

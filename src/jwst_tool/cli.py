@@ -1,6 +1,9 @@
 """Console entry point: ``jwst-tool`` launches the Streamlit GUI.
 
 ``jwst-tool``              launch the GUI (preflight checks first, loud)
+``jwst-tool fetch``        download every missing dataset with a public URL,
+                           then print the short manual list (two STScI Box
+                           downloads + the Pandeia conda environment)
 ``jwst-tool data``         print the full data-availability report + remedies
 ``jwst-tool data --deep``  also probe the Pandeia env for its engine version
 
@@ -36,6 +39,9 @@ def _data_status(argv: list[str]) -> int:
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "data":
         return _data_status(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "fetch":
+        from jwst_tool import fetch
+        return fetch.run_fetch()
 
     try:
         import streamlit  # noqa: F401
