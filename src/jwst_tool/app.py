@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -212,6 +215,92 @@ with st.expander("Data status: what this machine has installed"
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 _ADJ_PROG_RE = re.compile(r"\[adj\] PROG ([0-9.]+) (.*)")
 
+
+def _fmt_dur(s: float) -> str:
+    """Compact duration: '42 s', '3 m 05 s', '1 h 12 m'."""
+    s = max(0, int(round(s)))
+    if s < 60:
+        return f"{s} s"
+    m, sec = divmod(s, 60)
+    if m < 60:
+        return f"{m} m {sec:02d} s"
+    h, m = divmod(m, 60)
+    return f"{h} h {m:02d} m"
+
+
+class _TimedBar:
+    """st.progress wrapper that appends a live elapsed / time-remaining
+    readout to every label.
+
+    The remaining estimate blends the pre-run prior (when given) with the
+    measured pace, weighting the measurement by the completed fraction, so
+    it starts at the prior and converges to the measured rate; with no
+    prior it is purely measured and appears once the first progress
+    fraction lands. It is labeled "about" -- stage weights are rough."""
+
+    def __init__(self, prior_total_s: float | None = None,
+                 text: str = "starting ..."):
+        self._bar = st.progress(0.0, text=text)
+        self._t0 = time.monotonic()
+        self._prior = prior_total_s
+        self._frac = 0.0
+        self._label = text
+
+    def _render(self) -> None:
+        e = time.monotonic() - self._t0
+        remaining = None
+        if self._frac > 0.0:
+            total = e / self._frac
+            if self._prior:
+                total = self._frac * total + (1.0 - self._frac) * self._prior
+            remaining = max(total - e, 0.0)
+        elif self._prior:
+            remaining = max(self._prior - e, 0.0)
+        txt = f"{self._label}  (elapsed {_fmt_dur(e)}"
+        txt += (f", about {_fmt_dur(remaining)} left)"
+                if remaining is not None else ")")
+        self._bar.progress(min(1.0, self._frac), text=txt)
+
+    def update(self, frac: float, label: str) -> None:
+        self._frac, self._label = float(frac), label
+        self._render()
+
+    def tick(self) -> None:
+        """Refresh the clock without new progress information."""
+        self._render()
+
+    def done(self, label: str = "done") -> None:
+        self._bar.progress(
+            1.0, text=f"{label}  ({_fmt_dur(time.monotonic() - self._t0)})")
+
+
+def _watch_proc(proc, on_line, on_tick, tick_s: float = 1.0) -> None:
+    """Dispatch each stdout line of ``proc`` to ``on_line``, calling
+    ``on_tick`` at least every ``tick_s`` seconds of silence so the
+    elapsed/remaining readout keeps counting through long quiet solver
+    stages. Reads the raw pipe fd (select + os.read), so no completed line
+    ever sits hidden in a Python-level buffer. Where select() cannot watch
+    pipes (Windows) it degrades to blocking reads: same lines, the clock
+    just only advances when output arrives."""
+    fd = proc.stdout.fileno()
+    tail = b""
+    can_select = sys.platform != "win32"
+    while True:
+        if can_select:
+            ready, _, _ = select.select([fd], [], [], tick_s)
+            if not ready:
+                on_tick()
+                continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            if tail:
+                on_line(tail.decode(errors="replace").rstrip())
+            return
+        tail += chunk
+        *full, tail = tail.split(b"\n")
+        for raw in full:
+            on_line(raw.decode(errors="replace").rstrip())
+
 # default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
@@ -384,15 +473,13 @@ with st.sidebar:
             format_func=lambda x: (f"{x:.2f} (baseline)"
                                    if abs(x - forward.CO_BASELINE) < 1e-6
                                    else f"{x:.2f}"),
-            help="Total carbon/oxygen number ratio N_C/N_O; sets the carbon "
-                 "abundance at the (metallicity-scaled) oxygen: C_H = C/O × "
-                 "O_H, then the network re-initializes at that composition. "
-                 "Baseline 0.55 = this network's WASP-39b elemental set "
-                 "(Tsai et al. 2023 10x-solar; Asplund-flavored solar C/O). "
-                 "Any value works, including carbon-rich (> 1); near the "
-                 "C/O = 1 transition the chemistry stiffens and solves get "
-                 "slower, and derivatives there are physically "
-                 "ill-conditioned. Constrain C/O per side, not across it.")
+            help="Total carbon/oxygen number ratio N_C/N_O: sets C_H = C/O × "
+                 "O_H at the metallicity-scaled oxygen, then the network "
+                 "re-initializes. Baseline 0.55 = this network's WASP-39b "
+                 "set (Tsai et al. 2023). Carbon-rich values (> 1) work "
+                 "too, but near C/O = 1 solves slow down and derivatives "
+                 "are ill-conditioned: constrain C/O per side, not across "
+                 "it.")
 
     with st.expander("Vertical mixing (K_zz)"):
         # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
@@ -579,6 +666,46 @@ with st.sidebar:
             help="Wavenumber grid points across 1-15 µm, before binning to your "
                  "chosen display R below. Higher sampling sharpens narrow "
                  "features (the weak mid-IR bands) at more runtime.")
+
+    with st.expander("Advanced RT (top pressure, integration, line wings)"):
+        st.caption("ExoJAX modeling choices that can move the spectrum. The "
+                   "defaults are the validated baseline; every choice is "
+                   "cache-keyed, so changing one re-runs the model.")
+        rt_ptop_bar = st.select_slider(
+            "RT top pressure (bar)",
+            options=[1.0e-6, 1.0e-7, 1.0e-8, 1.0e-9], value=1.0e-8,
+            key=K("rtptop"),
+            format_func={1.0e-6: "1e-6",
+                         1.0e-7: "1e-7 (chemistry top)",
+                         1.0e-8: "1e-8 (default)",
+                         1.0e-9: "1e-9"}.get,
+            help="Where the RT column ends. Above VULCAN's 1e-7 bar "
+                 "chemistry top the topmost abundances and temperature are "
+                 "held constant (a standard transmission-modeling "
+                 "convention, not chemistry). Too low a top saturates "
+                 "strong bands (CO2 4.3, CO 4.7 µm) into a flat wall: on "
+                 "WASP-39b ~4.8% of the 4.2-5.2 µm band saturates at 1e-6 "
+                 "bar vs 0.1% at the 1e-8 default.")
+        rt_integration = st.selectbox(
+            "Transit chord integration", ["simpson", "trapezoid"], index=0,
+            key=K("rtint"),
+            format_func={"simpson": "Simpson (ExoJAX default)",
+                         "trapezoid": "Trapezoid"}.get,
+            help="Numerical scheme for the transit chord integral in ExoJAX "
+                 "ArtTransPure. Simpson is higher order; trapezoid is the "
+                 "conservative comparison choice. The difference is a "
+                 "grid-convergence diagnostic: if it moves your answer, "
+                 "raise the layer count.")
+        rt_dit_res = st.select_slider(
+            "Line-wing (broadening) grid resolution",
+            options=[0.2, 0.5, 1.0], value=1.0, key=K("rtdit"),
+            format_func={0.2: "0.2 (fine, ExoJAX default)", 0.5: "0.5",
+                         1.0: "1.0 (this tool's default)"}.get,
+            help="PreMODIT broadening-parameter grid spacing "
+                 "(dit_grid_resolution). Smaller resolves pressure-broadened "
+                 "line wings finer at a slower opacity build; 1.0 is the "
+                 "value every validated result here used, 0.2 is ExoJAX's "
+                 "own default.")
 
     avail_free = forward.CHEM_PARAM_NAMES + forward.TP_PARAM_NAMES[tp_mode]
     mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
@@ -809,6 +936,8 @@ params = dict(planet=planet_key, nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               use_vm_mol=use_vm_mol and use_moldiff,
               use_condense=use_condense,
               use_rayleigh=use_rayleigh, broadening=broadening,
+              rt_ptop_bar=float(rt_ptop_bar), rt_integration=rt_integration,
+              rt_dit_res=float(rt_dit_res),
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,
               extra_mols=extra_mols, **tp_kwargs)
@@ -827,6 +956,8 @@ base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
 if yconv_cri <= 1.5e-3:              # strict convergence costs extra iterations
     base_min += 0.5
 base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
+if rt_dit_res < 1.0:                 # finer broadening grid = slower opa builds
+    base_min += 0.3 * (5 + len(extra_mols))
 # cool columns (<~900 K) converge much more slowly (a W107b run took ~5 min)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
           "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0)}.get(tp_mode, 1100.0)
@@ -871,30 +1002,36 @@ def compute():
     if model is None:
         with st.status("Running VULCAN-JAX + ExoJAX forward model locally …",
                        expanded=True) as status:
-            bar = st.progress(0.0, text="starting …")
+            # prior = the same rough pre-run estimate shown next to the Run
+            # button; the bar's remaining time converges to the measured pace
+            bar = _TimedBar(prior_total_s=(base_min + fd_min) * 60.0,
+                            text="starting …")
             pfile = forward.MODEL_CACHE / f"{forward.params_key(params)}.params.json"
             forward.MODEL_CACHE.mkdir(parents=True, exist_ok=True)
             pfile.write_text(json.dumps(forward.canonical_params(params)))
             proc = subprocess.Popen(
                 [sys.executable, str(TOOL_DIR / "forward.py"), str(pfile)],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             box = st.empty()
             lines = []
-            for line in proc.stdout:
-                line = line.rstrip()
+
+            def _fwd_line(line):
                 m = _PROG_RE.match(line)
                 if m:
-                    bar.progress(min(1.0, float(m.group(1))), text=m.group(2))
+                    bar.update(min(1.0, float(m.group(1))), m.group(2))
                 else:
                     lines.append(line)
                     box.code("\n".join(lines[-10:]))
+                    bar.tick()
+
+            _watch_proc(proc, _fwd_line, bar.tick)
             proc.wait()
             if proc.returncode != 0:
                 status.update(label="Forward model failed", state="error")
                 st.error("Forward model failed:\n\n```\n"
                          + "\n".join(lines[-25:]) + "\n```")
                 return None
-            bar.progress(1.0, text="done")
+            bar.done()
             status.update(label="Forward model done", state="complete")
         model = forward.load_result(params)
         if model is None:
@@ -910,24 +1047,27 @@ def compute():
     else:
         with st.status(f"Running Pandeia ETC ({ins.BACKEND_STATUS.split(' /')[0]}) …",
                        expanded=True) as status:
-            bar = st.progress(0.0, text="starting the ETC …")
+            # no reliable prior for the ETC; the remaining-time readout is
+            # purely measured, appearing once the first mode completes
+            bar = _TimedBar(text="starting the ETC …")
             box = st.empty()
             lines = []
             n_started = [0]
 
             def _cb(s):
                 if s.startswith("[pandeia] ") and s.endswith("..."):
-                    bar.progress(n_started[0] / len(all_modes),
-                                 text=s.removeprefix("[pandeia] ")
-                                 .removesuffix("...")
-                                 + f" ({n_started[0] + 1}/{len(all_modes)})")
+                    bar.update(n_started[0] / len(all_modes),
+                               s.removeprefix("[pandeia] ")
+                               .removesuffix("...")
+                               + f" ({n_started[0] + 1}/{len(all_modes)})")
                     n_started[0] += 1
                 else:
                     lines.append(s)
                     box.code("\n".join(lines[-8:]))
+                    bar.tick()
 
             etc = noise_mod.run_pandeia(job, progress=_cb)
-            bar.progress(1.0, text="done")
+            bar.done()
             status.update(label="Pandeia ETC done", state="complete")
 
     t_in_s, t_out_s = t14 * 3600.0, t_base * 3600.0
@@ -1572,7 +1712,11 @@ with st.expander("Which reactions and temperatures control a molecule?"):
         if st.button("Run adjoint diagnostics", key=K("adjrun")):
             with st.status("Running reverse-mode adjoint diagnostics …",
                            expanded=True) as status:
-                bar = st.progress(0.0, text="starting …")
+                # no prior: the first run on a machine compiles the step-VJP
+                # (hours on CPU) while later runs skip it, so any pre-run
+                # estimate would be wrong one way or the other. The
+                # remaining-time readout is purely measured.
+                bar = _TimedBar(text="starting …")
                 adjoint_diag.ADJOINT_CACHE.mkdir(parents=True, exist_ok=True)
                 _apf = (adjoint_diag.ADJOINT_CACHE /
                         f"{adjoint_diag.adjoint_key(_cpj, adj_species)}"
@@ -1581,19 +1725,20 @@ with st.expander("Which reactions and temperatures control a molecule?"):
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "jwst_tool.adjoint_diag",
                      str(_apf), adj_species],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True)
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                 box = st.empty()
                 lines = []
-                for line in proc.stdout:
-                    line = line.rstrip()
+
+                def _adj_line(line):
                     m = _ADJ_PROG_RE.match(line)
                     if m:
-                        bar.progress(min(1.0, float(m.group(1))),
-                                     text=m.group(2))
+                        bar.update(min(1.0, float(m.group(1))), m.group(2))
                     else:
                         lines.append(line)
                         box.code("\n".join(lines[-10:]))
+                        bar.tick()
+
+                _watch_proc(proc, _adj_line, bar.tick)
                 proc.wait()
                 if proc.returncode != 0:
                     status.update(label="Adjoint diagnostics failed",
@@ -1601,6 +1746,7 @@ with st.expander("Which reactions and temperatures control a molecule?"):
                     st.error("Adjoint diagnostics failed:\n\n```\n"
                              + "\n".join(lines[-25:]) + "\n```")
                 else:
+                    bar.done()
                     status.update(label="Adjoint diagnostics done",
                                   state="complete")
                     st.rerun()

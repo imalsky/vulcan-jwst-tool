@@ -54,6 +54,12 @@ retrieval framework uses):
                     ExoJax power-law cloud deck (currently fixed, not a Fisher
                     parameter -- see the aerosol-opacity note below)
       extra_mols    opt-in RT molecules beyond the base 5 (C2H2/H2S/HCN/NH3)
+      rt_ptop_bar / rt_integration / rt_dit_res  (v15)
+                    ExoJAX RT top pressure (band-saturation "wall" knob),
+                    ArtTransPure chord-integration scheme (simpson/trapezoid),
+                    and PreMODIT broadening-grid spacing; defaults 1e-8 bar /
+                    simpson / 1.0 = the pre-v15 hard-coded values, and the
+                    engine's echo of each is verified loudly after the build
 
 Any T-P that leaves the modelable premodit window [320, 2980] K on either grid is
 REJECTED with a clear error (never clipped) -- same rule as the retrieval.
@@ -137,15 +143,19 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 14  # Bump whenever the physics or the canonical key set changes:
-               # invalidates all cached spectra. Full v1-v13 history lives in
-               # notes.md. v13: structural composition (one co_ratio path,
-               # any value incl. C-rich) + certified central-FD Jacobians
-               # with the h-vs-2h gate. v14: jac_method fd/ad for EVERY row
-               # (per-row jac_row_method provenance, b_z guard on the dlnCO
-               # AD row) + use_condense back as a DETECTION-ONLY forward
-               # option (certified S8 recipe, refused with any derivative);
-               # the key set changed, so pre-v14 caches are stale.
+_VERSION = 15  # Bump whenever the physics or the canonical key set changes:
+               # invalidates all cached spectra. Full v1-v14 history lives in
+               # notes.md. v14: jac_method fd/ad for EVERY row (per-row
+               # jac_row_method provenance, b_z guard on the dlnCO AD row) +
+               # use_condense back as a DETECTION-ONLY forward option
+               # (certified S8 recipe, refused with any derivative).
+               # v15: three ExoJAX RT knobs become canonical params --
+               # rt_ptop_bar (RT top pressure), rt_integration (transit
+               # chord scheme, simpson/trapezoid), rt_dit_res (PreMODIT
+               # broadening-grid spacing). Defaults reproduce v14 physics
+               # exactly, but the key set changed, so pre-v15 caches are
+               # stale. Requires vulcan-retrieval >= 0.10.1 (the engine
+               # echoes the knobs; run_model verifies the echo loudly).
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
@@ -389,6 +399,18 @@ def canonical_params(params: dict) -> dict:
         # RAISES for a molecule with no H2/He coverage rather than silently
         # falling back)
         "broadening": str(params.get("broadening", "air")),
+        # ExoJAX RT knobs (v15). rt_ptop_bar: the RT column top; above
+        # VULCAN's chemistry top the topmost VMR/T are clamped constant
+        # (standard transmission convention). Too low a top saturates strong
+        # bands into a flat wall (W39b 4.2-5.2 um: ~4.8% of pixels saturated
+        # at 1e-6 bar vs 0.1% at the 1e-8 default -- the sibling repo's
+        # validation/top_pressure_ladder.py quantifies it). rt_integration:
+        # exojax ArtTransPure chord-integration scheme. rt_dit_res: PreMODIT
+        # broadening-grid spacing (1.0 = the validated default here, 0.2 =
+        # exojax's own default; smaller = finer line wings, slower build).
+        "rt_ptop_bar": float(f"{float(params.get('rt_ptop_bar', 1.0e-8)):.6e}"),
+        "rt_integration": str(params.get("rt_integration", "simpson")),
+        "rt_dit_res": round(float(params.get("rt_dit_res", 1.0)), 3),
         "cloud_on": bool(params.get("cloud_on", False)),
         "log_kappa_cloud": round(float(params.get("log_kappa_cloud", -1.0)), 3),
         "alpha_cloud": round(float(params.get("alpha_cloud", 0.0)), 2),
@@ -409,6 +431,19 @@ def canonical_params(params: dict) -> dict:
         raise ValueError(f"f_diurnal={cp['f_diurnal']} outside (0, 1]")
     if cp["broadening"] not in ("air", "h2he"):
         raise ValueError(f"broadening={cp['broadening']!r} (choose 'air' or 'h2he')")
+    if not 1.0e-9 <= cp["rt_ptop_bar"] <= 1.0e-6:
+        raise ValueError(
+            f"rt_ptop_bar={cp['rt_ptop_bar']:g} outside [1e-9, 1e-6] bar (the "
+            "exercised RT-top range; 1e-8 is the validated default)")
+    if cp["rt_integration"] not in ("simpson", "trapezoid"):
+        raise ValueError(
+            f"rt_integration={cp['rt_integration']!r}: exojax ArtTransPure "
+            "supports 'simpson' (default) or 'trapezoid'")
+    if not 0.1 <= cp["rt_dit_res"] <= 1.0:
+        raise ValueError(
+            f"rt_dit_res={cp['rt_dit_res']:g} outside [0.1, 1.0] (PreMODIT "
+            "broadening-grid spacing; 1.0 = this tool's validated default, "
+            "0.2 = exojax's own default)")
     bad_mols = set(cp["extra_mols"]) - set(EXTRA_MOLECULES)
     if bad_mols:
         raise ValueError(
@@ -641,6 +676,13 @@ def _assemble_chem(cp: dict, log):
     profile["abundance_mode"] = "elemental"
     profile["co_mode"] = "fixed_O"
     profile["broadening"] = cp["broadening"]   # canonical (cache-keyed) knob
+    # ExoJAX RT knobs (v15, canonical): the engine validates and ECHOES them
+    # on the built rt namespace; run_model verifies the echo so an older
+    # engine that ignores unknown profile keys can never return a spectrum
+    # that differs from what the cache key claims.
+    profile["art_ptop_bar"] = cp["rt_ptop_bar"]
+    profile["rt_integration"] = cp["rt_integration"]
+    profile["dit_grid_resolution"] = cp["rt_dit_res"]
     profile["reanchor_atom_ini"] = True   # finite-Z steps must re-anchor atom totals
     # step-size cap, validated state-preserving (retrieval case.py): prevents the
     # adaptive-dt ballooning non-convergence at high Kzz the GUI sliders can reach
@@ -787,6 +829,19 @@ def run_model(params: dict, log=print) -> Path:
     log("[fwd] building ExoJax RT (opacities + CIA) ...")
     rt = exojax_rt.build_rt_model(profile)
     log(f"[fwd] RT ready in {time.time()-t0:.0f} s")
+    # Echo check on the v15 RT knobs: an engine too old to know these
+    # profile keys ignores them silently -- refuse rather than cache a
+    # spectrum under a key describing physics the engine did not apply.
+    _echo = {"art_ptop_bar": cp["rt_ptop_bar"],
+             "rt_integration": cp["rt_integration"],
+             "dit_grid_resolution": cp["rt_dit_res"]}
+    for k, want in _echo.items():
+        got = getattr(rt, k, None)
+        if got != want:
+            raise RuntimeError(
+                f"RT engine did not honor {k}={want!r} (echoed {got!r}). "
+                "The installed vulcan-retrieval predates the "
+                "profile-overridable RT knobs -- upgrade to >= 0.10.1.")
 
     p_art_j = jnp.asarray(rt.p_art_bar)
 

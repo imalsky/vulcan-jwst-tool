@@ -219,3 +219,36 @@ def test_condensation_error_states_91_percent_wrong():
         forward.canonical_params(_p(use_condense=True, fisher_params=["lnZ"]))
     msg = str(ei.value)
     assert "91% wrong" in msg and "not a 9% mismatch" in msg
+
+
+def test_rt_knobs_v15_defaults_and_validation():
+    # v15: three ExoJAX RT knobs are canonical (cache-keyed). Defaults are
+    # the pre-v15 hard-coded values, so a default run reproduces v14 physics.
+    cp = forward.canonical_params(_p())
+    assert cp["rt_ptop_bar"] == 1.0e-8
+    assert cp["rt_integration"] == "simpson"
+    assert cp["rt_dit_res"] == 1.0
+    # the exercised ranges / choices are validated loudly
+    cp = forward.canonical_params(_p(rt_ptop_bar=1.0e-6,
+                                     rt_integration="trapezoid",
+                                     rt_dit_res=0.2))
+    assert (cp["rt_ptop_bar"], cp["rt_integration"], cp["rt_dit_res"]) == \
+        (1.0e-6, "trapezoid", 0.2)
+    with pytest.raises(ValueError, match="rt_ptop_bar"):
+        forward.canonical_params(_p(rt_ptop_bar=1.0e-5))
+    with pytest.raises(ValueError, match="rt_ptop_bar"):
+        forward.canonical_params(_p(rt_ptop_bar=1.0e-10))
+    with pytest.raises(ValueError, match="rt_integration"):
+        forward.canonical_params(_p(rt_integration="euler"))
+    with pytest.raises(ValueError, match="rt_dit_res"):
+        forward.canonical_params(_p(rt_dit_res=0.01))
+    with pytest.raises(ValueError, match="rt_dit_res"):
+        forward.canonical_params(_p(rt_dit_res=2.0))
+
+
+def test_rt_knobs_fragment_the_cache_key():
+    # changing any RT knob must change the cache key (different physics)
+    k0 = forward.params_key(_p())
+    assert forward.params_key(_p(rt_ptop_bar=1.0e-7)) != k0
+    assert forward.params_key(_p(rt_integration="trapezoid")) != k0
+    assert forward.params_key(_p(rt_dit_res=0.5)) != k0
