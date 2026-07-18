@@ -306,7 +306,19 @@ def _watch_proc(proc, on_line, on_tick, tick_s: float = 1.0) -> None:
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
                    "log_kappa": 0.30, "log_gamma": 0.30,
-                   "log_kappa_cloud": 0.30, "alpha_cloud": 0.50}
+                   "log_kappa_cloud": 0.30, "alpha_cloud": 0.50,
+                   "mie_log_rg": 0.30, "mie_sigmag": 0.20,
+                   "mie_log_mmr": 0.50}
+# Every freeable Fisher parameter can be chosen as the constraint goal, which
+# looks up _TARGET_DEFAULT[goal_param] -- so a missing entry would KeyError the
+# UI. Guard it at import (caught by the smoke test) rather than at click time.
+_FREEABLE = (set(forward.CHEM_PARAM_NAMES) | set(forward.CLOUD_FISHER_PARAMS)
+             | set(forward.MIE_FISHER_PARAMS)
+             | {p for ns in forward.TP_PARAM_NAMES.values() for p in ns})
+_missing_target = _FREEABLE - set(_TARGET_DEFAULT)
+if _missing_target:
+    raise RuntimeError(f"_TARGET_DEFAULT is missing {sorted(_missing_target)}: "
+                       "every freeable Fisher parameter needs a target default.")
 
 
 # ---------------------------------------------------------------------------

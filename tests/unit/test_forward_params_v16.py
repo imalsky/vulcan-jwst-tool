@@ -281,6 +281,18 @@ def test_mie_fisher_params_work_in_file_mode(tmp_path):
     assert "mie_log_rg" in cp["fisher_params"]
 
 
+def test_every_freeable_param_has_display_metadata():
+    # Any parameter that can be freed in the Fisher forecast is also a valid
+    # constraint goal and a Jacobian row, so it must carry a display label,
+    # unit, symbol, and an FD step -- a missing entry KeyErrors the GUI/run.
+    freeable = (set(forward.CHEM_PARAM_NAMES) | set(forward.CLOUD_FISHER_PARAMS)
+                | set(forward.MIE_FISHER_PARAMS)
+                | {p for ns in forward.TP_PARAM_NAMES.values() for p in ns})
+    for m in (forward.PARAM_LABELS, forward.PARAM_UNITS, forward.PARAM_SYMBOLS,
+              forward.FD_STEPS):
+        assert not (freeable - set(m)), sorted(freeable - set(m))
+
+
 # --- emission mode (science_mode) ------------------------------------------
 
 def test_science_mode_gating():

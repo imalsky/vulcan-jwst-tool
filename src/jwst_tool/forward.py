@@ -259,8 +259,9 @@ FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.10,      # ln-space steps
             "log_kappa_cloud": 0.05, "alpha_cloud": 0.05,   # dex / slope
             # Mie deck rows (v16): rg/sigmag steps stay well inside one miegrid
             # cell (log rg grid spacing ~0.1 dex, sigmag ~0.33) so the FD row is
-            # the local piecewise-linear slope, not a knot average; MMR is exact
-            # (dtau is linear in MMR), so any step is fine.
+            # the local piecewise-linear slope, not a knot average; MMR does not
+            # ride the grid (dtau is linear in it, no knots), so its depth is
+            # smooth and any step gives a clean central difference.
             "mie_log_rg": 0.03, "mie_sigmag": 0.05, "mie_log_mmr": 0.05}
 FD_COMP_PARAMS = ("lnZ", "dlnCO")     # need a chemistry re-init per FD point
 FD_CONSISTENCY_TOL = 0.25
@@ -279,18 +280,22 @@ CLOUD_FISHER_PARAMS = ("log_kappa_cloud", "alpha_cloud")
 # continuous knobs are a single column-uniform lognormal size distribution:
 #   mie_log_rg  log10 mean particle radius (cm)   -- rides the miegrid interp
 #   mie_sigmag  geometric std dev of the lognormal -- rides the miegrid interp
-#   mie_log_mmr log10 condensate mass mixing ratio -- EXACT (dtau is linear in it)
+#   mie_log_mmr log10 condensate mass mixing ratio -- NOT gridded (dtau is
+#               linear in the MMR), so its row has no knots and stays ungated
 # Curated to the condensates exojax 2.2.3 ships refractive indices AND a
 # substance density for (must match tools/generate_miegrid.py SUPPORTED); a grid
 # is generated once per condensate and only LOADED at run time.
 MIE_CONDENSATES = ("NH3", "H2O", "MgSiO3", "Mg2SiO4", "Fe", "Al2O3", "TiO2")
 MIE_FISHER_PARAMS = ("mie_log_rg", "mie_sigmag", "mie_log_mmr")
-# Parameter ranges kept strictly INSIDE the default miegrid edges (exojax
-# generate_miegrid: log rg in [-7, -3] cm, sigmag in [1.0001, 4.0]); getix
-# edge-clamps, but a clamped derivative would be a silent zero, so we refuse
-# out-of-grid values instead. MMR is not gridded (generous physical envelope).
+# Parameter ranges for the two gridded knobs kept strictly inside the default
+# miegrid edges (exojax generate_miegrid: log rg in [-7, -3] cm, sigmag in
+# [1.0001, 4.0]) WITH margin for the central-FD stencil: a legal value's +-2h
+# points must also stay inside the grid, or the stencil would clamp at the edge
+# and bias the row (getix edge-clamps; a clamped derivative would be a silent
+# zero). rg leaves 0.5 dex >> its 2h=0.06; sigmag leaves 0.15 > its 2h=0.10.
+# MMR is not gridded (generous physical envelope).
 MIE_LOG_RG_RANGE = (-6.5, -3.5)      # ~3 nm to ~3 um mean radius
-MIE_SIGMAG_RANGE = (1.05, 3.9)
+MIE_SIGMAG_RANGE = (1.15, 3.85)      # inset from [1.0001, 4.0] by > 2h (0.10)
 MIE_LOG_MMR_RANGE = (-12.0, -2.0)
 MIE_DATA_SUBDIR = "exojax_mie"       # under DATA_DIR (miegrids + virga archive)
 
@@ -1748,7 +1753,8 @@ def run_model(params: dict, log=print) -> Path:
                 # v16 RT-only deck row (power-law cloud or Mie condensate deck):
                 # no chemistry re-solve. The power-law deck is analytic (ungated
                 # single central FD); the Mie rg/sigmag rows are gated (they ride
-                # the piecewise-linear miegrid), MMR is exactly linear (ungated).
+                # the piecewise-linear miegrid), MMR does not ride the grid so it
+                # is smooth and ungated (like the cloud rows).
                 if name in CLOUD_FISHER_PARAMS:
                     jac[j], _h, _err, _m = _rt_deck_row(
                         name, [cp["log_kappa_cloud"], cp["alpha_cloud"]],
