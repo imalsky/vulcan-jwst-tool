@@ -31,12 +31,29 @@ Numerical resolution (was the GUI "fidelity" switch, now three explicit knobs):
 Atmosphere-structure knobs (all consumed by the same validated pipeline hooks the
 retrieval framework uses):
 
-    T-P profile (tp_mode) -- explicit profiles only, both on-graph tp_eval hooks:
-      "isothermal"  T(P) = T_iso
+    T-P profile (tp_mode) -- explicit profiles only:
+      "isothermal"  T(P) = T_iso  (on-graph tp_eval hook)
       "guillot"     ExoJax atmprof_Guillot(Tirr, Tint, log10 kappa, log10 gamma)
-                    with f=0.25 and the planet's surface gravity
-    Kzz: kzz_mode "const" only -- constant Kzz = kzz_const cm^2/s (cfg_overrides
-      Kzz_prof="const"), further x kzz_x if given.
+                    with f=0.25 and the planet's surface gravity (on-graph)
+      "file"        (v16) an EXPLICIT tabulated T(P) [+ Kzz(P)] table: the
+                    shipped W39b evening-terminator profile (the cfg's own
+                    atm_file) or a user upload. It drives the hydrostatic
+                    grid, the EQ init, the chemistry AND the RT temperature;
+                    the cache key carries the file's CONTENT hash
+                    (tp_file_sha1), so two tables can never share an entry.
+                    There are NO T-P Fisher rows in file mode (a fixed table
+                    has no temperature parameter): file-mode Fisher forecasts
+                    are CONDITIONAL on the profile being exactly right, which
+                    makes the reported sigmas optimistic -- stated in the
+                    README and the GUI. The v13 rule stands: a profile is
+                    never silently substituted; file mode is an explicit
+                    opt-in and the engine override is atm_type="file".
+    Kzz (kzz_mode; the lnKzz Fisher row is a multiplicative scale of ANY
+    profile, so it survives every mode):
+      "const"   constant Kzz = kzz_const cm^2/s (further x kzz_x if given)
+      "Pfunc"   Kzz = max(K_max, K_max (K_p_lev/P)^0.4)   [kzz_kmax, kzz_plev]
+      "JM16"    Kzz = max(K_deep, 1e5 (300 mbar/P)^0.5)   [kzz_kdeep]
+      "file"    the Kzz column of the tp_mode="file" table (requires both)
     Composition (STRUCTURAL since v13 -- set in the cfg elemental abundances,
     FastChem re-initializes at exactly the requested values; one path for
     every composition, including C-rich):
@@ -51,8 +68,26 @@ retrieval framework uses):
       use_moldiff   molecular diffusion on/off (homopause)
       use_rayleigh  H2/He Rayleigh scattering (ON by default from v4; v3 lacked it)
       cloud_on + log_kappa_cloud + alpha_cloud
-                    ExoJax power-law cloud deck (currently fixed, not a Fisher
-                    parameter -- see the aerosol-opacity note below)
+                    ExoJax power-law cloud deck. Since v16 the two deck
+                    parameters can be FREED as Fisher parameters
+                    (marginalized): their Jacobian rows are RT-only (like
+                    lnR0 -- no chemistry re-solve, no convergence gate), so
+                    a cloudy forecast no longer silently conditions on a
+                    perfectly-known deck.
+      Boundary conditions / transport (v16; every knob is upstream VULCAN
+      machinery reached through cfg_overrides, all default OFF = the
+      validated baseline):
+        use_settling  gravitational settling velocities for condensed
+                      particles (requires use_moldiff; REFUSED with
+                      use_condense -- the certified S8 recipe pins
+                      settling off)
+        diff_esc      diffusion-limited escape at the TOA for the listed
+                      light species (choose from H / H2 / He)
+        top_flux      constant TOA flux rows [species, flux]
+                      (molecules cm^-2 s^-1; negative = escape to space)
+        bot_flux      constant bottom-boundary rows [species, flux, vdep]
+                      (flux in molecules cm^-2 s^-1, deposition velocity
+                      vdep in cm s^-1)
       extra_mols    opt-in RT molecules beyond the base 5 (C2H2/H2S/HCN/NH3)
       rt_ptop_bar / rt_integration / rt_dit_res  (v15)
                     ExoJAX RT top pressure (band-saturation "wall" knob),
@@ -86,11 +121,10 @@ conden-off; enable it only where sulfur genuinely condenses.
 
 Aerosol opacity, the Fisher-compatible way: represent clouds/haze as a
 DIFFERENTIABLE opacity rather than as chemistry. The ExoJax power-law cloud
-deck (``cloud_on`` + ``log_kappa_cloud`` + ``alpha_cloud``) is already wired
-into the RT and is smooth in its parameters; freeing those (or adding a gray
-deck) as Fisher parameters would let an aerosol term enter the forecast
-directly -- a natural future addition, and the recommended path instead of
-condensation.
+deck (``cloud_on`` + ``log_kappa_cloud`` + ``alpha_cloud``) is wired into
+the RT, smooth in its parameters, and since v16 both deck parameters can be
+freed as Fisher parameters (RT-only Jacobian rows, "fd-rt"/"ad-jvp"
+provenance) -- the recommended aerosol path instead of condensation.
 
 Fisher machinery: with ``fisher_params`` set, the runner computes the spectrum
 Jacobian d(depth)/d(param) row by row, by one of two methods
@@ -143,7 +177,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 15  # Bump whenever the physics or the canonical key set changes:
+_VERSION = 16  # Bump whenever the physics or the canonical key set changes:
                # invalidates all cached spectra. Full v1-v14 history lives in
                # notes.md. v14: jac_method fd/ad for EVERY row (per-row
                # jac_row_method provenance, b_z guard on the dlnCO AD row) +
@@ -153,9 +187,19 @@ _VERSION = 15  # Bump whenever the physics or the canonical key set changes:
                # rt_ptop_bar (RT top pressure), rt_integration (transit
                # chord scheme, simpson/trapezoid), rt_dit_res (PreMODIT
                # broadening-grid spacing). Defaults reproduce v14 physics
-               # exactly, but the key set changed, so pre-v15 caches are
-               # stale. Requires vulcan-retrieval >= 0.10.1 (the engine
+               # exactly. Requires vulcan-retrieval >= 0.10.1 (the engine
                # echoes the knobs; run_model verifies the echo loudly).
+               # v16: tp_mode="file" (tabulated T-P/Kzz, content-hash keyed,
+               # no T-P Fisher rows -- forecasts conditional on the profile),
+               # kzz_mode const/Pfunc/JM16/file, the boundary-condition set
+               # (use_settling / diff_esc / top_flux / bot_flux), cloud
+               # Fisher marginalization (log_kappa_cloud / alpha_cloud as
+               # RT-only Jacobian rows), emission mode (science_mode +
+               # star_teff/logg/feh), and the Mie condensate deck
+               # (mie_condensate + mie_log_rg / mie_sigmag / mie_log_mmr,
+               # freeable as RT-only Fisher rows). Defaults reproduce v15
+               # physics exactly, but the key set changed, so pre-v16 caches
+               # are stale. Emission + Mie need vulcan-retrieval >= 0.11.0.
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
@@ -211,11 +255,63 @@ CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
 # steady_state_input_sensitivity (validated 0.2-0.8% there).
 FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.10,      # ln-space steps
             "T_iso": 10.0, "Tirr": 10.0, "Tint": 10.0,      # Kelvin
-            "log_kappa": 0.05, "log_gamma": 0.05}           # dex
+            "log_kappa": 0.05, "log_gamma": 0.05,           # dex
+            "log_kappa_cloud": 0.05, "alpha_cloud": 0.05,   # dex / slope
+            # Mie deck rows (v16): rg/sigmag steps stay well inside one miegrid
+            # cell (log rg grid spacing ~0.1 dex, sigmag ~0.33) so the FD row is
+            # the local piecewise-linear slope, not a knot average; MMR is exact
+            # (dtau is linear in MMR), so any step is fine.
+            "mie_log_rg": 0.03, "mie_sigmag": 0.05, "mie_log_mmr": 0.05}
 FD_COMP_PARAMS = ("lnZ", "dlnCO")     # need a chemistry re-init per FD point
 FD_CONSISTENCY_TOL = 0.25
 FD_LNR0_STEP = 0.01                   # lnR0 is RT-only (smooth, analytic)
 JAC_METHODS = ("fd", "ad")            # certified-FD default / warm-jvp opt-in
+# Cloud-deck Fisher parameters (v16): RT-only rows, evaluated exactly like the
+# lnR0 nuisance -- a single central difference through the radiative transfer
+# ("fd-rt"; the depth is smooth and analytic in both, no chemistry re-solve and
+# no h-vs-2h gate) or the RT jvp under jac_method="ad". Only available with
+# cloud_on (the deck must be in the model to be marginalized over).
+CLOUD_FISHER_PARAMS = ("log_kappa_cloud", "alpha_cloud")
+
+# Mie cloud deck (v16): a physically-grounded condensate cloud from the exojax
+# PdbCloud/OpaMie miegrid, wired as an ALTERNATIVE (or addition) to the analytic
+# power-law deck. mie_condensate selects the species ("" = off); the three
+# continuous knobs are a single column-uniform lognormal size distribution:
+#   mie_log_rg  log10 mean particle radius (cm)   -- rides the miegrid interp
+#   mie_sigmag  geometric std dev of the lognormal -- rides the miegrid interp
+#   mie_log_mmr log10 condensate mass mixing ratio -- EXACT (dtau is linear in it)
+# Curated to the condensates exojax 2.2.3 ships refractive indices AND a
+# substance density for (must match tools/generate_miegrid.py SUPPORTED); a grid
+# is generated once per condensate and only LOADED at run time.
+MIE_CONDENSATES = ("NH3", "H2O", "MgSiO3", "Mg2SiO4", "Fe", "Al2O3", "TiO2")
+MIE_FISHER_PARAMS = ("mie_log_rg", "mie_sigmag", "mie_log_mmr")
+# Parameter ranges kept strictly INSIDE the default miegrid edges (exojax
+# generate_miegrid: log rg in [-7, -3] cm, sigmag in [1.0001, 4.0]); getix
+# edge-clamps, but a clamped derivative would be a silent zero, so we refuse
+# out-of-grid values instead. MMR is not gridded (generous physical envelope).
+MIE_LOG_RG_RANGE = (-6.5, -3.5)      # ~3 nm to ~3 um mean radius
+MIE_SIGMAG_RANGE = (1.05, 3.9)
+MIE_LOG_MMR_RANGE = (-12.0, -2.0)
+MIE_DATA_SUBDIR = "exojax_mie"       # under DATA_DIR (miegrids + virga archive)
+
+# Kzz profile modes (v16). "file" requires tp_mode="file" with a Kzz column
+# (the upstream constraint: the tabulated Kzz lives in the atm table).
+KZZ_MODES = ("const", "Pfunc", "JM16", "file")
+
+# Diffusion-limited-escape species choices (v16). Curated to the light species
+# the TOA escape formula is meant for AND guaranteed present in the SNCHO
+# network -- an arbitrary species would only fail deep inside the engine.
+DIFF_ESC_CHOICES = ("H", "H2", "He")
+
+# Boundary-condition flux sanity bounds (v16): generous physical envelopes so a
+# typo (1e30) fails at the API instead of producing a silently absurd column.
+BC_FLUX_MAX = 1.0e15              # |flux| ceiling, molecules cm^-2 s^-1
+BC_VDEP_MAX = 1.0e3               # deposition-velocity ceiling, cm s^-1
+
+# tp_mode="file" profile sources (v16).
+TP_FILE_SHIPPED = "shipped"       # the cfg's own atm_file (W39b evening terminator)
+TP_FILE_UPLOAD = "upload"         # user-supplied table; content-addressed copy
+                                  # under <output>/uploads/<sha1>.txt
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -241,11 +337,14 @@ YCONV_RANGE = (1.0e-4, 1.0e-2)  # steady-state convergence tolerance (1e-3 is th
 # Modelable temperature window (premodit table range, 20 K inset) -- reject, never clip.
 T_WINDOW = (320.0, 2980.0)
 
-# Parameters that can be freed in the Fisher forecast, per tp_mode.
+# Parameters that can be freed in the Fisher forecast, per tp_mode. "file" is
+# deliberately EMPTY: a tabulated profile has no temperature parameter, so
+# file-mode forecasts condition on the profile (documented as optimistic).
 CHEM_PARAM_NAMES = ["lnZ", "dlnCO", "lnKzz"]
 TP_PARAM_NAMES = {
     "isothermal": ["T_iso"],
     "guillot": ["Tirr", "Tint", "log_kappa", "log_gamma"],
+    "file": [],
 }
 # Display SYMBOL, UNIT, and friendly name per parameter for the GUI's constraint
 # table / science goals. The symbol is what a reader recognizes and MUST match the
@@ -254,15 +353,25 @@ TP_PARAM_NAMES = {
 # is the absolute number ratio N_C/N_O (dimensionless, so no unit bracket).
 PARAM_SYMBOLS = {"lnZ": "[M/H]", "dlnCO": "C/O", "lnKzz": "log Kzz",
                  "T_iso": "T_iso", "Tirr": "T_irr", "Tint": "T_int",
-                 "log_kappa": "log κ_IR", "log_gamma": "log γ"}
+                 "log_kappa": "log κ_IR", "log_gamma": "log γ",
+                 "log_kappa_cloud": "log κ_cloud", "alpha_cloud": "α_cloud",
+                 "mie_log_rg": "log r_g", "mie_sigmag": "σ_g",
+                 "mie_log_mmr": "log MMR"}
 PARAM_UNITS = {"lnZ": "dex", "dlnCO": "", "lnKzz": "dex",
                "T_iso": "K", "Tirr": "K", "Tint": "K",
-               "log_kappa": "dex", "log_gamma": "dex"}
+               "log_kappa": "dex", "log_gamma": "dex",
+               "log_kappa_cloud": "dex", "alpha_cloud": "",
+               "mie_log_rg": "dex(cm)", "mie_sigmag": "", "mie_log_mmr": "dex"}
 PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
                 "lnKzz": "Vertical mixing (Kzz)",
                 "T_iso": "Isothermal T", "Tirr": "Guillot T_irr",
                 "Tint": "Guillot T_int", "log_kappa": "Guillot log κ_IR",
-                "log_gamma": "Guillot log γ"}
+                "log_gamma": "Guillot log γ",
+                "log_kappa_cloud": "Cloud deck log κ (at 3.5 um)",
+                "alpha_cloud": "Cloud deck slope α",
+                "mie_log_rg": "Mie particle radius (log r_g)",
+                "mie_sigmag": "Mie size dispersion (σ_g)",
+                "mie_log_mmr": "Mie condensate abundance (log MMR)"}
 
 
 def param_axis(name: str) -> str:
@@ -271,6 +380,208 @@ def param_axis(name: str) -> str:
     representation (e.g. '[M/H] [dex]', 'C/O', 'T_iso [K]')."""
     u = PARAM_UNITS[name]
     return f"{PARAM_SYMBOLS[name]} [{u}]" if u else PARAM_SYMBOLS[name]
+
+
+# ---------------------------------------------------------------------------
+# tp_mode="file" helpers (light path: no vulcan_jax/jax imports)
+# ---------------------------------------------------------------------------
+
+def _shipped_tp_file() -> Path:
+    """Path of the shipped W39b evening-terminator T-P/Kzz table (the W39b
+    cfg's own atm_file) WITHOUT importing vulcan_jax -- importing it parses
+    the reaction network, far too heavy for the GUI's cache-key path.
+    find_spec locates the installed package without executing it."""
+    import importlib.util
+    spec = importlib.util.find_spec("vulcan_jax")
+    if spec is None or not spec.origin:
+        raise RuntimeError(
+            "vulcan_jax is not installed (or has no package origin): "
+            "tp_mode='file' with tp_file='shipped' needs its bundled "
+            "atm/atm_W39b_evening_TP_Kzz.txt table.")
+    return Path(spec.origin).parent / "atm" / "atm_W39b_evening_TP_Kzz.txt"
+
+
+def _uploads_dir() -> Path:
+    """Content-addressed home for uploaded T-P tables (sibling of model_cache)."""
+    return MODEL_CACHE.parent / "uploads"
+
+
+def _read_tp_table(path: Path) -> dict:
+    """Parse + validate a VULCAN atm table on the LIGHT path.
+
+    Mirrors the engine's read exactly (np.genfromtxt, names=True,
+    skip_header=1: line 1 is a units comment, line 2 the column names):
+    columns 'Pressure' (dyne/cm^2) and 'Temp' (K) are required, 'Kzz'
+    (cm^2/s) is optional. Returns {"P_dyn", "T", "Kzz" or None}. Raises
+    ValueError with the offending detail on any malformed content -- a bad
+    table must fail at the API, never inside the engine's pre-loop."""
+    try:
+        tab = np.genfromtxt(path, names=True, dtype=None, skip_header=1)
+    except Exception as e:                                    # noqa: BLE001
+        raise ValueError(
+            f"T-P table {path} is not parseable as a VULCAN atm file "
+            f"(header comment line, then 'Pressure Temp [Kzz]' columns): {e}")
+    names = list(tab.dtype.names or [])
+    if "Pressure" not in names or "Temp" not in names:
+        raise ValueError(
+            f"T-P table {path} needs 'Pressure' and 'Temp' columns "
+            f"(found {names}). Line 1 must be a units comment (e.g. "
+            "'#(dyne/cm2) (K) (cm2/s)'), line 2 the column names.")
+    P = np.asarray(tab["Pressure"], dtype=np.float64)
+    T = np.asarray(tab["Temp"], dtype=np.float64)
+    if P.ndim != 1 or P.size < 4:
+        raise ValueError(f"T-P table {path}: need >= 4 rows (got {P.size})")
+    if not (np.all(np.isfinite(P)) and np.all(np.isfinite(T))):
+        raise ValueError(f"T-P table {path}: non-finite Pressure/Temp entries")
+    if np.any(P <= 0.0):
+        raise ValueError(f"T-P table {path}: Pressure must be > 0 (dyne/cm^2)")
+    dP = np.diff(P)
+    if not (np.all(dP > 0) or np.all(dP < 0)):
+        raise ValueError(f"T-P table {path}: Pressure must be strictly monotonic")
+    if T.min() < T_WINDOW[0] or T.max() > T_WINDOW[1]:
+        raise ValueError(
+            f"T-P table {path}: temperatures [{T.min():.0f}, {T.max():.0f}] K "
+            f"leave the modelable window [{T_WINDOW[0]:.0f}, {T_WINDOW[1]:.0f}] K "
+            "(opacity tables end there; out-of-window profiles are rejected, "
+            "never clipped)")
+    Kzz = None
+    if "Kzz" in names:
+        Kzz = np.asarray(tab["Kzz"], dtype=np.float64)
+        if not np.all(np.isfinite(Kzz)) or np.any(Kzz <= 0.0):
+            raise ValueError(f"T-P table {path}: Kzz column must be finite and > 0")
+    return {"P_dyn": P, "T": T, "Kzz": Kzz}
+
+
+def _resolve_tp_file(params: dict) -> tuple[Path, str]:
+    """(path, content-sha1[:16]) of the requested T-P table.
+
+    'shipped' resolves to the vulcan_jax bundled W39b evening profile;
+    'upload' takes params['tp_file_path'] (any readable path -- run_model
+    copies it to the content-addressed uploads/<sha1>.txt so later
+    re-resolution from the canonical params alone always works)."""
+    src = str(params.get("tp_file", TP_FILE_SHIPPED))
+    if src == TP_FILE_SHIPPED:
+        path = _shipped_tp_file()
+    elif src == TP_FILE_UPLOAD:
+        raw = params.get("tp_file_path")
+        if raw:
+            path = Path(str(raw))
+        else:
+            # No raw path: fall back to the content-addressed archive. This
+            # is what makes canonical params ROUND-TRIP: the GUI hands the
+            # subprocess canonical_params(params) (no tp_file_path in it),
+            # and the sha alone re-resolves the exact bytes.
+            sha = str(params.get("tp_file_sha1", ""))
+            if not sha:
+                raise ValueError(
+                    "tp_file='upload' requires tp_file_path (the saved "
+                    "table; the GUI sets it on upload) or tp_file_sha1 (a "
+                    "previously archived upload).")
+            path = _uploads_dir() / f"{sha}.txt"
+    else:
+        raise ValueError(
+            f"tp_file={src!r}: choose '{TP_FILE_SHIPPED}' (the W39b evening-"
+            f"terminator table bundled with vulcan_jax) or '{TP_FILE_UPLOAD}'")
+    if not path.exists():
+        raise ValueError(f"T-P table not found: {path}")
+    sha1 = hashlib.sha1(path.read_bytes()).hexdigest()[:16]
+    return path, sha1
+
+
+def _tp_file_from_cp(cp: dict) -> Path:
+    """Re-resolve the T-P table from CANONICAL params alone (no raw path):
+    shipped -> the bundled file; upload -> the content-addressed copy
+    uploads/<sha1>.txt (run_model wrote it). Verifies the content hash --
+    a table that changed since the cache key was computed is refused."""
+    if cp["tp_file"] == TP_FILE_SHIPPED:
+        path = _shipped_tp_file()
+    else:
+        path = _uploads_dir() / f"{cp['tp_file_sha1']}.txt"
+    if not path.exists():
+        raise RuntimeError(
+            f"T-P table for this run is missing: {path}. For uploads the "
+            "content-addressed copy is written by run_model; re-upload the "
+            "table if the output directory was cleaned.")
+    sha1 = hashlib.sha1(path.read_bytes()).hexdigest()[:16]
+    if sha1 != cp["tp_file_sha1"]:
+        raise RuntimeError(
+            f"T-P table {path} content drifted: sha1 {sha1} != canonical "
+            f"{cp['tp_file_sha1']}. Refusing -- the cached spectrum would be "
+            "keyed to different physics than the file now holds.")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Boundary-condition helpers (v16)
+# ---------------------------------------------------------------------------
+
+def _canon_bc_entries(raw, *, kind: str) -> list:
+    """Canonicalize boundary-flux entries for the cache key.
+
+    kind='top': entries [species, flux]; kind='bot': [species, flux, vdep].
+    Accepts lists/tuples (or dicts with species/flux/vdep keys); returns a
+    sorted, rounded, duplicate-free list of lists (JSON-stable). Zero-flux
+    top rows and zero-flux+zero-vdep bottom rows are dropped (inert -- they
+    must not fragment the cache). Loud on any malformed entry."""
+    if not raw:
+        return []
+    want = 2 if kind == "top" else 3
+    out = {}
+    for i, e in enumerate(raw):
+        if isinstance(e, dict):
+            e = ([e.get("species"), e.get("flux")] if kind == "top" else
+                 [e.get("species"), e.get("flux"), e.get("vdep", 0.0)])
+        e = list(e)
+        if len(e) != want:
+            raise ValueError(
+                f"{kind}_flux entry {i}: expected {want} fields "
+                f"({'species, flux' if kind == 'top' else 'species, flux, vdep'}), "
+                f"got {e!r}")
+        sp = str(e[0]).strip()
+        if not sp or not sp.replace("_", "").isalnum():
+            raise ValueError(f"{kind}_flux entry {i}: bad species token {e[0]!r}")
+        try:
+            flux = float(e[1])
+            vdep = float(e[2]) if kind == "bot" else 0.0
+        except (TypeError, ValueError):
+            raise ValueError(f"{kind}_flux entry {i} ({sp}): non-numeric value")
+        if not np.isfinite(flux) or abs(flux) > BC_FLUX_MAX:
+            raise ValueError(
+                f"{kind}_flux for {sp}: flux {flux:g} not finite or beyond "
+                f"|flux| <= {BC_FLUX_MAX:g} molecules cm^-2 s^-1")
+        if kind == "bot" and (not np.isfinite(vdep) or not 0.0 <= vdep <= BC_VDEP_MAX):
+            raise ValueError(
+                f"bot_flux for {sp}: vdep {vdep:g} outside [0, {BC_VDEP_MAX:g}] cm/s")
+        if sp in out:
+            raise ValueError(f"{kind}_flux: duplicate species {sp!r}")
+        if flux == 0.0 and (kind == "top" or vdep == 0.0):
+            continue                      # inert row: keep the cache key clean
+        row = [sp, float(f"{flux:.6e}")]
+        if kind == "bot":
+            row.append(float(f"{vdep:.6e}"))
+        out[sp] = row
+    return [out[sp] for sp in sorted(out)]
+
+
+def _write_bc_file(kind: str, entries: list) -> Path:
+    """Write the VULCAN BC token file for the canonical entries and return its
+    path (content-addressed under <output>/bc_files/, idempotent). Format is
+    upstream's: comment header, then 'species flux' (top) or
+    'species flux vdep' (bottom) token rows."""
+    lines = ["# generated by jwst_tool.forward (v16 boundary conditions)",
+             ("# species  flux(cm^-2 s^-1)" if kind == "top"
+              else "# species  flux(cm^-2 s^-1)  vdep(cm/s)")]
+    for row in entries:
+        lines.append("  ".join(f"{v:.6e}" if isinstance(v, float) else str(v)
+                               for v in row))
+    text = "\n".join(lines) + "\n"
+    tag = hashlib.sha1(text.encode()).hexdigest()[:12]
+    bc_dir = MODEL_CACHE.parent / "bc_files"
+    bc_dir.mkdir(parents=True, exist_ok=True)
+    path = bc_dir / f"{kind}_{tag}.txt"
+    if not path.exists():
+        path.write_text(text)
+    return path
 
 
 # VULCAN condensation channel on the SNCHO network (detection-only, v14; see
@@ -328,7 +639,30 @@ def canonical_params(params: dict) -> dict:
         raise ValueError(
             f"unknown tp_mode {tp_mode!r} (choose from {list(TP_PARAM_NAMES)}). "
             "The WASP-39b GCM 'baseline' mode was removed -- use an explicit "
-            "isothermal or Guillot profile.")
+            "isothermal or Guillot profile, or tp_mode='file' with an "
+            "explicit table (v16).")
+    # tp_mode="file": resolve + validate the table NOW (light: a numpy parse
+    # and a content hash, no engine imports) so a bad upload fails at the API
+    # and the cache key is CONTENT-addressed (tp_file_sha1), never
+    # path-addressed. tp_table is reused by the kzz_mode="file" gate below.
+    tp_file, tp_file_sha1, tp_table = "", "", None
+    if tp_mode == "file":
+        tp_path, tp_file_sha1 = _resolve_tp_file(params)
+        tp_table = _read_tp_table(tp_path)
+        tp_file = str(params.get("tp_file", TP_FILE_SHIPPED))
+    # science_mode (v16): "transmission" (transit depth, the original tool)
+    # or "emission" (secondary-eclipse depth Fp/Fs * (Rp/Rs)^2, day side).
+    science_mode = str(params.get("science_mode", "transmission"))
+    if science_mode not in ("transmission", "emission"):
+        raise ValueError(
+            f"unknown science_mode {science_mode!r}: choose 'transmission' "
+            "(transit depth) or 'emission' (secondary-eclipse depth)")
+    if science_mode == "emission" and tp_mode == "isothermal":
+        raise ValueError(
+            "emission with an isothermal T-P is a featureless blackbody: "
+            "the day-side spectrum only carries molecular features through "
+            "the vertical temperature gradient. Choose tp_mode='guillot' "
+            "(set T_int and the opacity ratios) or 'file'.")
     planet = str(params.get("planet", "wasp39b"))
     if planet not in planets.PLANETS and planet != "custom":
         raise ValueError(f"unknown planet {planet!r}")
@@ -349,8 +683,17 @@ def canonical_params(params: dict) -> dict:
     if sflux not in planets.SFLUX_CHOICES:
         raise ValueError(f"unknown stellar UV spectrum {sflux!r} "
                          f"(choose from {list(planets.SFLUX_CHOICES)})")
+    star_ref = planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS)["star"]
     cp = {
         "planet": planet,
+        "science_mode": science_mode,
+        # Star identity for the eclipse normalization Fp/Fs (v16 emission):
+        # part of the MODEL only in emission mode (zeroed in transmission --
+        # there the star lives purely on the noise side).
+        "star_teff": round(float(params.get("star_teff", star_ref["teff"])), 1),
+        "star_logg": round(float(params.get("star_logg", star_ref["log_g"])), 2),
+        "star_feh": round(float(params.get("star_feh",
+                                           star_ref["metallicity"])), 2),
         "nz": nz,
         "nu_pts": nu_pts,
         "yconv_cri": round(yconv_cri, 6),
@@ -370,7 +713,18 @@ def canonical_params(params: dict) -> dict:
         "kzz_mode": str(params.get("kzz_mode", "const")),
         "kzz_x": round(float(params.get("kzz_x", 1.0)), 4),
         "kzz_const": round(float(params.get("kzz_const", 1.0e9)), 1),
+        # parametric Kzz profiles (v16): Pfunc (kzz_kmax = deep Kzz cm^2/s,
+        # kzz_plev = transition level in bar) and JM16 (kzz_kdeep = deep
+        # floor); unused knobs are zeroed below for cache hygiene
+        "kzz_kmax": round(float(params.get("kzz_kmax", 1.0e5)), 1),
+        "kzz_plev": float(f"{float(params.get('kzz_plev', 0.1)):.6e}"),
+        "kzz_kdeep": round(float(params.get("kzz_kdeep", 1.0e5)), 1),
         "tp_mode": tp_mode,
+        # tp_mode="file" identity (v16): the source label + the table's
+        # CONTENT hash -- the hash is what keys the cache, so two different
+        # tables can never share an entry ("" outside file mode)
+        "tp_file": tp_file,
+        "tp_file_sha1": tp_file_sha1,
         "T_iso": round(float(params.get("T_iso", 1100.0)), 2),
         "Tirr": round(float(params.get("Tirr", 1560.0)), 2),
         "Tint": round(float(params.get("Tint", 100.0)), 2),
@@ -414,9 +768,21 @@ def canonical_params(params: dict) -> dict:
         "cloud_on": bool(params.get("cloud_on", False)),
         "log_kappa_cloud": round(float(params.get("log_kappa_cloud", -1.0)), 3),
         "alpha_cloud": round(float(params.get("alpha_cloud", 0.0)), 2),
+        # Mie condensate deck (v16): "" = off. The three continuous knobs key
+        # the cache only when a condensate is set (zeroed below otherwise).
+        "mie_condensate": str(params.get("mie_condensate", "") or ""),
+        "mie_log_rg": round(float(params.get("mie_log_rg", -5.0)), 3),
+        "mie_sigmag": round(float(params.get("mie_sigmag", 2.0)), 3),
+        "mie_log_mmr": round(float(params.get("mie_log_mmr", -6.0)), 3),
         # Detection-only condensation (v14): the certified S8 forward recipe.
         # The compatibility matrix below refuses it with ANY derivative.
         "use_condense": bool(params.get("use_condense", False)),
+        # Boundary conditions / transport (v16): all default OFF = the
+        # validated baseline; upstream VULCAN machinery via cfg_overrides.
+        "use_settling": bool(params.get("use_settling", False)),
+        "diff_esc": sorted(set(str(s) for s in (params.get("diff_esc") or []))),
+        "top_flux": _canon_bc_entries(params.get("top_flux"), kind="top"),
+        "bot_flux": _canon_bc_entries(params.get("bot_flux"), kind="bot"),
         "extra_mols": sorted(str(m) for m in (params.get("extra_mols") or [])),
         "fisher_params": sorted(str(p) for p in (params.get("fisher_params") or [])),
         # Jacobian method: "fd" (certified central FD, default, valid
@@ -462,13 +828,27 @@ def canonical_params(params: dict) -> dict:
     if not 0.1 <= cp["met_x_solar"] <= 100.0:
         raise ValueError(
             f"met_x_solar={cp['met_x_solar']} outside [0.1, 100] x solar")
+    # Fisher parameter menu: chemistry + the tp_mode's T-P parameters (NONE in
+    # file mode -- a tabulated profile has no temperature knob, so file-mode
+    # forecasts are conditional on the profile) + the cloud-deck parameters
+    # when the deck is actually in the model (v16 marginalization).
     allowed_fp = {"lnZ", "dlnCO", "lnKzz"} | set(TP_PARAM_NAMES[tp_mode])
+    if cp["cloud_on"]:
+        allowed_fp |= set(CLOUD_FISHER_PARAMS)
+    if cp["mie_condensate"]:
+        allowed_fp |= set(MIE_FISHER_PARAMS)
     bad_fp = set(cp["fisher_params"]) - allowed_fp
     if bad_fp:
         raise ValueError(
             f"unknown Fisher parameter(s) {sorted(bad_fp)} for tp_mode="
             f"{tp_mode!r}: choose from ['lnZ', 'dlnCO', 'lnKzz'] + "
-            f"{TP_PARAM_NAMES[tp_mode]}")
+            f"{TP_PARAM_NAMES[tp_mode]}"
+            + (f" + {list(CLOUD_FISHER_PARAMS)}" if cp["cloud_on"] else "")
+            + (f" + {list(MIE_FISHER_PARAMS)}" if cp["mie_condensate"] else "")
+            + (". (tp_mode='file' has NO T-P Fisher rows by design; the "
+               f"cloud parameters {list(CLOUD_FISHER_PARAMS)} require cloud_on; "
+               f"the Mie parameters {list(MIE_FISHER_PARAMS)} require a "
+               "mie_condensate.)"))
     if cp["jac_method"] not in JAC_METHODS:
         raise ValueError(
             f"jac_method={cp['jac_method']!r}: choose 'fd' (certified central "
@@ -518,25 +898,138 @@ def canonical_params(params: dict) -> dict:
                 "molecular-diffusion coefficient, so with it off every "
                 "condensation rate would silently be zero. Enable molecular "
                 "diffusion, or turn condensation off.")
+    # --- boundary conditions / transport (v16) -----------------------------
+    bad_esc = set(cp["diff_esc"]) - set(DIFF_ESC_CHOICES)
+    if bad_esc:
+        raise ValueError(
+            f"diff_esc species {sorted(bad_esc)} not supported: choose from "
+            f"{list(DIFF_ESC_CHOICES)} (the light species the TOA "
+            "diffusion-limited escape formula applies to, all present in the "
+            "SNCHO network).")
+    if cp["diff_esc"] and not cp["use_moldiff"]:
+        raise ValueError(
+            "diff_esc requires use_moldiff: the diffusion-limited escape flux "
+            "is proportional to the top-of-atmosphere molecular-diffusion "
+            "coefficient, so with moldiff off every escape flux would silently "
+            "be zero. Enable molecular diffusion or clear the escape species.")
+    if cp["use_settling"]:
+        if not cp["use_moldiff"]:
+            raise ValueError(
+                "use_settling requires use_moldiff: the settling velocity "
+                "enters through the molecular-diffusion operator, so with "
+                "moldiff off settling would be silently inert. Enable "
+                "molecular diffusion or turn settling off.")
+        if cp["use_condense"]:
+            raise ValueError(
+                "use_settling cannot be combined with use_condense: the "
+                "certified S8 condensation recipe (CONDEN_CFG) pins settling "
+                "OFF -- the conden-window + fix-species convergence "
+                "methodology was validated without gravitational settling, "
+                "and enabling both would silently override one of them. "
+                "Choose one.")
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
+    if not cp["use_moldiff"]:          # upwind vm_mol is inert without moldiff
+        cp["use_vm_mol"] = False       # (engine gates use_vm on both); keep the
+                                       # key from fragmenting the cache
     if not cp["cloud_on"]:             # cloud knobs are inert when the deck is off
         cp["log_kappa_cloud"] = 0.0
         cp["alpha_cloud"] = 0.0
+    # --- Mie condensate deck (v16) -----------------------------------------
+    if cp["mie_condensate"]:
+        if cp["mie_condensate"] not in MIE_CONDENSATES:
+            raise ValueError(
+                f"mie_condensate={cp['mie_condensate']!r} not supported: "
+                f"choose '' (off) or one of {list(MIE_CONDENSATES)} (the "
+                "condensates exojax ships refractive indices + a substance "
+                "density for; a miegrid is generated once per condensate with "
+                "tools/generate_miegrid.py).")
+        if not MIE_LOG_RG_RANGE[0] <= cp["mie_log_rg"] <= MIE_LOG_RG_RANGE[1]:
+            raise ValueError(
+                f"mie_log_rg={cp['mie_log_rg']} outside {MIE_LOG_RG_RANGE} "
+                "(log10 mean radius in cm, kept inside the miegrid edges so the "
+                "derivative is never a silently edge-clamped zero)")
+        if not MIE_SIGMAG_RANGE[0] <= cp["mie_sigmag"] <= MIE_SIGMAG_RANGE[1]:
+            raise ValueError(
+                f"mie_sigmag={cp['mie_sigmag']} outside {MIE_SIGMAG_RANGE} "
+                "(lognormal geometric std dev, inside the miegrid edges)")
+        if not MIE_LOG_MMR_RANGE[0] <= cp["mie_log_mmr"] <= MIE_LOG_MMR_RANGE[1]:
+            raise ValueError(
+                f"mie_log_mmr={cp['mie_log_mmr']} outside {MIE_LOG_MMR_RANGE} "
+                "(log10 condensate mass mixing ratio)")
+    else:                              # deck off: zero the knobs (cache hygiene)
+        cp["mie_log_rg"] = cp["mie_sigmag"] = cp["mie_log_mmr"] = 0.0
+    # --- science-mode hygiene + gating (v16 emission) ----------------------
+    if science_mode == "emission":
+        if not 3000.0 <= cp["star_teff"] <= 7000.0:
+            raise ValueError(
+                f"star_teff={cp['star_teff']:g} outside [3000, 7000] K (the "
+                "range exercised against the PHOENIX grid for Fp/Fs)")
+        if not 3.0 <= cp["star_logg"] <= 5.5:
+            raise ValueError(f"star_logg={cp['star_logg']:g} outside [3.0, 5.5]")
+        if not -2.5 <= cp["star_feh"] <= 0.5:
+            raise ValueError(f"star_feh={cp['star_feh']:g} outside [-2.5, 0.5]")
+        # Rayleigh scattering is transmission-only physics (the pure-
+        # absorption emission solver must not count scattering as thermal
+        # absorption -- engine contract), and the chord-integration scheme
+        # only exists in transmission: normalize both so they cannot
+        # fragment the emission cache.
+        cp["use_rayleigh"] = False
+        cp["rt_integration"] = "simpson"
+    else:
+        cp["star_teff"] = cp["star_logg"] = cp["star_feh"] = 0.0
     # drop fields inert for the chosen modes so they don't fragment the cache
     if tp_mode != "isothermal":
         cp["T_iso"] = 0.0
     if tp_mode != "guillot":
         cp["Tirr"] = cp["Tint"] = cp["log_kappa"] = cp["log_gamma"] = 0.0
-    if cp["kzz_mode"] != "const":
+    # --- Kzz profile mode (v16: const / Pfunc / JM16 / file) ----------------
+    if cp["kzz_mode"] not in KZZ_MODES:
         raise ValueError(
-            f"unknown kzz_mode {cp['kzz_mode']!r}: only 'const' is supported. "
-            "The WASP-39b GCM-scaled 'scale' mode was removed -- pass an "
-            "explicit kzz_const.")
-    bad = set(cp["fisher_params"]) - set(CHEM_PARAM_NAMES + TP_PARAM_NAMES[tp_mode])
-    if bad:
-        raise ValueError(f"fisher_params {sorted(bad)} not available for tp_mode={tp_mode}")
+            f"unknown kzz_mode {cp['kzz_mode']!r}: choose from "
+            f"{list(KZZ_MODES)}. The WASP-39b GCM-scaled 'scale' mode was "
+            "removed and stays removed -- profiles are explicit.")
+    if not 0.01 <= cp["kzz_x"] <= 100.0:
+        raise ValueError(
+            f"kzz_x={cp['kzz_x']} outside [0.01, 100] (multiplicative scale "
+            "applied on-graph to the whole Kzz profile)")
+    if cp["kzz_mode"] == "const":
+        if not 1.0e3 <= cp["kzz_const"] <= 1.0e13:
+            raise ValueError(
+                f"kzz_const={cp['kzz_const']:g} outside [1e3, 1e13] cm^2/s")
+    elif cp["kzz_mode"] == "Pfunc":
+        if not 1.0e3 <= cp["kzz_kmax"] <= 1.0e12:
+            raise ValueError(
+                f"kzz_kmax={cp['kzz_kmax']:g} outside [1e3, 1e12] cm^2/s "
+                "(Pfunc deep Kzz)")
+        if not 1.0e-6 <= cp["kzz_plev"] <= 1.0e3:
+            raise ValueError(
+                f"kzz_plev={cp['kzz_plev']:g} outside [1e-6, 1e3] bar "
+                "(Pfunc transition pressure)")
+    elif cp["kzz_mode"] == "JM16":
+        if not 1.0e3 <= cp["kzz_kdeep"] <= 1.0e12:
+            raise ValueError(
+                f"kzz_kdeep={cp['kzz_kdeep']:g} outside [1e3, 1e12] cm^2/s "
+                "(JM16 deep floor)")
+    elif cp["kzz_mode"] == "file":
+        if tp_mode != "file":
+            raise ValueError(
+                "kzz_mode='file' requires tp_mode='file': the tabulated Kzz "
+                "lives in the Kzz column of the atm table (the upstream "
+                "constraint -- Kzz_prof='file' needs atm_type='file').")
+        if tp_table is None or tp_table["Kzz"] is None:
+            raise ValueError(
+                "kzz_mode='file' requires a 'Kzz' column in the T-P table; "
+                "the selected table has none. Add the column (cm^2/s) or "
+                "pick a parametric kzz_mode.")
+    # inert-knob zeroing (cache hygiene): only the active mode's knobs key
+    if cp["kzz_mode"] != "const":
+        cp["kzz_const"] = 0.0
+    if cp["kzz_mode"] != "Pfunc":
+        cp["kzz_kmax"] = cp["kzz_plev"] = 0.0
+    if cp["kzz_mode"] != "JM16":
+        cp["kzz_kdeep"] = 0.0
     return cp
 
 
@@ -571,7 +1064,11 @@ def load_result(params: dict):
 def _build_tp(cp: dict, gs_cgs: float):
     """(tp_eval, n_tp, tp_values, theta_names) for the chosen T-P mode.
 
-    tp_eval(tp_params, p_bar) is pure JAX (differentiable) for every mode.
+    tp_eval(tp_params, p_bar) is pure JAX (differentiable) for the parametric
+    modes. In file mode tp_eval is None: the engine's default temperature
+    path is T = T_base + theta[3] with T_base = the tabulated profile the
+    pre-loop re-gridded (atm_type="file"), and theta[3] is PINNED to 0 --
+    there is no dT parameter and no T-P Fisher row (documented conditional).
     """
     import jax.numpy as jnp
 
@@ -590,6 +1087,10 @@ def _build_tp(cp: dict, gs_cgs: float):
             return atmprof_Guillot(p, gs_cgs, kappa, gamma, Tint, Tirr, 0.25)
         vals = [cp["Tirr"], cp["Tint"], cp["log_kappa"], cp["log_gamma"]]
         return tp_eval, 4, vals, CHEM_PARAM_NAMES + TP_PARAM_NAMES["guillot"]
+    if mode == "file":
+        # theta keeps its 4th slot for the engine's uniform-shift path, pinned
+        # to 0.0 and named "dT" so the theta log stays self-describing.
+        return None, 0, [0.0], CHEM_PARAM_NAMES + ["dT"]
     raise ValueError(f"unknown tp_mode {mode!r}")
 
 
@@ -601,19 +1102,29 @@ def _make_progress(cp: dict, log):
     honestly. advance() is called at the START of each stage.
     """
     mols = active_molecules(cp)
+    _emis = cp.get("science_mode") == "emission"
     stages = [("building chemistry model (compile + warm-up)", 45.0),
               ("building radiative transfer (opacities + CIA)",
                10.0 + 3.0 * len(cp["extra_mols"]))]
+    if _emis:
+        stages += [("emission model + stellar SED", 6.0)]
     stages += [("solving photochemistry", 35.0)]
-    stages += [("full transmission spectrum", 8.0)]
+    stages += [(f"full {'eclipse' if _emis else 'transmission'} spectrum", 8.0)]
     stages += [(f"spectrum without {m}", 4.0) for m in mols]
     # Jacobian rows: fd = 4 re-init build+solve cycles per composition row /
-    # 4 cold solves per lnKzz/T-P row; ad = one warm jvp per row
+    # 4 cold solves per lnKzz/T-P row; cloud rows are RT-only (~seconds);
+    # ad = one warm jvp per row
     _ad = cp["jac_method"] == "ad"
-    stages += [((f"AD Jacobian d/d({n})", 110.0) if _ad else
-                (f"FD Jacobian d/d({n})",
-                 420.0 if n in FD_COMP_PARAMS else 260.0))
-               for n in cp["fisher_params"]]
+
+    def _row_stage(n):
+        if n in CLOUD_FISHER_PARAMS or n in MIE_FISHER_PARAMS:
+            return (f"{'AD' if _ad else 'FD'} Jacobian d/d({n})", 8.0)
+        if _ad:
+            return (f"AD Jacobian d/d({n})", 110.0)
+        return (f"FD Jacobian d/d({n})",
+                420.0 if n in FD_COMP_PARAMS else 260.0)
+
+    stages += [_row_stage(n) for n in cp["fisher_params"]]
     if cp["fisher_params"]:
         stages += [(("AD" if _ad else "FD") + " Jacobian d/d(lnR0)", 8.0)]
     total = sum(w for _, w in stages)
@@ -683,6 +1194,15 @@ def _assemble_chem(cp: dict, log):
     profile["art_ptop_bar"] = cp["rt_ptop_bar"]
     profile["rt_integration"] = cp["rt_integration"]
     profile["dit_grid_resolution"] = cp["rt_dit_res"]
+    # Mie condensate deck (v16): the engine builds the OpaMie deck from a
+    # pre-generated miegrid under DATA_DIR/exojax_mie and ECHOES mie_condensate
+    # on the rt namespace; run_model verifies that echo below (an engine too old
+    # to know the key would ignore it silently, caching a deck-less spectrum
+    # under a Mie key). The absolute data dir is pinned so exojax never scatters
+    # caches into the launch directory.
+    if cp["mie_condensate"]:
+        profile["mie_condensate"] = cp["mie_condensate"]
+        profile["mie_data_dir"] = str(_ins.DATA_DIR / MIE_DATA_SUBDIR)
     profile["reanchor_atom_ini"] = True   # finite-Z steps must re-anchor atom totals
     # step-size cap, validated state-preserving (retrieval case.py): prevents the
     # adaptive-dt ballooning non-convergence at high Kzz the GUI sliders can reach
@@ -723,18 +1243,61 @@ def _assemble_chem(cp: dict, log):
         # (S8 -> S8_l_s + particle properties + the certified convergence
         # recipe) is CONDEN_CFG.
         ovr.update(CONDEN_CFG)
-    # Isothermal structural baseline for EVERY planet (including WASP-39b; the
-    # GCM structural baseline was removed): the on-graph tp_eval supplies the
-    # actual T(P) for chemistry+RT, the structural profile only sets the
-    # hydrostatic grid + EQ init. Constant Kzz; lnKzz (theta[2]) still
-    # multiplies it on-graph.
-    T_struct = (cp["T_iso"] if cp["tp_mode"] == "isothermal"
-                else cp["Tirr"] / np.sqrt(2.0))   # ~equilibrium T at f=0.25
-    ovr.update({"atm_type": "isothermal", "Tiso": float(T_struct),
-                "Kzz_prof": "const", "const_Kzz": cp["kzz_const"]})
-    log(f"[fwd] planet {cp['planet']}: isothermal structural baseline "
-        f"{T_struct:.0f} K, const Kzz {cp['kzz_const']:.1e} cm2/s, "
-        f"UV = {cp['sflux']}")
+    # Structural baseline. Parametric modes (isothermal/guillot): isothermal
+    # structural baseline for EVERY planet -- the on-graph tp_eval supplies
+    # the actual T(P) for chemistry+RT, the structural profile only sets the
+    # hydrostatic grid + EQ init. File mode (v16): the tabulated profile IS
+    # the structure -- atm_type="file" re-grids it onto nz levels, T_base is
+    # the profile, and the engine's default temperature path (tp_eval=None,
+    # theta[3]=0) runs the chemistry exactly on it. Never a silent
+    # substitution: file mode is an explicit canonical param with a content
+    # hash, verified here against the resolved path.
+    if cp["tp_mode"] == "file":
+        tp_path = _tp_file_from_cp(cp)   # sha-verified re-resolution
+        ovr.update({"atm_type": "file", "atm_file": str(tp_path)})
+        log(f"[fwd] planet {cp['planet']}: tabulated T-P structure from "
+            f"{tp_path.name} (sha1 {cp['tp_file_sha1']}), UV = {cp['sflux']}")
+    else:
+        T_struct = (cp["T_iso"] if cp["tp_mode"] == "isothermal"
+                    else cp["Tirr"] / np.sqrt(2.0))   # ~equilibrium T at f=0.25
+        ovr.update({"atm_type": "isothermal", "Tiso": float(T_struct)})
+        log(f"[fwd] planet {cp['planet']}: isothermal structural baseline "
+            f"{T_struct:.0f} K, UV = {cp['sflux']}")
+    # Kzz profile (v16 modes; lnKzz = theta[2] scales ANY of them on-graph).
+    if cp["kzz_mode"] == "const":
+        ovr.update({"Kzz_prof": "const", "const_Kzz": cp["kzz_const"]})
+        log(f"[fwd] Kzz: const {cp['kzz_const']:.1e} cm2/s")
+    elif cp["kzz_mode"] == "Pfunc":
+        ovr.update({"Kzz_prof": "Pfunc", "K_max": cp["kzz_kmax"],
+                    "K_p_lev": cp["kzz_plev"]})
+        log(f"[fwd] Kzz: Pfunc deep {cp['kzz_kmax']:.1e} cm2/s rising as "
+            f"P^-0.4 above {cp['kzz_plev']:g} bar")
+    elif cp["kzz_mode"] == "JM16":
+        ovr.update({"Kzz_prof": "JM16", "K_deep": cp["kzz_kdeep"]})
+        log(f"[fwd] Kzz: JM16 (deep floor {cp['kzz_kdeep']:.1e} cm2/s, "
+            "1e5 (300 mbar/P)^0.5 above)")
+    else:                                # "file": gated to tp_mode="file"
+        ovr.update({"Kzz_prof": "file"})
+        log("[fwd] Kzz: tabulated column of the T-P table")
+    # Boundary conditions / transport (v16). canonical_params already refused
+    # the conflicting combos (settling+conden, settling w/o moldiff), so these
+    # never fight the CONDEN_CFG overrides above.
+    if cp["use_settling"]:
+        ovr["use_settling"] = True
+        log("[fwd] BC: gravitational settling ON")
+    if cp["diff_esc"]:
+        ovr["diff_esc"] = list(cp["diff_esc"])
+        log(f"[fwd] BC: diffusion-limited escape for {cp['diff_esc']}")
+    if cp["top_flux"]:
+        p_top = _write_bc_file("top", cp["top_flux"])
+        ovr.update({"use_topflux": True, "top_BC_flux_file": str(p_top)})
+        log(f"[fwd] BC: top flux rows {[e[0] for e in cp['top_flux']]} "
+            f"-> {p_top.name}")
+    if cp["bot_flux"]:
+        p_bot = _write_bc_file("bot", cp["bot_flux"])
+        ovr.update({"use_botflux": True, "bot_BC_flux_file": str(p_bot)})
+        log(f"[fwd] BC: bottom flux rows {[e[0] for e in cp['bot_flux']]} "
+            f"-> {p_bot.name}")
     profile["cfg_overrides"] = ovr
 
     # CO_BASELINE must equal the loaded cfg's C_H/O_H (it is the GUI's default
@@ -784,12 +1347,20 @@ def _assemble_chem(cp: dict, log):
         abundance_overrides=_abundance_overrides, config=config)
 
 
-def _check_t_window(tp_eval, theta, p_bar, log):
+def _check_t_window(tp_eval, theta, p_bar, log, T_base=None):
     """T-P validity on the chemistry grid: REJECT (never clip) out-of-window
-    profiles. Returns the evaluated T(P) as a numpy array."""
+    profiles. Returns the evaluated T(P) as a numpy array. In file mode
+    (tp_eval None) the profile IS the structure: pass T_base (chem.T_base,
+    the pre-loop's re-grid of the tabulated file)."""
     import jax.numpy as jnp
 
-    T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(p_bar)))
+    if tp_eval is None:
+        if T_base is None:
+            raise ValueError("_check_t_window: tp_eval=None (file mode) "
+                             "requires the T_base array")
+        T_check = np.asarray(T_base, dtype=np.float64)
+    else:
+        T_check = np.asarray(tp_eval(jnp.asarray(theta[3:]), jnp.asarray(p_bar)))
     tmin, tmax = float(T_check.min()), float(T_check.max())
     if tmin < T_WINDOW[0] or tmax > T_WINDOW[1]:
         raise RuntimeError(
@@ -803,6 +1374,17 @@ def _check_t_window(tp_eval, theta, p_bar, log):
 
 def run_model(params: dict, log=print) -> Path:
     cp = canonical_params(params)
+    # Uploaded T-P tables become a CONTENT-ADDRESSED copy under
+    # <output>/uploads/<sha1>.txt before anything heavy runs, so later
+    # re-resolution from the canonical params alone (adjoint_diag, cache
+    # inspection) always finds the exact bytes the key was computed from.
+    if cp["tp_mode"] == "file" and cp["tp_file"] == TP_FILE_UPLOAD:
+        src_path, sha1 = _resolve_tp_file(params)
+        dst = _uploads_dir() / f"{sha1}.txt"
+        if not dst.exists():
+            _uploads_dir().mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src_path.read_bytes())
+            log(f"[fwd] uploaded T-P table archived -> {dst}")
     advance, finish = _make_progress(cp, log)
     A = _assemble_chem(cp, log)
     # heavy imports AFTER _assemble_chem: vulcan_chem must init env/x64 first
@@ -822,7 +1404,21 @@ def run_model(params: dict, log=print) -> Path:
     log("[fwd] building chemistry model (VULCAN-JAX warm-up ~40 s) ...")
     chem = _build_chem()
 
-    T_check = _check_t_window(tp_eval, theta, chem.p_bar, log)
+    # BC flux species must exist in the solved network: the upstream
+    # read_bc_flux SILENTLY skips unknown tokens, which would turn a typo'd
+    # boundary condition into a no-op. Loud rule: verify against the built
+    # network and refuse.
+    _bc_sp = [e[0] for e in cp["top_flux"]] + [e[0] for e in cp["bot_flux"]]
+    _bad_sp = sorted(set(s for s in _bc_sp if s not in chem.sidx))
+    if _bad_sp:
+        raise RuntimeError(
+            f"boundary-condition species {_bad_sp} not in the solved SNCHO "
+            "network (the upstream BC reader would silently ignore them -- "
+            "the run would quietly compute WITHOUT your boundary condition). "
+            "Check spelling/capitalization (e.g. 'H2O', 'SO2', 'CH4').")
+
+    T_check = _check_t_window(tp_eval, theta, chem.p_bar, log,
+                              T_base=getattr(chem, "T_base", None))
 
     t0 = time.time()
     advance()
@@ -842,38 +1438,118 @@ def run_model(params: dict, log=print) -> Path:
                 f"RT engine did not honor {k}={want!r} (echoed {got!r}). "
                 "The installed vulcan-retrieval predates the "
                 "profile-overridable RT knobs -- upgrade to >= 0.10.1.")
+    # Mie deck echo (v16): the engine echoes mie_condensate ("" when no deck).
+    # A mismatch means the engine ignored the profile key (too old to know it),
+    # so the spectrum would be cached under a Mie key without the Mie opacity.
+    _mie_echo = getattr(rt, "mie_condensate", None)
+    if _mie_echo != cp["mie_condensate"]:
+        raise RuntimeError(
+            f"RT engine did not honor mie_condensate="
+            f"{cp['mie_condensate']!r} (echoed {_mie_echo!r}). The installed "
+            "vulcan-retrieval predates the Mie cloud deck -- upgrade to "
+            ">= 0.11.0.")
+
+    # --- emission mode (v16): day-side model + stellar SED ------------------
+    emis, fs_j = None, None
+    _depth_norm_em = (cp["rp_rjup"] * planets.R_JUP_CM
+                      / (cp["rstar_rsun"] * planets.R_SUN_CM)) ** 2
+    if cp["science_mode"] == "emission":
+        advance()
+        log("[fwd] building emission model + stellar SED ...")
+        if not hasattr(exojax_rt, "build_emis_model"):
+            raise RuntimeError(
+                "the installed vulcan-retrieval engine has no "
+                "build_emis_model: emission mode needs the >= 0.11 sibling. "
+                "Upgrade vulcan-retrieval.")
+        emis = exojax_rt.build_emis_model(rt, profile)
+        if not hasattr(emis, "tau_bottom"):
+            raise RuntimeError(
+                "the installed vulcan-retrieval engine predates the emission "
+                "tau_bottom diagnostic (>= 0.11): without it an optically-"
+                "thin RT bottom silently underestimates the day-side flux. "
+                "Upgrade vulcan-retrieval.")
+        from jwst_tool import stellar as stellar_mod
+        fs_j = jnp.asarray(stellar_mod.phoenix_surface_flux(
+            rt.nu_grid, cp["star_teff"], cp["star_logg"], cp["star_feh"],
+            log=log))
 
     p_art_j = jnp.asarray(rt.p_art_bar)
 
-    def art_T(th):
-        return tp_eval(th[3:], p_art_j)
+    if tp_eval is None:
+        # file mode: ONE fixed tabulated profile for chemistry and RT. The
+        # chem-grid T_base is the pre-loop's re-grid of the table; the RT grid
+        # gets the same profile interpolated in ln P and constant-extended at
+        # the edges (the standard clamp above the chemistry top -- same
+        # convention the VMR interpolation uses).
+        _pb = np.asarray(chem.p_bar)
+        _Tb = np.asarray(chem.T_base, dtype=np.float64)
+        _order = np.argsort(_pb)
+        _T_art_const = jnp.asarray(np.interp(
+            np.log(np.asarray(rt.p_art_bar)),
+            np.log(_pb[_order]), _Tb[_order]))
 
-    # ExoJax power-law retrieval cloud [log10 kappac0 (cm^2/g at 3.5 um), alphac];
-    # held FIXED in the Fisher forecast (no cloud marginalization -- documented).
+        def art_T(th):
+            return _T_art_const
+    else:
+        def art_T(th):
+            return tp_eval(th[3:], p_art_j)
+
+    # ExoJax power-law retrieval cloud [log10 kappac0 (cm^2/g at 3.5 um), alphac]:
+    # the BASELINE deck. Since v16 it can be marginalized in the Fisher forecast
+    # via the cloud= override in depth_fn (RT-only Jacobian rows); this vector is
+    # the point the rows differentiate around (None when the deck is off).
     cloud_vec = (jnp.asarray([cp["log_kappa_cloud"], cp["alpha_cloud"]])
                  if cp["cloud_on"] else None)
+    # Mie condensate deck [log10 rg (cm), sigmag, log10 MMR]: same pattern -- the
+    # baseline vector the mie= Fisher rows differentiate around (None when off).
+    # Independent of the power-law deck; the engine sums both if both are set.
+    mie_vec = (jnp.asarray([cp["mie_log_rg"], cp["mie_sigmag"],
+                            cp["mie_log_mmr"]])
+               if cp["mie_condensate"] else None)
 
     def make_depth_fn(chem_b):
         """Depth function bound to ONE chemistry build: the interpolation map
         follows that build's hydrostatic grid (composition moves the mean
         molecular weight and hence the pressure grid between the FD re-init
-        builds, so the map is never shared across builds)."""
+        builds, so the map is never shared across builds).
+
+        science_mode picks the observable behind the SAME signature:
+        transmission -> transit depth (Rp(lambda)/Rstar)^2; emission ->
+        eclipse depth (Fp/Fs) * (Rp/Rs)^2 * e^{2 lnR0}. Every downstream
+        consumer (removed-molecule spectra, FD/AD Jacobian rows, cloud rows)
+        is observable-agnostic through this function."""
         to_art_b = interp_map.make_to_art(chem_b.p_bar, rt.p_art_bar)
         mol_cols = {k: chem_b.sidx[config.MOLECULES[k]["vulcan"]]
                     for k in rt.molecules}
         h2_b, he_b = chem_b.sidx["H2"], chem_b.sidx["He"]
 
-        def depth_fn(y, th, lnR0=0.0, drop_mol=None):
+        def _art_profiles(y, th, drop_mol):
             ymix = y / jnp.sum(y, axis=1, keepdims=True)
             T_art = art_T(th)
             mmw_art = to_art_b(ymix @ chem_b.species_masses)
             vmr = {k: to_art_b(ymix[:, c]) for k, c in mol_cols.items()}
             if drop_mol is not None:
                 vmr[drop_mol] = jnp.zeros_like(vmr[drop_mol])
+            return (vmr, to_art_b(ymix[:, h2_b]), T_art, mmw_art,
+                    to_art_b(ymix[:, he_b]))
+
+        def depth_fn(y, th, lnR0=0.0, drop_mol=None, cloud=None, mie=None):
+            # cloud=/mie=None -> the baseline decks (cloud_vec/mie_vec; None
+            # when that deck is off). An explicit vector overrides it -- the
+            # v16 cloud and Mie Fisher rows differentiate the depth through
+            # these two arguments (one deck at a time).
+            vmr, vmr_h2, T_art, mmw_art, vmr_he = _art_profiles(y, th, drop_mol)
+            cl = cloud_vec if cloud is None else cloud
+            mi = mie_vec if mie is None else mie
+            if emis is not None:
+                fp = emis.emission_flux(vmr, vmr_h2, T_art, mmw_art,
+                                        vmr_he=vmr_he, cloud=cl, mie=mi)
+                return (fp / fs_j) * _depth_norm_em * jnp.exp(
+                    2.0 * jnp.asarray(lnR0))
             return rt.transmission_depth_r(
-                vmr, to_art_b(ymix[:, h2_b]), T_art, mmw_art,
-                jnp.asarray(lnR0), vmr_he=to_art_b(ymix[:, he_b]),
-                cloud=cloud_vec)
+                vmr, vmr_h2, T_art, mmw_art,
+                jnp.asarray(lnR0), vmr_he=vmr_he, cloud=cl, mie=mi)
+        depth_fn._art_profiles = _art_profiles   # reused by the tau-bottom gate
         return depth_fn
 
     depth_from_y = make_depth_fn(chem)
@@ -912,6 +1588,35 @@ def run_model(params: dict, log=print) -> Path:
         raise RuntimeError("chemistry solve returned non-finite abundances -- "
                            "parameter set outside the modelable range")
     log(f"[fwd] chemistry solved in {time.time()-t0:.0f} s total")
+
+    # --- emission bottom-boundary certification (v16) -----------------------
+    # ArtEmisPure has NO surface/interior source term: the day-side flux is
+    # only what the layers emit, so any wavelength that sees THROUGH the grid
+    # bottom is silently underestimated. Certify optical thickness at the
+    # converged state; refuse the genuinely thin case, warn on the margin.
+    emis_tau_min = float("nan")
+    if emis is not None:
+        _prof0 = depth_from_y._art_profiles(y_sol, th0, None)
+        _tau_b = np.asarray(emis.tau_bottom(*_prof0, cloud=cloud_vec,
+                                            mie=mie_vec))
+        emis_tau_min = float(_tau_b.min())
+        _wl_thin = float(rt.wl_um[int(np.argmin(_tau_b))])
+        if emis_tau_min < 3.0:
+            raise RuntimeError(
+                f"emission unreliable: the RT column bottom "
+                f"({emis.art_pbtm_bar:g} bar) is optically THIN at "
+                f"{_wl_thin:.2f} um (min bottom tau = {emis_tau_min:.2f} "
+                "< 3). ArtEmisPure has no surface/interior source term, so "
+                "flux in see-through windows is silently underestimated. "
+                "This atmosphere is too transparent for the shipped grid "
+                "bottom; the corner is unsupported rather than wrong.")
+        if emis_tau_min < 10.0:
+            log(f"[fwd] WARNING: min bottom optical depth {emis_tau_min:.1f} "
+                f"at {_wl_thin:.2f} um (< 10): the day-side flux there leans "
+                "on the deepest layers -- treat those windows with care.")
+        else:
+            log(f"[fwd] emission bottom optically thick (min tau "
+                f"{emis_tau_min:.0f} across the band)")
 
     # --- RT: full spectrum + one spectrum per removed molecule ---------------
     t0 = time.time()
@@ -993,9 +1698,79 @@ def run_model(params: dict, log=print) -> Path:
                     "certified FD row re-initializes the chemistry and is "
                     "valid at any composition.")
 
+        def _rt_deck_row(name, base_vec, idx, kwarg, gated):
+            """RT-only Jacobian row for a cloud/Mie deck parameter (no chemistry
+            re-solve). AD -> one jvp along `idx`. FD -> central difference: the
+            analytic power-law deck is smooth so a single central difference is
+            exact (gated=False), while the Mie rg/sigmag rows ride the
+            piecewise-linear miegrid, so they carry the same h-vs-2h consistency
+            gate the theta rows use (gated=True) and REFUSE a step straddling a
+            grid knot. Returns (row, h, err, method)."""
+            base_vec = np.asarray(base_vec, dtype=np.float64)
+            if cp["jac_method"] == "ad":
+                e = np.zeros(base_vec.size)
+                e[idx] = 1.0
+                _, dd = jax.jvp(
+                    lambda v: depth_from_y(y_sol, th0, **{kwarg: v}),
+                    (jnp.asarray(base_vec),), (jnp.asarray(e),))
+                return np.asarray(dd), 0.0, np.nan, "ad-jvp"
+            h = FD_STEPS[name]
+
+            def _d(step):
+                v = base_vec.copy()
+                v[idx] += step
+                return np.asarray(depth_from_y(y_sol, th0,
+                                               **{kwarg: jnp.asarray(v)}))
+            j1 = (_d(h) - _d(-h)) / (2.0 * h)
+            if not gated:
+                return j1, h, 0.0, "fd-rt"
+            j2 = (_d(2.0 * h) - _d(-2.0 * h)) / (4.0 * h)
+            scale = float(np.max(np.abs(j1)))
+            if scale == 0.0:
+                return j1, h, 0.0, "fd-rt"       # no spectral response
+            err = float(np.max(np.abs(j1 - j2)) / scale)
+            if err > FD_CONSISTENCY_TOL:
+                raise RuntimeError(
+                    f"Mie Jacobian for {name} FAILED the step-size consistency "
+                    f"check: max|J(h) - J(2h)| / max|J(h)| = {err:.3f} > "
+                    f"{FD_CONSISTENCY_TOL} (h = {h:g}). The FD step straddles a "
+                    "miegrid knot (rg/sigmag interpolation is piecewise linear), "
+                    "so the row is not a clean local slope. Move the parameter "
+                    "off the grid node, shrink forward.FD_STEPS, or use "
+                    "jac_method='ad' (the exact local-cell tangent). An "
+                    "uncertified derivative is never reported.")
+            return (4.0 * j1 - j2) / 3.0, h, err, "fd-rt"
+
         for j, name in enumerate(jac_names):
             t1 = time.time()
             advance()
+            if name in CLOUD_FISHER_PARAMS or name in MIE_FISHER_PARAMS:
+                # v16 RT-only deck row (power-law cloud or Mie condensate deck):
+                # no chemistry re-solve. The power-law deck is analytic (ungated
+                # single central FD); the Mie rg/sigmag rows are gated (they ride
+                # the piecewise-linear miegrid), MMR is exactly linear (ungated).
+                if name in CLOUD_FISHER_PARAMS:
+                    jac[j], _h, _err, _m = _rt_deck_row(
+                        name, [cp["log_kappa_cloud"], cp["alpha_cloud"]],
+                        CLOUD_FISHER_PARAMS.index(name), "cloud", gated=False)
+                    _kind = "cloud"
+                else:
+                    jac[j], _h, _err, _m = _rt_deck_row(
+                        name, [cp["mie_log_rg"], cp["mie_sigmag"],
+                               cp["mie_log_mmr"]],
+                        MIE_FISHER_PARAMS.index(name), "mie",
+                        gated=(name != "mie_log_mmr"))
+                    _kind = "Mie"
+                fd_h.append(_h)
+                fd_err.append(_err)
+                row_method.append(_m)
+                if not np.isfinite(jac[j]).all():
+                    raise RuntimeError(
+                        f"{_kind} Jacobian for {name}: non-finite entries")
+                log(f"[fwd] {cp['jac_method'].upper()} Jacobian "
+                    f"d(depth)/d({name}) [RT-only {_kind} row] in "
+                    f"{time.time()-t1:.0f} s")
+                continue
             if cp["jac_method"] == "ad":
                 # AD row: one warm-started forward-mode jvp along this
                 # theta direction (composition directions included -- the
@@ -1038,7 +1813,9 @@ def run_model(params: dict, log=print) -> Path:
                 for s in (1, -1, 2, -2):
                     th_s = theta.copy()
                     th_s[i_par] += s * h
-                    if i_par >= 3:         # T-P step must stay in the window
+                    # T-P step must stay in the window (tp_eval is None only
+                    # in file mode, which has no T-P rows by construction)
+                    if i_par >= 3 and tp_eval is not None:
                         T_s = np.asarray(tp_eval(jnp.asarray(th_s[3:]),
                                                  jnp.asarray(chem.p_bar)))
                         if T_s.min() < T_WINDOW[0] or T_s.max() > T_WINDOW[1]:
@@ -1098,7 +1875,13 @@ def run_model(params: dict, log=print) -> Path:
         conv_accept=np.array([a for _, a, _ in conv_cert], dtype=np.int64),
         conv_longdy=np.array([l for _, _, l in conv_cert], dtype=np.float64),
         conv_gate=np.array([float(chem.yconv_min)], dtype=np.float64),
+        science_mode=np.array(cp["science_mode"], dtype="U16"),
     )
+    if emis is not None:
+        arrays["fs_flux"] = np.asarray(fs_j, dtype=np.float64)
+        # Fp derived exactly from the stored eclipse depth (lnR0 = 0 baseline)
+        arrays["fp_flux"] = depth * np.asarray(fs_j) / _depth_norm_em
+        arrays["emis_tau_bottom_min"] = np.array([emis_tau_min])
     if jac is not None:
         arrays["jac"] = jac
         arrays["jac_names"] = np.array(jac_names, dtype="U16")

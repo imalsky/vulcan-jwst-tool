@@ -153,6 +153,22 @@ def molecule_linelist_status(mols: list[str],
     return out
 
 
+def miegrid_path(condensate: str) -> Path:
+    """Path of the exojax Mie lookup grid for ``condensate`` under DATA_DIR
+    (generated once by tools/generate_miegrid.py; the forward model only loads
+    it). The filename convention is exojax's own (PdbCloud.set_miegrid_filename,
+    nurange-independent)."""
+    return (Path(ins.DATA_DIR) / "exojax_mie" /
+            f"miegrid_lognorm_{condensate}.mg.npz")
+
+
+def miegrid_status(condensates) -> dict[str, str]:
+    """{condensate: OK/MISSING} for the Mie decks. Unlike line lists, a miegrid
+    never auto-downloads (generation needs PyMieScatt), so absent = MISSING."""
+    return {c: (OK if miegrid_path(c).exists() else MISSING)
+            for c in condensates}
+
+
 def check_engine_data(base_mols: list[str], extra_mols: list[str]) -> list[Item]:
     cfg = _engine_config()
     if isinstance(cfg, Exception):

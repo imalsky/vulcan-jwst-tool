@@ -33,11 +33,13 @@ dependencies = [
     "numpy>=1.26",
     "matplotlib",
     "jax>=0.6.2",
-    "vulcan-retrieval>=0.10.1",  # 0.10.1 adds the profile-overridable RT knobs
+    "vulcan-retrieval>=0.11.0",  # 0.11.0 adds the emission tau_bottom diagnostic
+                                 # (+ art_pbtm_bar) and the Mie condensate deck
+                                 # with a mie_condensate echo that forward v16
+                                 # emission + Mie modes require and echo-verify;
+                                 # 0.10.1 added the profile-overridable RT knobs
                                  # (art_ptop_bar / rt_integration /
-                                 # dit_grid_resolution) that forward v15 sets
-                                 # and echo-verifies; 0.10.0 added
-                                 # run_diag(return_atm=True) for adjoint_diag
+                                 # dit_grid_resolution) echo-verified by v15
     "vulcan-jax>=0.3.0",  # direct imports: load_config (CO_BASELINE check) + steady_state_grad (adjoint_diag)
 ]
 

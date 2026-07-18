@@ -196,7 +196,8 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     t0 = time.time()
     log("[adj] PROG 0.02 building chemistry model")
     chem = A.build_chem(tag="adjoint baseline")
-    forward._check_t_window(A.tp_eval, A.theta, chem.p_bar, log)
+    forward._check_t_window(A.tp_eval, A.theta, chem.p_bar, log,
+                            T_base=getattr(chem, "T_base", None))
     if chem.sidx.get(vulcan_sp) is None:
         raise RuntimeError(f"species {vulcan_sp} not in the solved network")
     sp = int(chem.sidx[vulcan_sp])

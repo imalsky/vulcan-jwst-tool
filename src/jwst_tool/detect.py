@@ -59,11 +59,17 @@ from . import noise as noise_mod
 N_TRANSITS_CAP = 500
 
 # Jacobian rows treated as NUISANCE directions for sigma_detect_proj:
-# temperature-structure parameters and the reference radius. Chemistry rows
-# (lnZ, dlnCO, lnKzz) are the science axes -- projecting them out would eat
-# the very signal being scored. Must track forward.TP_PARAM_NAMES.
+# temperature-structure parameters, the reference radius, and (v16) the
+# cloud-deck parameters -- both the analytic power-law deck AND the Mie
+# condensate deck. An uncertain deck can absorb broadband signal exactly like
+# an offset can, so a molecule score should not lean on it. Chemistry rows
+# (lnZ, dlnCO, lnKzz) are the science axes -- projecting them out would eat the
+# very signal being scored. Must track forward.TP_PARAM_NAMES +
+# forward.CLOUD_FISHER_PARAMS + forward.MIE_FISHER_PARAMS.
 _NUISANCE_JAC = frozenset(
-    {"T_iso", "Tirr", "Tint", "log_kappa", "log_gamma", "lnR0"})
+    {"T_iso", "Tirr", "Tint", "log_kappa", "log_gamma", "lnR0",
+     "log_kappa_cloud", "alpha_cloud",
+     "mie_log_rg", "mie_sigmag", "mie_log_mmr"})
 
 
 def _segment_rows(seg: np.ndarray) -> list[np.ndarray]:

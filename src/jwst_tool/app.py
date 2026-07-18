@@ -13,6 +13,7 @@ WASP-39b come from the registry in planets.py (or a fully custom system).
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -304,7 +305,8 @@ def _watch_proc(proc, on_line, on_tick, tick_s: float = 1.0) -> None:
 # default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
-                   "log_kappa": 0.30, "log_gamma": 0.30}
+                   "log_kappa": 0.30, "log_gamma": 0.30,
+                   "log_kappa_cloud": 0.30, "alpha_cloud": 0.50}
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +392,23 @@ with st.sidebar:
 
     teq = float(pdef["teq_k"])
     st.divider()
+    st.markdown("### Observation geometry")
+    science_mode = st.radio(
+        "Geometry", ["transmission", "emission"], horizontal=True,
+        key=K("scimode"),
+        format_func={"transmission": "Transmission (transit)",
+                     "emission": "Emission (secondary eclipse)"}.get,
+        help="Transmission models the terminator in transit; the observable "
+             "is the transit depth. Emission models the day side at "
+             "secondary eclipse; the observable is the eclipse depth "
+             "Fp/Fs × (Rp/Rs)², with a PHOENIX stellar SED for Fs (the "
+             "star parameters above). Emission needs a non-isothermal T-P "
+             "(an isothermal column emits a featureless blackbody), so the "
+             "isothermal profile is unavailable there. Noise, detection "
+             "scores, and Fisher constraints all carry over to the eclipse "
+             "depth; the run also certifies the RT column is optically "
+             "thick at its bottom (no see-through windows).")
+    st.divider()
     st.markdown("### Differentiation method")
     jac_method = st.selectbox(
         "How derivatives are computed", ["fd", "ad"], index=0, key=K("jacm"),
@@ -421,19 +440,29 @@ with st.sidebar:
                "ExoJAX radiative transfer below.")
 
     with st.expander("Atmosphere structure, T-P profile (shared with RT)"):
+        _tp_opts = (["guillot", "file"] if science_mode == "emission"
+                    else ["isothermal", "guillot", "file"])
+        if st.session_state.get(_k("tp")) not in _tp_opts:
+            st.session_state[_k("tp")] = _tp_opts[0]
         tp_mode = st.selectbox(
-            "T-P profile", ["isothermal", "guillot"], index=0, key=_k("tp"),
+            "T-P profile", _tp_opts, index=0,
+            key=_k("tp"),
             format_func={"isothermal": "Isothermal",
-                         "guillot": "Guillot (2010)"}.get,
-            help="Sets the temperature the chemistry AND the radiative transfer "
-                 "see. Explicit profiles only (the WASP-39b GCM profile was "
-                 "removed, isothermal / Guillot).")
+                         "guillot": "Guillot (2010)",
+                         "file": "Tabulated table (T-P, optional Kzz)"}.get,
+            help="Sets the temperature the chemistry AND the radiative "
+                 "transfer see. Explicit profiles only: isothermal, Guillot, "
+                 "or an explicit tabulated table you choose (a GCM profile "
+                 "is never silently substituted; the tabulated table also "
+                 "sets the hydrostatic grid and the equilibrium "
+                 "initialization).")
         tp_kwargs = {}
+        tp_file, tp_file_path, tp_file_ok = "", None, True
         if tp_mode == "isothermal":
             tp_kwargs["T_iso"] = st.slider("T_iso (K)", 400.0, 2500.0,
                                            float(np.clip(teq, 400.0, 2500.0)),
                                            25.0, key=_k("tiso"))
-        else:
+        elif tp_mode == "guillot":
             tirr0 = float(np.clip(round(teq * np.sqrt(2.0) / 10) * 10,
                                   800.0, 2500.0))
             tp_kwargs["Tirr"] = st.slider("T_irr (K)", 800.0, 2500.0, tirr0, 20.0,
@@ -445,6 +474,60 @@ with st.sidebar:
                                                -2.3, 0.1, key=_k("lk"))
             tp_kwargs["log_gamma"] = st.slider("log₁₀ γ (κ_vis/κ_IR)", -2.0, 0.3,
                                                -1.0, 0.05, key=_k("lg"))
+        else:
+            tp_file = st.radio(
+                "Profile source", [forward.TP_FILE_SHIPPED,
+                                   forward.TP_FILE_UPLOAD],
+                horizontal=True, key=_k("tpsrc"),
+                format_func={forward.TP_FILE_SHIPPED:
+                             "Shipped W39b evening terminator",
+                             forward.TP_FILE_UPLOAD: "Upload a table"}.get,
+                help="The shipped table is the WASP-39b evening-terminator "
+                     "T-P + Kzz profile bundled with VULCAN (Tsai et al. "
+                     "2023). Uploads use the same VULCAN atm format.")
+            if tp_file == forward.TP_FILE_SHIPPED and planet_key != "wasp39b":
+                st.warning(
+                    "The shipped table is the WASP-39b evening terminator; "
+                    "it is applied verbatim to the selected planet.")
+            if tp_file == forward.TP_FILE_UPLOAD:
+                up_tp = st.file_uploader(
+                    "VULCAN atm table (.txt)", type=["txt", "dat"],
+                    key=_k("tpup"),
+                    help="Line 1: a units comment (e.g. '#(dyne/cm2) (K) "
+                         "(cm2/s)'). Line 2: the column names 'Pressure "
+                         "Temp' (+ optional 'Kzz'). Then rows: pressure in "
+                         "dyne/cm^2 (monotonic), T in K, Kzz in cm^2/s. The "
+                         "table is re-gridded onto the chosen layer count.")
+                if up_tp is not None:
+                    _raw_tp = up_tp.getvalue()
+                    _sha_tp = hashlib.sha1(_raw_tp).hexdigest()[:16]
+                    _dst_tp = forward._uploads_dir() / f"{_sha_tp}.txt"
+                    _dst_tp.parent.mkdir(parents=True, exist_ok=True)
+                    if not _dst_tp.exists():
+                        _dst_tp.write_bytes(_raw_tp)
+                    try:                       # loud validation, immediately
+                        _tab_tp = forward._read_tp_table(_dst_tp)
+                        tp_file_path = str(_dst_tp)
+                        st.caption(
+                            f"Loaded {_tab_tp['P_dyn'].size} rows, "
+                            f"P {_tab_tp['P_dyn'].min()/1e6:.2g}-"
+                            f"{_tab_tp['P_dyn'].max()/1e6:.2g} bar, "
+                            f"T {_tab_tp['T'].min():.0f}-"
+                            f"{_tab_tp['T'].max():.0f} K"
+                            + (", Kzz column present"
+                               if _tab_tp["Kzz"] is not None else
+                               ", no Kzz column"))
+                    except ValueError as e:
+                        st.error(f"Table rejected: {e}")
+                        tp_file_ok = False
+                else:
+                    st.warning("Upload a table to run in file mode.")
+                    tp_file_ok = False
+            st.caption(
+                "Note: file mode has NO temperature Fisher row (a fixed "
+                "table has no temperature parameter). Constraint forecasts "
+                "are conditional on this profile being exactly right, so "
+                "the reported sigmas are optimistic.")
 
     with st.expander("Composition"):
         # Composition is fully STRUCTURAL (v13, one path for every value):
@@ -482,13 +565,62 @@ with st.sidebar:
                  "it.")
 
     with st.expander("Vertical mixing (K_zz)"):
-        # constant K_zz only (the WASP-39b GCM K_zz profile was removed)
-        kzz_mode = "const"
-        log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
-                            key=_k("kzz"),
-                            help="Constant eddy-diffusion coefficient: stronger "
-                                 "mixing quenches photochemical gradients.")
-        kzz_const, kzz_x = 10.0 ** log_kzz, 1.0
+        _kzz_opts = ["const", "Pfunc", "JM16"]
+        # tabulated Kzz needs the tabulated T-P table (its Kzz column)
+        _kzz_file_ok = tp_mode == "file"
+        if _kzz_file_ok:
+            _kzz_opts.append("file")
+        elif st.session_state.get(_k("kzzmode")) == "file":
+            st.session_state[_k("kzzmode")] = "const"
+        kzz_mode = st.selectbox(
+            "K_zz profile", _kzz_opts, index=0, key=_k("kzzmode"),
+            format_func={"const": "Constant",
+                         "Pfunc": "Power law in P (Pfunc)",
+                         "JM16": "Moses-type P^-0.5 (JM16)",
+                         "file": "Tabulated (Kzz column of the T-P table)"}.get,
+            help="Eddy-diffusion profile. Constant is the validated "
+                 "baseline; Pfunc rises as P^-0.4 above a chosen level; "
+                 "JM16 rises as P^-0.5 above 300 mbar with a deep floor; "
+                 "'Tabulated' uses the Kzz column of the tp_mode='file' "
+                 "table (only offered in file mode). The Fisher lnKzz row "
+                 "is a multiplicative scale of the WHOLE profile in every "
+                 "mode.")
+        kzz_const = kzz_kmax = kzz_plev = kzz_kdeep = 0.0
+        kzz_x = 1.0
+        if kzz_mode == "const":
+            log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
+                                key=_k("kzz"),
+                                help="Constant eddy-diffusion coefficient: "
+                                     "stronger mixing quenches photochemical "
+                                     "gradients.")
+            kzz_const = 10.0 ** log_kzz
+        elif kzz_mode == "Pfunc":
+            kzz_kmax = 10.0 ** st.slider(
+                "log₁₀ deep K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
+                key=_k("kzkmax"),
+                help="Deep-atmosphere Kzz; above the transition level the "
+                     "profile rises as (P_lev/P)^0.4.")
+            kzz_plev = 10.0 ** st.slider(
+                "log₁₀ transition level (bar)", -5.0, 2.0, -1.0, 0.25,
+                key=_k("kzplev"),
+                help="Pressure above which Kzz starts rising (VULCAN "
+                     "Pfunc K_p_lev).")
+        elif kzz_mode == "JM16":
+            kzz_kdeep = 10.0 ** st.slider(
+                "log₁₀ deep-floor K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
+                key=_k("kzkdeep"),
+                help="Deep floor of the Moses-type profile "
+                     "Kzz = max(K_deep, 1e5 (300 mbar/P)^0.5).")
+        else:
+            st.caption("Kzz is read from the Kzz column of the selected "
+                       "T-P table (rejected loudly if the table has none).")
+        if kzz_mode != "const":
+            kzz_x = 10.0 ** st.slider(
+                "log₁₀ K_zz scale factor", -1.0, 1.0, 0.0, 0.05,
+                key=_k("kzzx"),
+                help="Multiplies the whole profile (the same on-graph "
+                     "direction the Fisher lnKzz row uses); 0 = the profile "
+                     "as specified.")
 
     with st.expander("Photochemistry & transport"):
         if jac_method == "ad":
@@ -587,6 +719,71 @@ with st.sidebar:
             "If you need aerosol opacity in a constraint forecast, use the "
             "ExoJAX cloud deck in the radiative-transfer section instead.")
 
+    with st.expander("Boundary conditions & escape (advanced)"):
+        st.caption(
+            "Upstream VULCAN boundary-condition machinery, all OFF by "
+            "default (the validated baseline: closed column, no escape, no "
+            "settling). Negligible for a typical hot Jupiter; these exist "
+            "for escape, surface-flux, and settling studies. Every entry is "
+            "cache-keyed.")
+        _settle_ok = use_moldiff and not use_condense
+        if not _settle_ok:
+            st.session_state[K("settle")] = False
+        use_settling = st.checkbox(
+            "Gravitational settling", value=False, key=K("settle"),
+            disabled=not _settle_ok,
+            help="Adds the particle settling velocity to the transport "
+                 "operator. Needs molecular diffusion; refused together "
+                 "with condensation (the certified S8 recipe pins settling "
+                 "off).")
+        if not _settle_ok:
+            st.caption("Settling needs molecular diffusion ON and "
+                       "condensation OFF.")
+        if not use_moldiff:            # escape flux ~ TOA Dzz; zero without moldiff
+            st.session_state[K("descape")] = []
+        diff_esc = st.multiselect(
+            "Diffusion-limited escape at the top of atmosphere",
+            list(forward.DIFF_ESC_CHOICES), default=[], key=K("descape"),
+            disabled=not use_moldiff,
+            help="Applies the classic diffusion-limited escape flux at the "
+                 "TOA for the selected light species (H, H2, He). Needs "
+                 "molecular diffusion (the escape flux is proportional to the "
+                 "top-of-atmosphere Kzz-diffusion coefficient).")
+        if not use_moldiff:
+            st.caption("Escape needs molecular diffusion ON.")
+        top_lines = st.text_area(
+            "Top-boundary fluxes", value="", key=K("topflux"),
+            placeholder="H2O 1.0e8",
+            help="One species per line: 'SPECIES FLUX', flux in molecules "
+                 "cm^-2 s^-1 (negative = outflux to space). Species must "
+                 "exist in the SNCHO network; unknown names are refused "
+                 "loudly at run time, never silently ignored.")
+        bot_lines = st.text_area(
+            "Bottom-boundary fluxes + deposition", value="", key=K("botflux"),
+            placeholder="SO2 1.0e9 0.1",
+            help="One species per line: 'SPECIES FLUX VDEP' (VDEP optional, "
+                 "default 0), flux in molecules cm^-2 s^-1 (positive = "
+                 "outgassing), deposition velocity in cm/s (surface sink).")
+
+        def _parse_bc_lines(text: str, kind: str) -> list:
+            rows = []
+            for ln in (text or "").splitlines():
+                tok = ln.split()
+                if not tok or tok[0].startswith("#"):
+                    continue
+                if kind == "bot" and len(tok) == 2:
+                    tok = tok + ["0.0"]
+                rows.append(tok)
+            return rows
+
+        top_flux = _parse_bc_lines(top_lines, "top")
+        bot_flux = _parse_bc_lines(bot_lines, "bot")
+        try:                              # immediate loud feedback on typos
+            forward._canon_bc_entries(top_flux, kind="top")
+            forward._canon_bc_entries(bot_flux, kind="bot")
+        except ValueError as e:
+            st.error(f"Boundary-condition entry rejected: {e}")
+
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
     st.caption("Turns the VULCAN abundances (at the same T-P) into the "
@@ -624,9 +821,10 @@ with st.sidebar:
             "Power-law cloud/haze opacity", value=False, key=K("cloud"),
             help="ExoJax power-law retrieval cloud, uniformly mixed: "
                  "κ(ν) = κ₀·(ν/ν₀)^α per gram of atmosphere (no cloud-top "
-                 "pressure or particle microphysics). Held FIXED in the Fisher "
-                 "forecast (no cloud marginalization), so forecasts with thick "
-                 "opacity are best-case.")
+                 "pressure or particle microphysics). With the deck on, its "
+                 "two parameters can be FREED in the Fisher forecast "
+                 "(marginalized over) -- cheap RT-only Jacobian rows; leave "
+                 "them out of the free list to condition on a known deck.")
         if cloud_on:
             log_kappa_cloud = st.slider(
                 "log₁₀ κ_cloud (cm²/g at 3.5 µm)", -4.0, 2.0, -1.0, 0.1,
@@ -639,6 +837,41 @@ with st.sidebar:
                 help="0 = gray deck; 4 ≈ Rayleigh-like small-particle haze.")
         else:
             log_kappa_cloud, alpha_cloud = -1.0, 0.0
+        # Mie condensate deck (v16): physically-grounded condensate optics from
+        # an exojax miegrid, an alternative (or addition) to the power-law deck.
+        _mie_opts = [""] + list(forward.MIE_CONDENSATES)
+        mie_condensate = st.selectbox(
+            "Mie condensate cloud", _mie_opts, index=0, key=K("miec"),
+            format_func=lambda c: "off" if not c else c,
+            help="A physically-grounded condensate cloud (exojax "
+                 "PdbCloud/OpaMie): a column-uniform lognormal size "
+                 "distribution with real refractive-index optics. Each "
+                 "condensate needs a one-time Mie grid (python "
+                 "tools/generate_miegrid.py <species>); a missing grid is "
+                 "refused loudly at run time. Its three knobs can be freed in "
+                 "the Fisher forecast (radius/dispersion ride the grid "
+                 "interpolation, abundance is exact).")
+        mie_log_rg, mie_sigmag, mie_log_mmr = -5.0, 2.0, -6.0
+        if mie_condensate:
+            if datacheck.miegrid_status([mie_condensate])[mie_condensate] \
+                    != datacheck.OK:
+                st.warning(
+                    f"No Mie grid for {mie_condensate} yet; generate it once "
+                    f"with 'python tools/generate_miegrid.py {mie_condensate}' "
+                    "(~1 h) or the run will refuse.")
+            mie_log_rg = st.slider(
+                "log₁₀ mean radius r_g (cm)", float(forward.MIE_LOG_RG_RANGE[0]),
+                float(forward.MIE_LOG_RG_RANGE[1]), -5.0, 0.1, key=K("mierg"),
+                help="Lognormal mean particle radius: −5 = 0.1 µm, −4 = 1 µm.")
+            mie_sigmag = st.slider(
+                "size dispersion σ_g", float(forward.MIE_SIGMAG_RANGE[0]),
+                float(forward.MIE_SIGMAG_RANGE[1]), 2.0, 0.05, key=K("miesg"),
+                help="Geometric standard deviation of the lognormal size "
+                     "distribution (≈1.05 near-monodisperse, 2 typical).")
+            mie_log_mmr = st.slider(
+                "log₁₀ condensate MMR", float(forward.MIE_LOG_MMR_RANGE[0]),
+                float(forward.MIE_LOG_MMR_RANGE[1]), -6.0, 0.25, key=K("miemmr"),
+                help="Mass mixing ratio of the condensate (column-uniform).")
         # h2he uses separate per-molecule caches; count what is already local
         # for the molecule set in play (CO is cached ExoMol, ignores the knob)
         _h2he_mols = [m for m in forward.MOLECULES + extra_mols if m != "CO"]
@@ -708,6 +941,10 @@ with st.sidebar:
                  "own default.")
 
     avail_free = forward.CHEM_PARAM_NAMES + forward.TP_PARAM_NAMES[tp_mode]
+    if cloud_on:                        # v16: cloud-deck marginalization
+        avail_free = avail_free + list(forward.CLOUD_FISHER_PARAMS)
+    if mie_condensate:                  # v16: Mie-deck marginalization
+        avail_free = avail_free + list(forward.MIE_FISHER_PARAMS)
     mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
                                        if m in extra_mols]
 
@@ -744,7 +981,8 @@ with st.sidebar:
         else:
             target_mol = None
             goal_param = st.selectbox(
-                "Constrain parameter", avail_free, key=K(f"gp_{tp_mode}"),
+                "Constrain parameter", avail_free,
+                key=K(f"gp_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
                 format_func=lambda n: forward.PARAM_LABELS[n],
                 help="Constraint is marginalized over the other free parameters "
                      "(Fisher forecast section) and a reference-radius nuisance.")
@@ -789,7 +1027,7 @@ with st.sidebar:
                 fisher_extra = st.multiselect(
                     "Jointly free parameters", avail_free,
                     default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
-                    key=K(f"fx_{tp_mode}"),
+                    key=K(f"fx_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
                     format_func=lambda n: forward.PARAM_LABELS[n],
                     help="The goal parameter is always included. More free "
                          "parameters = a more honest (wider) forecast; each "
@@ -805,7 +1043,8 @@ with st.sidebar:
                          "or off); AD ~1-2 min per row (photochemistry "
                          "on).")
                 fisher_params = st.multiselect(
-                    "Free parameters", avail_free, key=K(f"fp_{tp_mode}"),
+                    "Free parameters", avail_free,
+                    key=K(f"fp_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
                     default=["lnZ", "dlnCO", "lnKzz"],
                     format_func=lambda n: forward.PARAM_LABELS[n],
                     ) if do_fisher else []
@@ -924,22 +1163,30 @@ with st.sidebar:
     st.button("Reset all settings", on_click=_reset_all,
               help="Back to the defaults (also clears the current results).")
 
-params = dict(planet=planet_key, nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
+params = dict(planet=planet_key, science_mode=science_mode,
+              star_teff=teff, star_logg=logg, star_feh=feh,
+              nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               rp_rjup=rp, gs_cgs=g_ms2 * 100.0, rstar_rsun=rstar,
               orbit_au=orbit_au, sflux=sflux,
               met_x_solar=met, co_ratio=float(co_ratio),
               kzz_mode=kzz_mode, kzz_x=kzz_x, kzz_const=kzz_const,
-              tp_mode=tp_mode, fisher_params=fisher_params,
+              kzz_kmax=kzz_kmax, kzz_plev=kzz_plev, kzz_kdeep=kzz_kdeep,
+              tp_mode=tp_mode, tp_file=tp_file, tp_file_path=tp_file_path,
+              fisher_params=fisher_params,
               jac_method=jac_method,
               use_photo=use_photo, sl_angle_deg=sl_angle_deg,
               f_diurnal=f_diurnal, use_moldiff=use_moldiff,
               use_vm_mol=use_vm_mol and use_moldiff,
               use_condense=use_condense,
+              use_settling=use_settling, diff_esc=diff_esc,
+              top_flux=top_flux, bot_flux=bot_flux,
               use_rayleigh=use_rayleigh, broadening=broadening,
               rt_ptop_bar=float(rt_ptop_bar), rt_integration=rt_integration,
               rt_dit_res=float(rt_dit_res),
               cloud_on=cloud_on,
               log_kappa_cloud=log_kappa_cloud, alpha_cloud=alpha_cloud,
+              mie_condensate=mie_condensate, mie_log_rg=mie_log_rg,
+              mie_sigmag=mie_sigmag, mie_log_mmr=mie_log_mmr,
               extra_mols=extra_mols, **tp_kwargs)
 star = dict(teff=teff, log_g=logg, metallicity=feh, ks_mag=ks_mag)
 planet_label = (planets.PLANETS[planet_key]["label"]
@@ -948,8 +1195,10 @@ planet_label = (planets.PLANETS[planet_key]["label"]
 try:
     cached = forward.load_result(params) is not None
     params_error = None
-except ValueError as e:          # e.g. stale widget combo mid-rerun
-    cached, params_error = False, str(e)
+except (ValueError, RuntimeError) as e:  # stale widget combo mid-rerun, or a
+    cached, params_error = False, str(e)  # missing/invalid T-P table
+if tp_mode == "file" and not tp_file_ok and params_error is None:
+    params_error = "file-mode T-P selected but no valid table is loaded"
 
 # rough runtime hint keyed off the resolution knobs (old fast ~1.8, high ~2.8 min)
 base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
@@ -960,21 +1209,28 @@ if rt_dit_res < 1.0:                 # finer broadening grid = slower opa builds
     base_min += 0.3 * (5 + len(extra_mols))
 # cool columns (<~900 K) converge much more slowly (a W107b run took ~5 min)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
-          "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0)}.get(tp_mode, 1100.0)
+          "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0),
+          "file": float(teq)}.get(tp_mode, 1100.0)
 if t_char < 900.0:
     base_min += 2.5
 # condensing solves carry the window + pin + stricter gate overhead
 if use_condense:
     base_min += 1.5
 # Jacobian rows: fd = 4 re-init build+solve cycles per composition row and
-# 4 cold solves per Kzz/T-P row; ad = ~1 warm jvp per row
+# 4 cold solves per Kzz/T-P row; the cloud AND Mie deck rows are RT-only
+# (~seconds), so they cost the same cheap weight as _make_progress gives them;
+# ad = ~1 warm jvp per solve row
 _solve_min = max(1.0, base_min * 0.5)
+_rt_only = set(forward.CLOUD_FISHER_PARAMS) | set(forward.MIE_FISHER_PARAMS)
+n_cloud_rows = sum(1 for n in fisher_params if n in _rt_only)
+_solve_rows = [n for n in fisher_params if n not in _rt_only]
 if jac_method == "ad":
-    fd_min = len(fisher_params) * 1.7 * _solve_min
+    fd_min = len(_solve_rows) * 1.7 * _solve_min + 0.2 * n_cloud_rows
 else:
-    n_fd_comp = sum(1 for n in fisher_params if n in forward.FD_COMP_PARAMS)
-    n_fd_theta = len(fisher_params) - n_fd_comp
-    fd_min = n_fd_comp * 4 * (_solve_min + 0.8) + n_fd_theta * 4 * _solve_min
+    n_fd_comp = sum(1 for n in _solve_rows if n in forward.FD_COMP_PARAMS)
+    n_fd_theta = len(_solve_rows) - n_fd_comp
+    fd_min = (n_fd_comp * 4 * (_solve_min + 0.8)
+              + n_fd_theta * 4 * _solve_min + 0.2 * n_cloud_rows)
 native_r = int(round(nu_pts * 2950 / 8000 / 50) * 50)
 grid_lbl = f"{nz}-layer, native R≈{native_r}"
 est = "instant (cached)" if cached else (
@@ -1300,7 +1556,10 @@ y_hi = max(float(d_s[sel].max()), max(pt_hi))
 pad = 0.06 * (y_hi - y_lo)
 ax.set_ylim(y_lo - pad, y_hi + 3 * pad)
 ax.set_xlabel("wavelength (μm)")
-ax.set_ylabel("transit depth (ppm)")
+_depth_lbl = ("eclipse depth (ppm)"
+              if str(model.get("science_mode", "transmission")) == "emission"
+              else "transit depth (ppm)")
+ax.set_ylabel(_depth_lbl)
 ax.grid(alpha=0.25, lw=0.5)
 ax.spines[["top", "right"]].set_visible(False)
 ax.legend(loc="upper right", fontsize=8, ncol=2, framealpha=0.9,

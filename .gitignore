@@ -26,3 +26,6 @@ data/pandeia_data-2026.2-jwst/
 data/pandeia_psfs-2026.2-jwst/
 CLAUDE.md
 notes.md
+
+# Generated Mie lookup grids + virga refractive-index archive (regenerate with tools/generate_miegrid.py)
+data/exojax_mie/
