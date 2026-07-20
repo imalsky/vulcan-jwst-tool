@@ -20,7 +20,12 @@ RUN conda create -y -n app python=3.12 \
 
 # Clone name VULCAN-JAX is load-bearing for the engine's path contract.
 # BUILD_INFO records the exact SHAs baked into this image.
-RUN git clone --depth 1 https://github.com/imalsky/jax-vulcan.git /srv/vulcan/VULCAN-JAX \
+# The SRC_STAMP echo busts the Docker layer cache so a rebuild re-clones:
+# bump it to the new jwst-tool commit SHA on EVERY code update (the API
+# factory-reboot endpoint refuses OAuth tokens, so cache-busting happens
+# here instead; a comment would be stripped by the parser and cache-hit).
+RUN echo "SRC_STAMP d5131a4" \
+    && git clone --depth 1 https://github.com/imalsky/jax-vulcan.git /srv/vulcan/VULCAN-JAX \
     && git clone --depth 1 https://github.com/imalsky/vulcan-retrieval.git /srv/vulcan/vulcan-retrieval \
     && git clone --depth 1 https://github.com/imalsky/vulcan-jwst-tool.git /srv/vulcan/vulcan-jwst-tool \
     && for r in VULCAN-JAX vulcan-retrieval vulcan-jwst-tool; do \
