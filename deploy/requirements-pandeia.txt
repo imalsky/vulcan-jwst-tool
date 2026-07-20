@@ -1,0 +1,11 @@
+# Pandeia noise-worker env, captured from the validated Mac env `pandeia_2026`
+# (python 3.12) on 2026-07-19. This env is only entered by
+# jwst_tool/pandeia_worker.py via JWST_TOOL_PANDEIA_PYTHON; the engine/refdata
+# release-match gate (noise worker v5) refuses a mismatched pair loudly.
+pandeia.engine==2026.2
+synphot==1.7.0
+stsynphot==1.5.1
+astropy==8.0.1
+numpy==2.5.1
+scipy==1.18.0
+photutils==3.0.0
