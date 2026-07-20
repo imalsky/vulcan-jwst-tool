@@ -332,3 +332,42 @@ def test_emission_star_params_and_hygiene(tmp_path):
     assert (forward.params_key(_p(science_mode="emission", tp_mode="guillot",
                                   Tirr=1560.0))
             != forward.params_key(_p(tp_mode="guillot", Tirr=1560.0)))
+
+
+# --- v17 (2026-07-19 audit response) ----------------------------------------
+
+def test_tp_table_must_reach_chemistry_bottom(tmp_path):
+    """A table stopping above the chemistry-grid bottom is REFUSED: the engine
+    would clamp-extend the last tabulated T isothermally over the quench
+    region (v17). The standard fixture reaches 10^6.9 = 7.9e6 dyn/cm^2 and
+    passes; a table ending at 1 bar must raise."""
+    P = np.logspace(6.0, -1.0, 8)              # 1 bar bottom: too shallow
+    lines = ["#(dyne/cm2) (K)", "Pressure\tTemp"]
+    for i in range(8):
+        lines.append(f"{P[i]:.6e}\t{1200.0 - 40.0 * i:.1f}")
+    p = tmp_path / "shallow.txt"
+    p.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="chemistry-grid bottom"):
+        forward.canonical_params(_pf(p))
+    # the standard fixture (spans past P_b) still validates
+    forward.canonical_params(_pf(_table(tmp_path)))
+
+
+def test_composition_fd_stencil_envelope():
+    """FD Fisher rows for lnZ/dlnCO refuse a baseline within one 2h stencil of
+    the validated range edge (v17): the stencil would otherwise silently solve
+    the chemistry outside the exercised envelope (met=100 -> 122x solar,
+    co=2.0 -> C/O 2.44). AD rows take no stencil and are exempt here (the
+    dlnCO AD row has its own run-time b_z margin)."""
+    forward.canonical_params(_p(met_x_solar=80.0, fisher_params=["lnZ"]))
+    with pytest.raises(ValueError, match="stencil"):
+        forward.canonical_params(_p(met_x_solar=100.0, fisher_params=["lnZ"]))
+    with pytest.raises(ValueError, match="stencil"):
+        forward.canonical_params(_p(met_x_solar=0.1, fisher_params=["lnZ"]))
+    forward.canonical_params(_p(co_ratio=1.6, fisher_params=["dlnCO"]))
+    with pytest.raises(ValueError, match="stencil"):
+        forward.canonical_params(_p(co_ratio=2.0, fisher_params=["dlnCO"]))
+    # no stencil under AD; and without fisher_params the value is legal
+    forward.canonical_params(_p(met_x_solar=100.0, fisher_params=["lnZ"],
+                                jac_method="ad"))
+    forward.canonical_params(_p(met_x_solar=100.0))

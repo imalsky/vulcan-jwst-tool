@@ -221,8 +221,28 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
     edges = np.concatenate([[grid[0] - 0.5 * dl], grid + 0.5 * dl])
     edges = np.clip(edges, lnw[0], lnw[-1])
     ic = _pl_antideriv(edges, lnw, yv, icum)
-    widths = np.maximum(np.diff(edges), 1e-300)
+    w_raw = np.diff(edges)
+    widths = np.maximum(w_raw, 1e-300)
     yg = np.diff(ic) / widths
+    # Zero-width END cells (the edge clip collapses cells whose grid overshoot
+    # lands past the model span -- decided by an uncontrolled grid-alignment
+    # fractional part) hold NO model content: 0/1e-300 = 0 above, and that
+    # spurious zero used to fill the entire constant pad below, dragging the
+    # weight=None blur toward zero over the last ~4 kernel sigmas of the band
+    # (~49% of a constant depth at the edge on a MIRI-like clamped grid; the
+    # weighted path survived only because the flux floor demoted the cell).
+    # Constant extension must carry the nearest cell WITH content instead --
+    # a normalized kernel then preserves a constant for ANY weight (v17 fix).
+    _valid = np.flatnonzero(w_raw > 0.0)
+    if _valid.size == 0:        # cannot happen for a validated band, be loud
+        raise ValueError(
+            "smooth_to_native_r: every working-grid cell collapsed to zero "
+            "width after clipping to the model span -- the model grid does "
+            "not overlap the requested band")
+    if _valid[0] > 0:
+        yg[:_valid[0]] = yg[_valid[0]]
+    if _valid[-1] < yg.size - 1:
+        yg[_valid[-1] + 1:] = yg[_valid[-1]]
 
     # stellar-flux weight on the same grid (cell-averaged the same way), so the
     # convolution forms L[F d]/L[F] rather than the flat L[d] (re-audit item 2).
@@ -241,6 +261,13 @@ def smooth_to_native_r(wl_model: np.ndarray, y: np.ndarray,
                 "weight silently corrupts the count-ratio blur")
         icf = _pl_antideriv(edges, lnw, wv, _pl_cumint(lnw, wv))
         Fg = np.maximum(np.diff(icf) / widths, 0.0)
+        # zero-width end cells: constant-extend the flux weight exactly like
+        # yg (pre-v17 they held weight 0 and only the 1e-12 floor kept the
+        # spurious zero DEPTH pad from biting on the weighted path)
+        if _valid[0] > 0:
+            Fg[:_valid[0]] = Fg[_valid[0]]
+        if _valid[-1] < Fg.size - 1:
+            Fg[_valid[-1] + 1:] = Fg[_valid[-1]]
         fmax = float(Fg.max()) if Fg.size else 0.0
         Fg = np.maximum(Fg, 1e-12 * fmax) if fmax > 0.0 else np.ones_like(yg)
 

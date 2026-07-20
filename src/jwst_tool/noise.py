@@ -90,10 +90,27 @@ def backend_fingerprint() -> dict:
                 refver.append(
                     f"{name}:{hashlib.sha1(f.read_bytes()).hexdigest()[:12]}")
     ref = Path(ins.PANDEIA_REFDATA)
+    # CDBS identity (worker v6): the star SED comes from the PYSYN_CDBS
+    # PHOENIX grid, which is a machine-specific external symlink here -- a
+    # repointed/updated tree changes every flux/noise result, so its identity
+    # must key the cache. Contents-hashing gigabytes is off the table; the
+    # resolved real path + the PHOENIX catalog's (size, mtime_ns) is a cheap
+    # fingerprint that changes whenever the grid is swapped or regenerated.
+    cdbs_id = []
+    cdbs = Path(ins.PYSYN_CDBS)
+    phx = cdbs / "grid" / "phoenix"
+    if phx.exists():
+        real = phx.resolve()
+        cdbs_id.append(f"phoenix:{real}")
+        cat = real / "catalog.fits"
+        if cat.is_file():
+            st = cat.stat()
+            cdbs_id.append(f"catalog:{st.st_size}:{st.st_mtime_ns}")
     _BACKEND_FINGERPRINT = {
         "engine_version": engine,
         "refdata_name": ref.name,
         "refdata_version_files": sorted(refver),
+        "cdbs_identity": cdbs_id,
     }
     return _BACKEND_FINGERPRINT
 
@@ -131,7 +148,12 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         # cache-buster: bump when pandeia_worker output changes.
         # v5 = engine/refdata release-match gate + top-level "__provenance__"
         # block (exact backend identity recorded in every result/cache file).
-        "worker_version": 5,
+        # v6 = t_cycle_s is the TRUE per-integration cycle time (nint=2 minus
+        # nint=1 exposure difference; the nint=1 scalar missed the between-
+        # integration reset on MIRI FASTR1 -- sigma was optimistic by
+        # ~0.5/(ngroup+1)) + loud _sat_curve + legacy-only Vega requirement
+        # + cdbs_identity in the fingerprint.
+        "worker_version": 6,
     }
 
 
@@ -165,12 +187,23 @@ def run_pandeia(job: dict, progress=None, force: bool = False) -> dict:
 
     proc = subprocess.Popen([str(py), str(worker), str(in_json), str(out_json)],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Drain stderr on a thread while streaming stdout (v6): reading only
+    # stdout to EOF deadlocks both processes once the worker writes more than
+    # the OS pipe buffer (~64 KB) of engine/library chatter to stderr -- the
+    # worker blocks on the stderr write, stdout never reaches EOF.
+    import io
+    import threading
+    err_buf = io.StringIO()
+    t_err = threading.Thread(target=lambda: err_buf.write(proc.stderr.read()),
+                             daemon=True)
+    t_err.start()
     for line in proc.stdout:
         if progress:
             progress(line.rstrip())
     proc.wait()
+    t_err.join(timeout=30)
     if proc.returncode != 0 or not out_json.exists():
-        err = proc.stderr.read()
+        err = err_buf.getvalue()
         raise RuntimeError(f"pandeia worker failed (rc={proc.returncode}):\n{err[-3000:]}")
 
     result = json.loads(out_json.read_text())

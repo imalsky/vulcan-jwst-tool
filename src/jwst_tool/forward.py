@@ -177,7 +177,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 16  # Bump whenever the physics or the canonical key set changes:
+_VERSION = 17  # Bump whenever the physics or the canonical key set changes:
                # invalidates all cached spectra. Full v1-v14 history lives in
                # notes.md. v14: jac_method fd/ad for EVERY row (per-row
                # jac_row_method provenance, b_z guard on the dlnCO AD row) +
@@ -200,14 +200,26 @@ _VERSION = 16  # Bump whenever the physics or the canonical key set changes:
                # freeable as RT-only Fisher rows). Defaults reproduce v15
                # physics exactly, but the key set changed, so pre-v16 caches
                # are stale. Emission + Mie need vulcan-retrieval >= 0.11.0.
+               # v17 (2026-07-19 audit response): gas-phase-only RT
+               # normalization/mmw (condensed *_l_s reservoirs no longer
+               # dilute the gas VMRs -- conden-on spectra change, conden-off
+               # bit-identical), canonical certification gate (ConvDiag.
+               # conv_normal, not longdy alone), per-removed-molecule
+               # emission tau-bottom certification, T-P file span
+               # validation, a REACHABLE b_z margin on the AD dlnCO row,
+               # composition FD stencils kept inside the validated
+               # envelope, and photo-off sflux/orbit_au key normalization
+               # (the key set changed: pre-v17 caches are stale).
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
 # NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity).
 # The basis is the W39b cfg's CUSTOMIZED elemental set (vulcan_jax
 # configs/W39b.yaml: use_solar false, C_H 2.95e-3, O_H 5.37e-3 -- the
-# Tsai et al. 2023 WASP-39b 10x-solar composition; Asplund-flavored solar
-# C/O ~ 0.55). That set defines the CONSERVED atom columns: the elemental
+# Tsai et al. 2023 WASP-39b 10x-solar composition; their ref is Lodders
+# (2020) solar abundances, whose O gives exactly O_H/10 = 5.37e-4 and whose
+# C/O ~ 0.55 -- NOT Asplund 2009, whose O is 4.90e-4; the ratio merely
+# coincides). That set defines the CONSERVED atom columns: the elemental
 # mode rebuilds every column (and atom_ini) in the cfg basis, and both
 # build-time diagnostics confirm it ("[chem] ... baseline C/O = 0.5493").
 # It is NOT the FastChem solar_element_abundances.dat set (Lodders 2009
@@ -267,6 +279,16 @@ FD_COMP_PARAMS = ("lnZ", "dlnCO")     # need a chemistry re-init per FD point
 FD_CONSISTENCY_TOL = 0.25
 FD_LNR0_STEP = 0.01                   # lnR0 is RT-only (smooth, analytic)
 JAC_METHODS = ("fd", "ad")            # certified-FD default / warm-jvp opt-in
+# Minimum oxygen-reservoir bound b_z for the AD dlnCO row (v17). The engine's
+# co_bz_bound = ln(1 + min_z(OO_z/OC_z)) is mathematically NONNEGATIVE (it is
+# <= 0 only if some layer holds exactly zero O-only carriers in float64), so
+# the old "refuse when <= 0" C-rich guard could never fire. The reachable
+# criterion: the fixed-O differential direction must sit at least one FD
+# stencil width (2h of the dlnCO step) from the O-exhaustion boundary, or the
+# per-layer tangent factors (-OC_z/OO_z) are ill-conditioned and the jvp is
+# noise-amplifying even though the mathematical derivative exists. FD
+# re-initializes and is valid at any composition.
+CO_BZ_MIN_AD = 2.0 * FD_STEPS["dlnCO"]   # = 0.2
 # Cloud-deck Fisher parameters (v16): RT-only rows, evaluated exactly like the
 # lnR0 nuisance -- a single central difference through the radiative transfer
 # ("fd-rt"; the depth is smooth and analytic in both, no chemistry re-solve and
@@ -317,6 +339,17 @@ BC_VDEP_MAX = 1.0e3               # deposition-velocity ceiling, cm s^-1
 TP_FILE_SHIPPED = "shipped"       # the cfg's own atm_file (W39b evening terminator)
 TP_FILE_UPLOAD = "upload"         # user-supplied table; content-addressed copy
                                   # under <output>/uploads/<sha1>.txt
+
+# Chemistry-grid pressure span (dyn/cm^2) of the shipped W39b cfg: (P_t, P_b)
+# = (0.1, 7.6e6), i.e. 1e-7 to 7.6 bar (vulcan_jax configs/W39b.yaml). The
+# engine re-grids a tabulated T-P onto this FIXED span with a constant-value
+# clamp outside the table, so an uploaded table that stops above P_b would
+# silently run the entire CO/CH4/NH3 quench region isothermal at its last
+# tabulated temperature -- _read_tp_table REFUSES that (v17). A clamped TOP is
+# the standard upstream convention (the shipped profile itself extends its
+# topmost T over ~1.7 decades) and is logged loudly, not refused. run_model
+# cross-checks these constants against the LIVE cfg, CO_BASELINE-style.
+CHEM_P_SPAN_DYN = (0.1, 7.6e6)
 
 
 def active_molecules(cp: dict) -> list[str]:
@@ -443,6 +476,22 @@ def _read_tp_table(path: Path) -> dict:
     dP = np.diff(P)
     if not (np.all(dP > 0) or np.all(dP < 0)):
         raise ValueError(f"T-P table {path}: Pressure must be strictly monotonic")
+    # Bottom coverage is a HARD requirement (v17): the engine re-grids onto the
+    # fixed chemistry span with a constant-value clamp outside the table, so a
+    # table that stops above the grid bottom would silently hold T isothermal
+    # across the deep quench region (hundreds of K wrong on a W39b-like
+    # profile) -- exactly the class of error this parser exists to refuse. The
+    # top side clamps too, but that is the standard upstream convention (the
+    # shipped profile does it); run_model logs the clamped decades loudly.
+    if P.max() < CHEM_P_SPAN_DYN[1]:
+        raise ValueError(
+            f"T-P table {path}: bottom pressure {P.max():.3g} dyn/cm^2 does "
+            f"not reach the chemistry-grid bottom {CHEM_P_SPAN_DYN[1]:.3g} "
+            f"dyn/cm^2 ({CHEM_P_SPAN_DYN[1]/1e6:.1f} bar). The engine would "
+            "clamp-extend the last tabulated temperature isothermally over "
+            "the deep quench region (CO/CH4/NH3 quenching lives there), "
+            "silently biasing quenched abundances. Extend the table to at "
+            "least the grid bottom.")
     if T.min() < T_WINDOW[0] or T.max() > T_WINDOW[1]:
         raise ValueError(
             f"T-P table {path}: temperatures [{T.min():.0f}, {T.max():.0f}] K "
@@ -868,6 +917,34 @@ def canonical_params(params: dict) -> dict:
             "only in the photo-on regime. Enable photochemistry, or use the "
             "default certified finite differences (jac_method='fd'), which "
             "work photo-off too.")
+    # Composition FD stencils must stay inside the validated envelope (v17):
+    # the central stencil evaluates at +-2h in ln-space, and the tool refuses
+    # met_x_solar/co_ratio outside their exercised ranges -- so a Fisher row
+    # requested AT a range edge would silently solve the chemistry outside
+    # the envelope (met=100 -> 122x solar; co=2.0 -> C/O 2.44). The T-P rows
+    # already window-check every stencil point and the Mie ranges are inset
+    # by > 2h for exactly this reason; composition gets the same treatment.
+    if cp["jac_method"] == "fd" and cp["fisher_params"]:
+        if "lnZ" in cp["fisher_params"]:
+            _m = float(np.exp(2.0 * FD_STEPS["lnZ"]))
+            if not 0.1 * _m <= cp["met_x_solar"] <= 100.0 / _m:
+                raise ValueError(
+                    f"met_x_solar={cp['met_x_solar']:g} is within one FD "
+                    f"stencil (2h = {2.0 * FD_STEPS['lnZ']:g} in ln) of the "
+                    f"validated range edge [0.1, 100]: the lnZ Fisher row "
+                    f"would evaluate the chemistry outside the envelope. "
+                    f"Keep met_x_solar in [{0.1 * _m:.3g}, {100.0 / _m:.3g}] "
+                    "for an lnZ row, or drop lnZ from fisher_params.")
+        if "dlnCO" in cp["fisher_params"]:
+            _m = float(np.exp(2.0 * FD_STEPS["dlnCO"]))
+            if not 0.1 * _m <= cp["co_ratio"] <= 2.0 / _m:
+                raise ValueError(
+                    f"co_ratio={cp['co_ratio']:g} is within one FD stencil "
+                    f"(2h = {2.0 * FD_STEPS['dlnCO']:g} in ln) of the "
+                    f"validated range edge [0.1, 2.0]: the dlnCO Fisher row "
+                    f"would evaluate the chemistry outside the envelope. "
+                    f"Keep co_ratio in [{0.1 * _m:.3g}, {2.0 / _m:.3g}] for "
+                    "a dlnCO row, or drop dlnCO from fisher_params.")
     # --- condensation: detection-only -- refuse every derivative combo -----
     # (why: module docstring; the raises below carry the full user-facing
     # explanation, and the '91% wrong' wording is test-pinned)
@@ -935,6 +1012,12 @@ def canonical_params(params: dict) -> dict:
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
+        # The UV spectrum and orbital distance are consumed ONLY by the
+        # photolysis flux (sflux_file / orbit_radius): normalize them to the
+        # system defaults so two photo-off runs differing only in UV inputs
+        # cannot recompute identical physics under different keys (v17).
+        cp["sflux"] = str(sysd["sflux"])
+        cp["orbit_au"] = round(float(sysd["orbit_au"]), 5)
     if not cp["use_moldiff"]:          # upwind vm_mol is inert without moldiff
         cp["use_vm_mol"] = False       # (engine gates use_vm on both); keep the
                                        # key from fragmenting the cache
@@ -1317,6 +1400,30 @@ def _assemble_chem(cp: dict, log):
             f"network cfg's C_H/O_H={_co_cfg:.5f}: the C/O display baseline "
             "would be mislabeled. Update CO_BASELINE to the cfg value (and "
             "bump _VERSION).")
+    # CHEM_P_SPAN_DYN must match the live cfg the same way (v17): the light
+    # path's T-P table bottom-coverage refusal keys on it, so drift would
+    # re-open the silent quench-region clamp it exists to prevent.
+    _span_cfg = (float(_cfg_chk.P_t), float(_cfg_chk.P_b))
+    if any(abs(a / b - 1.0) > 1e-9
+           for a, b in zip(_span_cfg, CHEM_P_SPAN_DYN)):
+        raise RuntimeError(
+            f"forward.CHEM_P_SPAN_DYN={CHEM_P_SPAN_DYN} no longer matches "
+            f"the network cfg's (P_t, P_b)={_span_cfg}: the T-P table "
+            "span validation would gate against the wrong grid. Update the "
+            "constant (and bump _VERSION).")
+    if cp["tp_mode"] == "file":
+        # Quantify the (conventional, upstream-style) TOP clamp loudly: above
+        # the table's top pressure the engine holds T at the topmost tabulated
+        # value across the remaining decades of the chemistry grid. The
+        # BOTTOM was already hard-gated at the API by _read_tp_table.
+        _P_tab = _read_tp_table(tp_path)["P_dyn"]
+        _dec = float(np.log10(_P_tab.min() / CHEM_P_SPAN_DYN[0]))
+        if _dec > 0.0:
+            log(f"[fwd] NOTE: T-P table top ({_P_tab.min():.3g} dyn/cm^2) "
+                f"sits {_dec:.1f} decades below the chemistry-grid top "
+                f"({CHEM_P_SPAN_DYN[0]:g}): the topmost tabulated T is held "
+                "constant over that range (the standard upstream file-mode "
+                "convention; the shipped profile does the same).")
 
     def _abundance_overrides(met_x_solar: float, co_ratio: float) -> dict:
         # STRUCTURAL composition (v13): scale the cfg's metal abundances
@@ -1527,9 +1634,23 @@ def run_model(params: dict, log=print) -> Path:
         mol_cols = {k: chem_b.sidx[config.MOLECULES[k]["vulcan"]]
                     for k in rt.molecules}
         h2_b, he_b = chem_b.sidx["H2"], chem_b.sidx["He"]
+        # GAS-phase normalization (v17): condensed-phase reservoir species
+        # (the network's *_l_s columns, e.g. S8_l_s) are particles, not gas --
+        # counting them diluted every gas VMR and inflated the RT mean
+        # molecular weight as if the condensate were vapor (~0.5% of mmw at
+        # 10x solar with full sulfur rainout, growing with metallicity).
+        # Conden-off solves never populate *_l_s, so those spectra are
+        # bit-identical; the condensate's aerosol OPACITY stays deliberately
+        # excluded (use the cloud/Mie decks for that -- module docstring).
+        _gas = np.ones(int(np.asarray(chem_b.species_masses).size))
+        for _s, _i in chem_b.sidx.items():
+            if _s.endswith("_l_s"):
+                _gas[int(_i)] = 0.0
+        gas_mask = jnp.asarray(_gas)
 
         def _art_profiles(y, th, drop_mol):
-            ymix = y / jnp.sum(y, axis=1, keepdims=True)
+            y_gas = y * gas_mask[None, :]
+            ymix = y_gas / jnp.sum(y_gas, axis=1, keepdims=True)
             T_art = art_T(th)
             mmw_art = to_art_b(ymix @ chem_b.species_masses)
             vmr = {k: to_art_b(ymix[:, c]) for k, c in mol_cols.items()}
@@ -1563,31 +1684,48 @@ def run_model(params: dict, log=print) -> Path:
     t0 = time.time()
     th0 = jnp.asarray(theta)
     conv_cert = []   # (stage, accept_count, longdy) for every PASSED gate
-    def _check_converged(ac, longdy, stage):
-        # accept_count < count_max is NOT a convergence test: the hybrid vm_mol phase-flip
-        # (and the stall fallback) terminate the runner EARLY -- accept_count ~ count_min+2000,
-        # well below count_max -- even when the column is still oscillating and nowhere near a
-        # steady state (photo-off W39b: longdy ~ 1-60 with accept_count ~2122). Gate on the
-        # runner's own longdy metric against the loose convergence gate (yconv_min); a genuinely
-        # converged solve has longdy < yconv_min (photo-on W39b sits at ~0.06 < 0.1).
-        ac = int(ac); longdy = float(longdy)
-        if not (longdy < chem.yconv_min):
+    # The certification is the runner's own CANONICAL two-branch gate
+    # (ConvDiag.conv_normal: yconv AND slope branch AND, photo-on, the
+    # photolysis-flux gate), recomputed at the exit state -- the sibling
+    # repo's certification standard. longdy < yconv_min ALONE (the pre-v17
+    # gate) accepted a budget-exhausted photo-on solve whose UV flux was
+    # still changing; accept_count < count_max alone is even weaker (the
+    # hybrid vm_mol phase-flip / stall fallback terminate the runner EARLY,
+    # accept_count ~ count_min+2000, on a still-oscillating column --
+    # photo-off W39b: longdy ~ 1-60 at accept_count ~2122).
+    import inspect as _inspect
+    if "return_conv_diag" not in _inspect.signature(
+            chem.converged_y).parameters:
+        raise RuntimeError(
+            "the sibling forward engine's converged_y() does not support "
+            "return_conv_diag (ConvDiag canonical certification): "
+            "vulcan-retrieval is too old for this tool version. Upgrade the "
+            "sibling install -- an uncertifiable solve is never presented "
+            "as converged.")
+
+    def _check_converged(diag, stage):
+        ac = int(diag.accept_count)
+        longdy = float(diag.longdy)
+        if not (bool(diag.conv_normal) and longdy < chem.yconv_min):
             how = (f"hit the count_max={chem.count_max} cap" if ac >= int(chem.count_max)
-                   else f"terminated early at {ac} accepted steps (e.g. hybrid vm_mol "
-                        "phase-flip / stall budget) without settling")
+                   else f"exited at {ac} accepted steps without the runner's "
+                        "canonical certification (stall fallback / hybrid "
+                        "vm_mol phase-flip / photolysis flux still changing)")
             raise RuntimeError(
-                f"chemistry did NOT converge ({stage}: longdy={longdy:.3g} >= gate "
-                f"yconv_min={chem.yconv_min:g}; {how}). This parameter corner has no "
-                "certified steady state -- adjust T-P / Kzz / composition (or the "
-                "convergence settings) rather than trusting an unconverged spectrum.")
+                f"chemistry did NOT converge ({stage}: longdy={longdy:.3g}, "
+                f"gate yconv_min={chem.yconv_min:g}, "
+                f"conv_normal={bool(diag.conv_normal)}; {how}). This "
+                "parameter corner has no certified steady state -- adjust "
+                "T-P / Kzz / composition (or the convergence settings) "
+                "rather than trusting an unconverged spectrum.")
         conv_cert.append((stage, ac, longdy))
 
     # Single certified cold solve, always: composition is baked into the build
     # (structural), so there is no composition continuation and no stage 2.
     advance()
     log("[fwd] solving photochemistry (cold, certified) ...")
-    y_sol, ac, longdy = chem.converged_y(th0, return_longdy=True)
-    _check_converged(ac, longdy, "baseline solve")
+    y_sol, _cdiag = chem.converged_y(th0, return_conv_diag=True)
+    _check_converged(_cdiag, "baseline solve")
     y_np = np.asarray(y_sol)
     if not np.all(np.isfinite(y_np)):
         raise RuntimeError("chemistry solve returned non-finite abundances -- "
@@ -1631,10 +1769,43 @@ def run_model(params: dict, log=print) -> Path:
     log(f"[fwd] full spectrum in {time.time()-t0:.0f} s")
 
     depth_wo = np.zeros((len(mols_active), depth.shape[0]))
+    emis_tau_min_wo = np.full(len(mols_active), np.nan)
     for i, mol in enumerate(mols_active):
         t1 = time.time()
         advance()
         depth_wo[i] = np.asarray(depth_from_y(y_sol, th0, drop_mol=mol))
+        if emis is not None:
+            # v17: the tau-bottom certification must cover EVERY emission
+            # spectrum the results consume, not just the baseline -- zeroing
+            # a dominant absorber can open see-through windows at the grid
+            # bottom where ArtEmisPure (no surface/interior source) silently
+            # underestimates the flux, INFLATING the full-minus-removed
+            # contrast that sigma_detect(mol) is built from. Same refuse/warn
+            # thresholds as the baseline gate. (The Jacobian FD stencil needs
+            # no per-point check: its T steps are a few K, nowhere near the
+            # >3x margin between the warn (10) and refuse (3) thresholds,
+            # and the baseline warning already flags the marginal zone.)
+            _prof_i = depth_from_y._art_profiles(y_sol, th0, mol)
+            _tau_i = np.asarray(emis.tau_bottom(*_prof_i, cloud=cloud_vec,
+                                                mie=mie_vec))
+            emis_tau_min_wo[i] = float(_tau_i.min())
+            _wl_i = float(rt.wl_um[int(np.argmin(_tau_i))])
+            if emis_tau_min_wo[i] < 3.0:
+                raise RuntimeError(
+                    f"emission unreliable: with {mol} removed the RT column "
+                    f"bottom ({emis.art_pbtm_bar:g} bar) is optically THIN "
+                    f"at {_wl_i:.2f} um (min bottom tau = "
+                    f"{emis_tau_min_wo[i]:.2f} < 3). The removed-molecule "
+                    "flux there is silently underestimated (ArtEmisPure has "
+                    "no surface/interior source term), which would OVERSTATE "
+                    f"the {mol} detection contrast. This atmosphere is too "
+                    "transparent without that absorber for the shipped grid "
+                    "bottom; the corner is unsupported rather than wrong.")
+            if emis_tau_min_wo[i] < 10.0:
+                log(f"[fwd] WARNING: min bottom optical depth "
+                    f"{emis_tau_min_wo[i]:.1f} at {_wl_i:.2f} um (< 10) "
+                    f"with {mol} removed: its detection contrast leans on "
+                    "the deepest layers -- treat with care.")
         log(f"[fwd] spectrum without {mol} in {time.time()-t1:.0f} s")
 
     # --- Fisher Jacobian: certified FD (default) / warm-jvp AD (opt-in) ------
@@ -1651,9 +1822,9 @@ def run_model(params: dict, log=print) -> Path:
     fd_h, fd_err, row_method = [], [], []
     if jac_names:
         def _certified_depth(chem_b, th, stage):
-            y_b, ac_b, ld_b = chem_b.converged_y(jnp.asarray(th),
-                                                 return_longdy=True)
-            _check_converged(ac_b, ld_b, stage)
+            y_b, diag_b = chem_b.converged_y(jnp.asarray(th),
+                                             return_conv_diag=True)
+            _check_converged(diag_b, stage)
             return np.asarray(make_depth_fn(chem_b)(y_b, jnp.asarray(th)))
 
         def _fd_row(name, d_p1, d_m1, d_p2, d_m2, h):
@@ -1688,26 +1859,55 @@ def run_model(params: dict, log=print) -> Path:
             return depth_from_y(y_w, th)
 
         if cp["jac_method"] == "ad" and "dlnCO" in jac_names:
-            # The dlnCO jvp rides the fixed-O differential direction, which
-            # exists only while its oxygen-reservoir bound b_z is positive --
-            # on a sufficiently C-rich structural baseline it is not, and no
-            # tangent direction exists. FD re-initializes instead and is
-            # valid at any composition.
+            # The dlnCO jvp rides the fixed-O differential direction. Its
+            # oxygen-reservoir bound b_z = ln(1 + min_z(OO_z/OC_z)) is
+            # mathematically NONNEGATIVE, so the pre-v17 "refuse when <= 0"
+            # test could never fire -- the advertised C-rich refusal was
+            # dead code. The reachable criterion (CO_BZ_MIN_AD): the
+            # direction must sit at least one FD stencil width from the
+            # O-exhaustion boundary, else the per-layer tangent factors
+            # (-OC_z/OO_z) are ill-conditioned at solver tolerance. FD
+            # re-initializes instead and is valid at any composition. The
+            # bound is the engine's build-time diagnostic (equilibrium init
+            # column) -- a missing attribute means the check cannot run, so
+            # it refuses rather than passing silently.
             _bz = getattr(chem, "co_bz_bound", None)
-            if _bz is not None and float(_bz) <= 0.0:
+            if _bz is None:
                 raise RuntimeError(
-                    "AD Jacobian for dlnCO is undefined at this composition: "
-                    f"the fixed-O differential direction's oxygen-reservoir "
-                    f"bound b_z = {float(_bz):.3g} <= 0 (C-rich baseline, "
-                    f"C/O = {cp['co_ratio']:g}). Use jac_method='fd' -- the "
-                    "certified FD row re-initializes the chemistry and is "
-                    "valid at any composition.")
+                    "the sibling forward engine does not expose co_bz_bound "
+                    "(the fixed-O direction's oxygen-reservoir bound): the "
+                    "AD dlnCO row cannot be certified. Upgrade "
+                    "vulcan-retrieval or use jac_method='fd'.")
+            if float(_bz) <= CO_BZ_MIN_AD:
+                raise RuntimeError(
+                    "AD Jacobian for dlnCO refused at this composition: the "
+                    f"fixed-O differential direction's oxygen-reservoir "
+                    f"bound b_z = {float(_bz):.3g} <= {CO_BZ_MIN_AD:g} "
+                    f"(C-rich baseline, C/O = {cp['co_ratio']:g}: O-only "
+                    "carriers are within one FD stencil of exhaustion, so "
+                    "the tangent direction is ill-conditioned). Use "
+                    "jac_method='fd' -- the certified FD row re-initializes "
+                    "the chemistry and is valid at any composition.")
+
+        if cp["jac_method"] == "ad":
+            # Certify the AD rows' shared primal (v17): every jvp linearizes
+            # the warm re-converge at th0. "The primal is a no-op
+            # re-converge" was asserted, never checked -- a stall exit
+            # would have passed silently. One cheap warm solve verifies the
+            # linearization point actually certifies.
+            _, _diag_w = chem.converged_y(
+                th0, warm_y=y_sol, lnZ_ref=0.0, c_o_ref=0.0,
+                return_conv_diag=True)
+            _check_converged(_diag_w, "AD warm re-converge (primal)")
 
         def _rt_deck_row(name, base_vec, idx, kwarg, gated):
             """RT-only Jacobian row for a cloud/Mie deck parameter (no chemistry
             re-solve). AD -> one jvp along `idx`. FD -> central difference: the
-            analytic power-law deck is smooth so a single central difference is
-            exact (gated=False), while the Mie rg/sigmag rows ride the
+            analytic power-law deck is smooth (no solver noise), so gated=False
+            rows take a SINGLE central difference -- which still carries the
+            usual O(h^2) truncation error (~(h ln10)^2/6 ~ 0.2% at h=0.05 dex),
+            just no h-vs-2h measurement of it, so fd_err is reported NaN
+            (unmeasured), never 0 (v17). The Mie rg/sigmag rows ride the
             piecewise-linear miegrid, so they carry the same h-vs-2h consistency
             gate the theta rows use (gated=True) and REFUSE a step straddling a
             grid knot. Returns (row, h, err, method)."""
@@ -1728,7 +1928,7 @@ def run_model(params: dict, log=print) -> Path:
                                                **{kwarg: jnp.asarray(v)}))
             j1 = (_d(h) - _d(-h)) / (2.0 * h)
             if not gated:
-                return j1, h, 0.0, "fd-rt"
+                return j1, h, np.nan, "fd-rt"   # truncation unmeasured, not 0
             j2 = (_d(2.0 * h) - _d(-2.0 * h)) / (4.0 * h)
             scale = float(np.max(np.abs(j1)))
             if scale == 0.0:
@@ -1858,7 +2058,7 @@ def run_model(params: dict, log=print) -> Path:
             d_rm = np.asarray(depth_from_y(y_sol, th0, lnR0=-FD_LNR0_STEP))
             jac[-1] = (d_rp - d_rm) / (2.0 * FD_LNR0_STEP)
             fd_h.append(FD_LNR0_STEP)
-            fd_err.append(0.0)
+            fd_err.append(np.nan)   # single central diff: truncation unmeasured
             row_method.append("fd-rt")
         jac_names.append("lnR0")
         log(f"[fwd] {cp['jac_method'].upper()} Jacobian d(depth)/d(lnR0) "
@@ -1874,7 +2074,9 @@ def run_model(params: dict, log=print) -> Path:
         ymix=ymix_np, p_bar=np.asarray(chem.p_bar),
         T=np.asarray(T_check), theta=theta,
         theta_names=np.array(theta_names, dtype="U16"),
-        params_json=np.array(json.dumps(cp), dtype="U2048"),
+        # auto-sized U dtype (v17): a fixed U2048 silently truncated the JSON
+        # once enough boundary-condition rows pushed it past 2048 chars
+        params_json=np.array(json.dumps(cp)),
         # convergence certificate: the runner's own longdy per gated stage
         # (all strictly below the gate, or run_model would have raised)
         conv_stages=np.array([s for s, _, _ in conv_cert], dtype="U48"),
@@ -1888,13 +2090,18 @@ def run_model(params: dict, log=print) -> Path:
         # Fp derived exactly from the stored eclipse depth (lnR0 = 0 baseline)
         arrays["fp_flux"] = depth * np.asarray(fs_j) / _depth_norm_em
         arrays["emis_tau_bottom_min"] = np.array([emis_tau_min])
+        # v17: per-removed-molecule bottom-tau certificate (aligned with
+        # mols; every entry passed the same refuse/warn gate as the baseline)
+        arrays["emis_tau_bottom_min_wo"] = emis_tau_min_wo
     if jac is not None:
         arrays["jac"] = jac
         arrays["jac_names"] = np.array(jac_names, dtype="U16")
         # Per-row provenance: the method actually used ("fd-central" /
         # "ad-jvp" / "fd-rt"), the FD step, and the h-vs-2h consistency
-        # metric (0 for lnR0 by construction -- RT-only, no gate; NaN for
-        # AD rows -- there is no step to vary)
+        # metric. NaN = unmeasured, not zero (v17): AD rows (no step to
+        # vary) and ungated single-central-difference RT rows (lnR0, the
+        # power-law cloud rows, mie_log_mmr) report NaN; a literal 0.0
+        # appears only for an exactly-zero-response row.
         arrays["jac_row_method"] = np.array(row_method, dtype="U16")
         arrays["fd_h"] = np.array(fd_h, dtype=np.float64)
         arrays["fd_err"] = np.array(fd_err, dtype=np.float64)

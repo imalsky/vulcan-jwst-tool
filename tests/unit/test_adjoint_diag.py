@@ -50,6 +50,13 @@ def test_adjoint_key_ignores_rt_only_knobs():
         _p(nu_pts=8000, broadening="h2he", cloud_on=True,
            extra_mols=["HCN"], fisher_params=["lnZ"], jac_method="ad",
            use_photo=True), "SO2") == k0
+    # v2 (_ADJ_VERSION 2): the v15/v16 RT/observable-only additions must be
+    # stripped too -- pre-v2 an RT top-pressure change re-triggered the
+    # multi-hour adjoint on an identical chemistry state
+    assert adjoint_diag.adjoint_key(
+        _p(rt_ptop_bar=1.0e-9, rt_integration="trapezoid", rt_dit_res=0.5,
+           mie_condensate="MgSiO3", mie_log_rg=-5.0, mie_sigmag=2.0,
+           mie_log_mmr=-6.0), "SO2") == k0
 
 
 def test_adjoint_key_tracks_chemistry_and_species():

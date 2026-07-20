@@ -70,7 +70,10 @@ from jwst_tool import forward
 from jwst_tool import instruments as _ins
 
 ADJOINT_CACHE = _ins.OUTPUT_DIR / "adjoint_cache"
-_ADJ_VERSION = 1          # bump to invalidate cached adjoint diagnostics
+_ADJ_VERSION = 2          # bump to invalidate cached adjoint diagnostics
+#                           v2 (2026-07-19): key strips ALL RT/observable-only
+#                           knobs (the v15/v16 additions had been fragmenting
+#                           the cache) + canonical conv_normal certification
 
 # Transit-photosphere pressure window for picking the loss layer (bar):
 # transmission spectra probe roughly mbar-to-0.1-bar; the peak-VMR layer is
@@ -93,7 +96,15 @@ def adjoint_key(params: dict, species: str) -> str:
     payload = {k: v for k, v in cp.items()
                if k not in ("fisher_params", "jac_method", "nu_pts",
                             "use_rayleigh", "broadening", "cloud_on",
-                            "log_kappa_cloud", "alpha_cloud", "extra_mols")}
+                            "log_kappa_cloud", "alpha_cloud", "extra_mols",
+                            # v15/v16 RT/observable-only additions (_ADJ_VERSION
+                            # 2): none of these touch the chemistry state, and
+                            # leaving them in re-triggered the multi-hour
+                            # adjoint on e.g. an RT top-pressure change
+                            "rt_ptop_bar", "rt_integration", "rt_dit_res",
+                            "mie_condensate", "mie_log_rg", "mie_sigmag",
+                            "mie_log_mmr", "science_mode", "star_teff",
+                            "star_logg", "star_feh")}
     # RT-only knobs are dropped from the key: the adjoint runs on the
     # chemistry state alone, so spectra-only settings must not fragment it.
     payload["adjoint_species"] = str(species)
@@ -206,11 +217,24 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     final, _init, atm_T = chem.run_diag(
         jnp.asarray(A.theta, dtype=jnp.float64), return_atm=True)
     longdy = float(final.longdy)
-    if not (longdy < chem.yconv_min):
+    # Canonical certification (v2): longdy alone accepted a budget-exhausted
+    # exit whose photolysis flux was still changing. conv_normal is the
+    # runner's own two-branch gate recomputed at the exit state -- the
+    # documented adjoint plateau (longdy ~0.09 with |dy/dt| ~1e-11,
+    # physically steady) passes its slope branch, so this tightening keeps
+    # the validated W39b case. A check that cannot run must refuse.
+    _cn = getattr(chem, "conv_normal_at_exit", None)
+    if _cn is None:
         raise RuntimeError(
-            f"chemistry did NOT converge (longdy={longdy:.3g} >= gate "
-            f"yconv_min={chem.yconv_min:g}): the adjoint requires a tight "
-            "fixed point. Tighten yconv_cri or move the parameters.")
+            "the sibling forward engine does not export conv_normal_at_exit: "
+            "the adjoint fixed point cannot be canonically certified. "
+            "Upgrade vulcan-retrieval.")
+    if not (bool(_cn(final)) and longdy < chem.yconv_min):
+        raise RuntimeError(
+            f"chemistry did NOT converge (longdy={longdy:.3g}, gate "
+            f"yconv_min={chem.yconv_min:g}, conv_normal={bool(_cn(final))}): "
+            "the adjoint requires a canonically certified fixed point. "
+            "Tighten yconv_cri or move the parameters.")
     y_star = final.y
     k_arr = final.k_arr
     y_np = np.asarray(y_star)

@@ -121,7 +121,11 @@ PANDEIA_PSF_DIR = os.environ.get("JWST_TOOL_PANDEIA_PSF_DIR", _BE["psf"])
 # Minimal synphot CDBS assembled for this tool: phoenix grid (symlink here;
 # fetch the STScI reference-atlases synphot5 tarball on other machines), the
 # 2MASS Ks bandpass (tracked in git), and the CALSPEC Vega spectrum
-# (gitignored; ssb.stsci.edu/trds). `jwst-tool data` reports each piece.
+# (gitignored; ssb.stsci.edu/trds). The Vega copy feeds the LEGACY 3.x
+# engine's vegamag path only -- the 2026+ engine normalizes against its OWN
+# refdata Vega (sed/hst_calspec; the two agree to 0.08 mmag in Ks), so the
+# worker requires the local file just for JWST_TOOL_BACKEND=legacy.
+# `jwst-tool data` reports each piece.
 PYSYN_CDBS = str(DATA_DIR / "cdbs")
 
 # Engine-generation mode-name renames. MODES stores the canonical (pinned-3.0)
@@ -292,18 +296,21 @@ MODES = {
     ),
 }
 
-# Literature achieved-vs-predicted noise ratios: REFERENCE POINTS for
-# user-driven sensitivity studies, never applied by default (see module
-# docstring). COMPASS G395H reanalysis (Gordon et al. 2025): measured errors
-# average 1.05x PandExo on NRS1, 1.12x on NRS2; the G235H value is
+# Literature-anchored achieved-vs-predicted noise ratios: REFERENCE POINTS
+# for user-driven sensitivity studies, never applied by default (see module
+# docstring). Provenance per entry -- three are published MEASUREMENTS, two
+# are editorial: COMPASS G395H reanalysis (Gordon et al. 2025): measured
+# errors average 1.05x PandExo on NRS1, 1.12x on NRS2; the G235H value is
 # EXTRAPOLATED from that G395H measurement (same NRS1/NRS2 detectors and
 # SUB2048 BOTS readout, different bandpass -- no published G235H
 # achieved-vs-PandExo ratio exists as of 2026-07); NIRISS SOSS transit fits
 # conventionally inflate errors 1.2x over photon noise (Radica et al. 2023,
-# MNRAS 524, 835); NIRCam showed minimal systematics (Ahrer et al. 2023);
-# MIRI LRS measured ~15-20% above random-noise simulations (Bouwman et al.
-# 2023); PRISM was photon-limited on the quiet ERS target (Rustamkulov et
-# al. 2023).
+# MNRAS 524, 835); the NIRCam 1.05 is an EDITORIAL PLACEHOLDER -- Ahrer et
+# al. 2023 report "minimal systematics" with no published
+# achieved-vs-predicted number, so a small nominal margin stands in (no
+# measurement behind the digit); MIRI LRS measured ~15-20% above
+# random-noise simulations (Bouwman et al. 2023); PRISM was photon-limited
+# on the quiet ERS target (Rustamkulov et al. 2023).
 LITERATURE_NOISE_FACTORS = {
     "nirspec_prism": 1.0,
     "nirspec_g395h": 1.10,

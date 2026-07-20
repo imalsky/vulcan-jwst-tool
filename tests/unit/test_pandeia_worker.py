@@ -103,3 +103,18 @@ def test_match_refuses_mismatched_engine(tmp_path):
 def test_match_refuses_unidentifiable_refdata(tmp_path):
     with pytest.raises(RuntimeError, match="cannot determine"):
         pw._check_backend_match("3.0", str(tmp_path))
+
+
+def test_sat_curve_is_loud_on_missing_or_misaligned_keys():
+    """worker v6: the saturation curves are LOAD-BEARING (detect drops fully
+    saturated pixels through them), so a missing/renamed report key or a
+    grid-length mismatch must raise -- the old silent all-zeros fallback would
+    have quietly stopped masking saturated pixels after an engine rename."""
+    import numpy as np
+    rpt = {"1d": {"n_full_saturated": [[1.0, 2.0, 3.0], [0.0, 1.0, np.nan]]}}
+    curve = pw._sat_curve(rpt, "n_full_saturated", 3)
+    assert curve.tolist() == [0.0, 1.0, 0.0]        # NaN -> 0, values kept
+    with pytest.raises(RuntimeError, match="renamed"):
+        pw._sat_curve(rpt, "n_partial_saturated", 3)
+    with pytest.raises(RuntimeError, match="misaligned"):
+        pw._sat_curve(rpt, "n_full_saturated", 4)

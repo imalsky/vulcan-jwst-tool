@@ -23,14 +23,23 @@ Per mode key:
                                     disperser has no such file -- host then skips
                                     the LSF blur, safe for high-R modes only),
      "r_native_source": "..",
-     "t_cycle_s": .., "ngroup": .., "sat_frac": .., "sat_ngroups": ..,
+     "t_cycle_s": ..,                per-integration CYCLE time in a TSO series
+                                    (worker v6: the nint=2 minus nint=1
+                                    exposure-time difference, which includes
+                                    the between-integration reset -- the nint=1
+                                    scalar missed it on MIRI FASTR1),
+     "ngroup": .., "sat_frac": .., "sat_ngroups": ..,
      "saturated": bool, "engine_version": "..",
      "warnings": {...}}      -- or {"error": "..."} if that mode failed.
 
 Star normalization (worker_version >= 4): band-integrated synphot photsys
 normalization to the 2MASS Ks magnitude in vegamag ("2mass,ks" bandpass from
-the minimal CDBS comp/nonhst tree, Vega = local CALSPEC alpha_lyr) -- the same
-convention as the STScI web ETC. The old at_lambda shortcut (monochromatic
+the minimal CDBS comp/nonhst tree) -- the same convention as the STScI web
+ETC. The Vega reference: the 2026+ engine uses its OWN refdata Vega
+(sed/hst_calspec/alpha_lyr_stis_010.fits, exactly the web ETC's); the legacy
+3.x engine goes through synphot's vega_file, pinned to the local CALSPEC
+alpha_lyr_stis_011 copy (required for legacy only; the two Vegas agree to
+0.08 mmag in Ks). The old at_lambda shortcut (monochromatic
 666.7 Jy zero point AT 2.159 um) mis-scales the flux by ~1-4% depending on
 spectral type (CO bandhead for cool stars, Brackett-gamma wing for warm ones;
 Cohen 2003 isophotal calibration holds only for A0V shapes), which fed
@@ -133,23 +142,36 @@ def _clamp_ngroup(ng, ng_min, ng_max):
     return max(int(ng_min), min(int(ng_max), int(ng)))
 
 
-def _run(perform_calculation, calc, ngroup):
+def _run(perform_calculation, calc, ngroup, nint=1):
     c = copy.deepcopy(calc)
     c["configuration"]["detector"]["ngroup"] = int(ngroup)
+    c["configuration"]["detector"]["nint"] = int(nint)
     return perform_calculation(c)
 
 
 def _sat_curve(rpt, key, n_pix):
-    """Per-pixel saturated-group counts from the 1d report (zeros if absent or
-    on a different grid -- additive diagnostic, never load-bearing)."""
+    """Per-pixel saturated-group counts from the 1d report.
+
+    LOAD-BEARING (worker v6): detect.evaluate_mode drops fully saturated
+    pixels from the measurement operator via these curves, so a missing or
+    renamed report key must FAIL here -- the old silent all-zeros fallback
+    would have quietly stopped excluding saturated pixels after an engine
+    rename (STScI does rename report keys between releases)."""
     try:
         wave, curve = rpt["1d"][key]
-        curve = np.asarray(curve, dtype=float)
-        if curve.shape[0] == n_pix:
-            return np.nan_to_num(curve, nan=0.0)
-    except Exception:
-        pass
-    return np.zeros(n_pix)
+    except Exception as e:
+        raise RuntimeError(
+            f"pandeia report has no 1d {key!r} curve (available: "
+            f"{sorted(rpt.get('1d', {}))}). The engine may have renamed it; "
+            "the saturation mask cannot be built without it, and an unmasked "
+            "saturated pixel is a silently wrong measurement.") from e
+    curve = np.asarray(curve, dtype=float)
+    if curve.shape[0] != n_pix:
+        raise RuntimeError(
+            f"pandeia 1d {key!r} curve has {curve.shape[0]} samples but the "
+            f"extracted grid has {n_pix}: the saturation mask would be "
+            "misaligned with the pixels it must protect.")
+    return np.nan_to_num(curve, nan=0.0)
 
 
 def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
@@ -211,6 +233,27 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
     n_full = _sat_curve(rpt, "n_full_saturated", wl.shape[0])
     r_native, r_src = _native_r(refdata, m, wl[good])
 
+    # Per-integration CYCLE time (worker v6): the nint=1 total_exposure_time
+    # is NOT the marginal cost of one integration in a TSO series when the
+    # first-reset and between-integration-reset counts differ. MIRI FASTR1
+    # has nreset1=0, nreset2=1 (2026.2 refdata), so the nint=1 scalar was one
+    # tframe SHORT per integration -- integrations were overcounted by
+    # (ngroup+1)/ngroup and sigma was optimistic by up to ~9% at ngroup_min
+    # (the committed parity run shows the exact one-frame gap vs PandExo at
+    # identical ngroup). All four NIR rapid patterns have nreset1=nreset2=1,
+    # where the two agree exactly. The engine-truth marginal cost is the
+    # nint=2 minus nint=1 exposure-time difference -- one extra cheap call,
+    # no refdata timing-ladder reimplementation to drift.
+    t_exp_1 = float(rpt["scalar"]["total_exposure_time"])
+    rpt2 = _run(perform_calculation, calc, ng_best, nint=2)
+    t_cycle = float(rpt2["scalar"]["total_exposure_time"]) - t_exp_1
+    if not (np.isfinite(t_cycle) and t_cycle > 0.0):
+        raise RuntimeError(
+            f"per-integration cycle time from the nint=2/nint=1 exposure "
+            f"difference is not positive/finite ({t_cycle!r}; nint=1 total "
+            f"{t_exp_1!r}): the engine's timing report changed shape and "
+            "the integration count cannot be trusted.")
+
     import pandeia.engine
     return {
         "wl": wl[good].tolist(),
@@ -220,7 +263,7 @@ def _one_mode(build_default_calc, perform_calculation, m, star, sat_limit,
         "n_full_sat": n_full[good].tolist(),
         "r_native": r_native,
         "r_native_source": r_src,
-        "t_cycle_s": float(rpt["scalar"]["total_exposure_time"]),
+        "t_cycle_s": t_cycle,
         "ngroup": int(ng_best),
         "sat_frac": float(rpt["scalar"]["fraction_saturation"]),
         "sat_ngroups": (float(sat_ng) if sat_ng is not None
@@ -304,14 +347,15 @@ def _preflight(job):
             problems.append(
                 f"PHOENIX grid missing or dangling symlink: {phx} "
                 f"-> {os.path.realpath(phx)} (the star SED cannot be built)")
-        for rel, why in (
-                (os.path.join("comp", "nonhst", "2mass_ks_001_syn.fits"),
-                 "the 2MASS Ks bandpass (photsys normalization)"),
-                (os.path.join("calspec", "alpha_lyr_stis_011.fits"),
-                 "the Vega spectrum (vegamag normalization)")):
-            if not os.path.isfile(os.path.join(cdbs, rel)):
-                problems.append(f"missing {rel} in PYSYN_CDBS -- {why}; fetch "
-                                "it from https://ssb.stsci.edu/trds/")
+        # NOTE (worker v6): the local CALSPEC Vega file is required by the
+        # LEGACY 3.x engine only -- checked in main() once the engine version
+        # is known. The 2026+ engine loads its OWN refdata Vega
+        # (sed/hst_calspec/alpha_lyr_stis_010.fits) and never reads the pin.
+        rel = os.path.join("comp", "nonhst", "2mass_ks_001_syn.fits")
+        if not os.path.isfile(os.path.join(cdbs, rel)):
+            problems.append(f"missing {rel} in PYSYN_CDBS -- the 2MASS Ks "
+                            "bandpass (photsys normalization); fetch it from "
+                            "https://ssb.stsci.edu/trds/")
     if problems:
         raise RuntimeError(
             "pandeia worker preflight failed:\n  " + "\n  ".join(problems)
@@ -329,15 +373,28 @@ def main():
     import warnings as _w
     _w.filterwarnings("ignore")
     # synphot's default vega_file is an ssb.stsci.edu URL: point it at the
-    # local CALSPEC copy so vegamag normalization works offline (preflighted)
-    import synphot
-    synphot.conf.vega_file = os.path.join(
-        job["cdbs"], "calspec", "alpha_lyr_stis_011.fits")
+    # local CALSPEC copy so the LEGACY 3.x engine's vegamag normalization
+    # (synphot from_vega, which honors this pin) works offline. The 2026+
+    # engine never reads it -- it loads its OWN refdata Vega at import
+    # (sed/hst_calspec/alpha_lyr_stis_010.fits; band-integrated Ks ratio to
+    # the local 011 file 0.99993, 0.08 mmag), which is why the pin is set
+    # when available but only REQUIRED for a 3.x engine (checked below,
+    # once the engine version is known).
+    _vega = os.path.join(job["cdbs"], "calspec", "alpha_lyr_stis_011.fits")
+    if os.path.isfile(_vega):
+        import synphot
+        synphot.conf.vega_file = _vega
     from pandeia.engine.calc_utils import build_default_calc
     from pandeia.engine.perform_calculation import perform_calculation
 
     import pandeia.engine
     engine_version = str(getattr(pandeia.engine, "__version__", "unknown"))
+    if (_release(engine_version) or "").startswith("3.") \
+            and not os.path.isfile(_vega):
+        raise RuntimeError(
+            f"missing {_vega} -- the legacy 3.x engine normalizes vegamag "
+            "through synphot's vega_file and needs the local CALSPEC copy "
+            "to run offline; fetch it from https://ssb.stsci.edu/trds/")
     match = _check_backend_match(engine_version, job["refdata"])
     out = {
         "__provenance__": {

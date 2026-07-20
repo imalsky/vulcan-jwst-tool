@@ -1884,8 +1884,14 @@ if fisher_names and "jac" in model:
             if str(n) == "lnR0":
                 continue
             _sym = forward.PARAM_SYMBOLS.get(str(n), str(n))
-            _parts.append(f"{_sym} AD (warm jvp)" if m == "ad-jvp"
-                          else f"{_sym} FD {e:.3f}")
+            if m == "ad-jvp":
+                _parts.append(f"{_sym} AD (warm jvp)")
+            elif not np.isfinite(e):
+                # v17: ungated single-central-difference RT rows report their
+                # h-vs-2h metric as NaN (unmeasured), never a false 0.0
+                _parts.append(f"{_sym} FD-RT (smooth, ungated)")
+            else:
+                _parts.append(f"{_sym} FD {e:.3f}")
         st.caption(
             "Jacobian provenance, per row: **FD** rows are central finite "
             "differences of certified solves, Richardson-combined, shown "

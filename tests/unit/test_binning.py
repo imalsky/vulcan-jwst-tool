@@ -405,3 +405,24 @@ def test_smooth_rejects_bad_weight():
     with pytest.raises(ValueError, match="weight"):
         binning.smooth_to_native_r(wl, y, wl_r, r, 1.05, 1.35,
                                    weight=np.ones(399))
+
+
+def test_smooth_clamped_model_span_preserves_constant_at_band_edge():
+    """v17 regression (2026-07-19 audit): when the model grid spans EXACTLY the
+    band (evaluate_mode does this whenever the model barely covers the
+    instrument band), the working-grid edge clip can collapse the final cell to
+    zero width. Pre-fix, that cell's 0/1e-300 = 0 average filled the entire
+    constant pad, dragging the weight=None blur ~49% low at the band edge on a
+    MIRI-LRS-like configuration -- and 'weight=None equals a constant weight'
+    was false there. Both invariants must hold at machine precision now, across
+    a band_hi sweep that toggles the zero-width alignment."""
+    c, R = 0.0123, 60.0
+    for band_hi in np.linspace(10.90, 11.10, 9):
+        wl = np.linspace(5.0, band_hi, 3000)   # model exactly spans the band
+        y = np.full(wl.size, c)
+        r = np.full(wl.size, R)
+        flat = binning.smooth_to_native_r(wl, y, wl, r, 5.0, band_hi)
+        ones = binning.smooth_to_native_r(wl, y, wl, r, 5.0, band_hi,
+                                          weight=np.full(wl.size, 3.7))
+        assert np.max(np.abs(flat - c)) < 1e-12, band_hi
+        assert np.allclose(flat, ones, atol=0, rtol=1e-12), band_hi
