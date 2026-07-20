@@ -1,23 +1,44 @@
 #!/usr/bin/env bash
-# Space entrypoint: verify persistent storage, seed /data from the HF dataset
-# repo if needed, wire the engine's fixed data/output paths, launch the GUI.
+# Space entrypoint. Preferred layout (HF volumes API, 2026): the dataset repo
+# is mounted READ-ONLY at /srv/hub-data and a writable bucket volume at /data
+# holds caches -- no download at boot. Fallback: seed /data from the dataset
+# repo via bootstrap_data.py (needs HF_TOKEN) when no dataset mount exists.
 set -euo pipefail
 
-if [ ! -d /data ]; then
-    echo "ERROR: /data does not exist -- this Space has no persistent storage." >&2
-    echo "Enable it in Settings -> Storage (Small 20 GB tier is sufficient):" >&2
-    echo "the ~8 GB dataset seed and all model/noise caches live there." >&2
-    exit 1
+if [ -d /srv/hub-data/jwst-data ]; then
+    echo "[entrypoint] dataset volume found at /srv/hub-data (no download)"
+    export JWST_TOOL_DATA_DIR=/srv/hub-data/jwst-data
+    ln -sfn /srv/hub-data/retrieval-data /srv/vulcan/vulcan-retrieval/data
+    # Read-only data: anything that tries to WRITE into the data trees
+    # (e.g. first-use h2he line-list downloads) fails loudly -- expected.
+else
+    if [ ! -d /data ]; then
+        echo "ERROR: no dataset volume at /srv/hub-data and no storage at" >&2
+        echo "/data. Mount the dataset repo as a volume (Settings -> " >&2
+        echo "Storage/Volumes, or HfApi.set_space_volumes) or add a" >&2
+        echo "writable volume so bootstrap_data.py can seed it." >&2
+        exit 1
+    fi
+    echo "[entrypoint] no dataset mount -- seeding /data (download path)"
+    mkdir -p /data/jwst-data /data/retrieval-data
+    python /srv/app/bootstrap_data.py
+    export JWST_TOOL_DATA_DIR=/data/jwst-data
+    ln -sfn /data/retrieval-data /srv/vulcan/vulcan-retrieval/data
 fi
 
-mkdir -p /data/jwst-data /data/retrieval-data /data/output /data/retrieval-output /data/home
-
-python /srv/app/bootstrap_data.py
-
-# The retrieval engine reads REPO_DIR/data and REPO_DIR/output by contract
-# (not env-overridable); the image removed the cloned stubs for these links.
-ln -sfn /data/retrieval-data /srv/vulcan/vulcan-retrieval/data
-ln -sfn /data/retrieval-output /srv/vulcan/vulcan-retrieval/output
+# Writable state: the bucket volume at /data when present, else container
+# disk (ephemeral -- caches lost on restart, everything still works).
+STATE=/data
+if [ ! -d /data ] || ! touch /data/.rwtest 2>/dev/null; then
+    STATE=/tmp/state
+    echo "[entrypoint] WARNING: no writable /data volume; caches are" \
+         "EPHEMERAL (lost on restart/rebuild)"
+fi
+rm -f /data/.rwtest 2>/dev/null || true
+mkdir -p "$STATE/output" "$STATE/retrieval-output" "$STATE/home"
+export JWST_TOOL_OUTPUT_DIR="$STATE/output"
+export HOME="$STATE/home"
+ln -sfn "$STATE/retrieval-output" /srv/vulcan/vulcan-retrieval/output
 
 # CORS/XSRF off: required for uploads (T-P tables, noise-floor tables) to
 # work behind the Spaces proxy. Keep the Space PRIVATE.

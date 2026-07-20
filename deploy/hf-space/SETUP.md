@@ -68,13 +68,19 @@ The first boot will fail loudly until step 6 is done -- expected.
 
 ## 6. Configure the Space (browser, Settings tab)
 
-- Variables and secrets: add secret `HF_TOKEN` = a fine-grained read token
-  from hf.co/settings/tokens (read access to the dataset repo). If the
-  dataset repo name differs from the default, also add a variable
+- Volumes (the script does this; manual equivalent via
+  `HfApi.set_space_volumes`): mount the dataset repo READ-ONLY at
+  `/srv/hub-data` (the entrypoint then needs no download at boot) and a
+  private bucket writable at `/data` for the caches. The legacy
+  "persistent storage" endpoint is retired; buckets are its replacement.
+- Variables and secrets: `HF_TOKEN` is only needed for the no-mount
+  fallback (bootstrap download); prefer a fine-grained read token if set.
+  If the dataset repo name differs from the default, add a variable
   `DATASET_REPO` = `owner/name`.
-- Storage: add persistent storage, Small (20 GB, $5/mo).
-- Hardware: CPU Upgrade (8 vCPU / 32 GB, $0.03/hr). Set sleep time to
-  1 h so idle time is not billed.
+- Hardware: CPU Upgrade (8 vCPU / 32 GB, $0.03/hr), sleep time 1 h. NOTE:
+  the API hardware endpoint refuses OAuth login tokens (compute scope), so
+  set hardware + sleep in the browser unless you log in with a classic
+  write token.
 - Restart the Space.
 
 ## 7. Verify

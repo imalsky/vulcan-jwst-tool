@@ -123,15 +123,23 @@ def main() -> int:
             api.add_space_variable(space, "DATASET_REPO", dataset)
             print(f"DATASET_REPO variable set to {dataset}")
 
-        step("requesting storage + hardware + sleep timer (needs billing)")
-        billing_hint = ("-- configure billing at hf.co/settings/billing, then "
-                        "either re-run this script or set it in Space Settings")
-        try:
-            api.request_space_storage(space, "small")
-            print("persistent storage: small (20 GB, ~$5/mo)")
-        except Exception as e:  # noqa: BLE001
-            print(f"WARNING: storage request failed ({e}) {billing_hint}",
-                  file=sys.stderr)
+        step("mounting volumes (dataset read-only + writable cache bucket)")
+        # 2026 volumes API (replaces the retired persistent-storage
+        # endpoint): the dataset repo mounts read-only at /srv/hub-data so
+        # the container needs NO download at boot; a private bucket mounts
+        # writable at /data for the model/noise/adjoint caches.
+        from huggingface_hub import Volume
+        bucket = f"{user}/jwst-tool-cache"
+        api.create_bucket(bucket, private=True, exist_ok=True)
+        api.set_space_volumes(space, volumes=[
+            Volume(type="dataset", source=dataset,
+                   mount_path="/srv/hub-data", read_only=True),
+            Volume(type="bucket", source=bucket,
+                   mount_path="/data", read_only=False)])
+        print(f"volumes: {dataset} (ro) -> /srv/hub-data, "
+              f"{bucket} (rw) -> /data")
+
+        step("requesting hardware + sleep timer")
         try:
             api.request_space_hardware(space, "cpu-upgrade")
             print("hardware: cpu-upgrade (8 vCPU / 32 GB, "
@@ -139,8 +147,10 @@ def main() -> int:
             api.set_space_sleep_time(space, 3600)
             print("sleep timer: 1 h idle")
         except Exception as e:  # noqa: BLE001
-            print(f"WARNING: hardware/sleep request failed ({e}) "
-                  f"{billing_hint}", file=sys.stderr)
+            print(f"WARNING: hardware/sleep request failed ({e}) -- an "
+                  "OAuth login token lacks the compute scope for this "
+                  "endpoint. Set it in the browser instead: Space Settings "
+                  "-> Hardware -> CPU Upgrade, sleep 1 h.", file=sys.stderr)
 
     step("uploading staged data (~7.5 GB, resumable; the long step)")
     api.upload_large_folder(repo_id=dataset, repo_type="dataset",
