@@ -8,7 +8,7 @@ Pipeline per run: VULCAN-JAX photochemistry -> ExoJax transmission spectrum
 Pandeia ETC noise per instrument mode (subprocess in its own conda env, disk-cached) ->
 science-goal scoring per mode. Two goal types: DETECT a molecule (nested-model
 delta-chi2 significance) or CONSTRAIN a parameter (Fisher forecast from
-certified finite-difference Jacobians, vs a target precision). Planets beyond
+consistency-checked finite-difference Jacobians, vs a target precision). Planets beyond
 WASP-39b come from the registry in planets.py (or a fully custom system).
 """
 from __future__ import annotations
@@ -121,9 +121,9 @@ computed by the method suited to each question, and the tool states which
 one it used everywhere a number appears:
 
 - The spectral Jacobian feeding the **Fisher-information forecast** defaults
-  to **certified finite differences**: central differences of independently
-  converged, convergence-certified solves, evaluated at two step sizes that
-  must agree before a row is reported (composition derivatives re-initialize
+  to **finite differences**: central differences of independently
+  converged solves (each passing the solver's convergence gate), evaluated
+  at two step sizes that must agree before a row is reported (composition derivatives re-initialize
   the chemistry at the perturbed elemental abundances, the standard VULCAN
   workflow). Slower than automatic differentiation but transparent and
   self-verifying; cross-validated against the AD rows to 0.07-1.6%.
@@ -131,7 +131,7 @@ one it used everywhere a number appears:
   AD** path (warm-started jvp, photochemistry on). The method is a per-run
   menu choice, recorded per row, and physically invalid combinations are
   refused loudly, such as AD through condensation or the C/O direction on
-  carbon-rich baselines.
+  carbon-rich compositions.
 - **Reverse-mode AD (adjoint) diagnostics** answer the high-dimensional
   questions finite differences cannot afford: the sensitivity of a
   molecule's abundance to every reaction rate and every layer's temperature
@@ -424,12 +424,12 @@ with st.sidebar:
     st.markdown("### Differentiation method")
     jac_method = st.selectbox(
         "How derivatives are computed", ["fd", "ad"], index=0, key=K("jacm"),
-        format_func={"fd": "Certified finite differences (default)",
+        format_func={"fd": "Finite differences (default)",
                      "ad": "Automatic differentiation (forward-mode)"}.get,
         help="This choice applies wherever the tool needs the derivative "
              "of the spectrum with respect to a parameter, which means the "
              "Fisher constraint forecast and its projected detection "
-             "score. Finite differences re-run the certified model at "
+             "score. Finite differences re-run the converged model at "
              "shifted parameter values and difference the results, "
              "checking two step sizes against each other. They are "
              "transparent and self-verifying, and they work everywhere, "
@@ -439,7 +439,7 @@ with st.sidebar:
              "through the solver per row and is about 1.7 to 4 times "
              "faster. It requires photochemistry, which is locked on "
              "below while AD is selected. It disables condensation, and "
-             "it refuses the C/O row on carbon-rich baselines rather "
+             "it refuses the C/O row on carbon-rich compositions rather "
              "than reporting a bad number. The two methods agree to "
              "0.07-1.6% per row on the WASP-39b defaults, and every "
              "result row is labeled with the method that produced it. "
@@ -471,21 +471,21 @@ with st.sidebar:
         tp_kwargs = {}
         tp_file, tp_file_path, tp_file_ok = "", None, True
         if tp_mode == "isothermal":
-            tp_kwargs["T_iso"] = st.slider("T_iso (K)", 400.0, 2500.0,
-                                           float(np.clip(teq, 400.0, 2500.0)),
-                                           25.0, key=_k("tiso"))
+            tp_kwargs["T_iso"] = st.number_input(
+                "T_iso (K)", 400.0, 2500.0,
+                float(np.clip(teq, 400.0, 2500.0)), 25.0, key=_k("tiso"))
         elif tp_mode == "guillot":
             tirr0 = float(np.clip(round(teq * np.sqrt(2.0) / 10) * 10,
                                   800.0, 2500.0))
-            tp_kwargs["Tirr"] = st.slider("T_irr (K)", 800.0, 2500.0, tirr0, 20.0,
-                                          key=_k("tirr"),
-                                          help="≈ √2 × equilibrium temperature.")
-            tp_kwargs["Tint"] = st.slider("T_int (K)", 50.0, 500.0, 100.0, 25.0,
-                                          key=_k("tint"))
-            tp_kwargs["log_kappa"] = st.slider("log₁₀ κ_IR (cm²/g)", -4.0, 0.0,
-                                               -2.3, 0.1, key=_k("lk"))
-            tp_kwargs["log_gamma"] = st.slider("log₁₀ γ (κ_vis/κ_IR)", -2.0, 0.3,
-                                               -1.0, 0.05, key=_k("lg"))
+            tp_kwargs["Tirr"] = st.number_input(
+                "T_irr (K)", 800.0, 2500.0, tirr0, 20.0, key=_k("tirr"),
+                help="≈ √2 × equilibrium temperature.")
+            tp_kwargs["Tint"] = st.number_input(
+                "T_int (K)", 50.0, 500.0, 100.0, 25.0, key=_k("tint"))
+            tp_kwargs["log_kappa"] = st.number_input(
+                "log₁₀ κ_IR (cm²/g)", -4.0, 0.0, -2.3, 0.1, key=_k("lk"))
+            tp_kwargs["log_gamma"] = st.number_input(
+                "log₁₀ γ (κ_vis/κ_IR)", -2.0, 0.3, -1.0, 0.05, key=_k("lg"))
         else:
             tp_file = st.radio(
                 "Profile source", [forward.TP_FILE_SHIPPED,
@@ -493,7 +493,7 @@ with st.sidebar:
                 horizontal=True, key=_k("tpsrc"),
                 format_func={forward.TP_FILE_SHIPPED:
                              "Shipped W39b evening terminator",
-                             forward.TP_FILE_UPLOAD: "Upload a table"}.get,
+                             forward.TP_FILE_UPLOAD: "Upload an array"}.get,
                 help="The shipped table is the WASP-39b evening-terminator "
                      "T-P + Kzz profile bundled with VULCAN (Tsai et al. "
                      "2023). Uploads use the same VULCAN atm format.")
@@ -502,14 +502,43 @@ with st.sidebar:
                     "The shipped table is the WASP-39b evening terminator; "
                     "it is applied verbatim to the selected planet.")
             if tp_file == forward.TP_FILE_UPLOAD:
+                _tp_example = (
+                    "#(dyne/cm2) (K) (cm2/s)\n"
+                    "Pressure   Temp   Kzz\n"
+                    "1.000e+09  2255.  1.0e+07\n"
+                    "1.000e+08  2100.  1.0e+07\n"
+                    "1.000e+07  1800.  3.0e+07\n"
+                    "1.000e+06  1400.  1.0e+08\n"
+                    "1.000e+05  1150.  3.0e+08\n"
+                    "1.000e+04   980.  1.0e+09\n"
+                    "1.000e+03   920.  3.0e+09\n"
+                    "1.000e+02   890.  1.0e+10\n"
+                    "1.000e+01   875.  3.0e+10\n"
+                    "1.000e+00   870.  1.0e+11\n")
+                with st.expander("Example array (what the file must look like)"):
+                    st.code(_tp_example)
+                    st.caption(
+                        "Column 1: pressure in dyne/cm² (1 bar = 10⁶), "
+                        "monotonic (bottom of the atmosphere first, as "
+                        "here, or top first). Column 2: temperature in K. "
+                        "Column 3 (optional): Kzz in cm²/s, used when the "
+                        "K_zz profile mode below is set to 'Tabulated'. "
+                        "Any number of rows; the array is re-gridded onto "
+                        "the layer count you choose. The two header lines "
+                        "are required.")
+                    st.download_button(
+                        "Download this example (edit and re-upload)",
+                        _tp_example, file_name="example_atm.txt",
+                        key=_k("tpex"))
                 up_tp = st.file_uploader(
-                    "VULCAN atm table (.txt)", type=["txt", "dat"],
+                    "Upload an array: T-P (+ optional Kzz) as text",
+                    type=["txt", "dat"],
                     key=_k("tpup"),
-                    help="Line 1: a units comment (e.g. '#(dyne/cm2) (K) "
-                         "(cm2/s)'). Line 2: the column names 'Pressure "
-                         "Temp' (+ optional 'Kzz'). Then rows: pressure in "
-                         "dyne/cm^2 (monotonic), T in K, Kzz in cm^2/s. The "
-                         "table is re-gridded onto the chosen layer count.")
+                    help="Same format as the example above (the VULCAN atm "
+                         "format): units comment line, column-name line "
+                         "'Pressure Temp' (+ optional 'Kzz'), then rows of "
+                         "pressure in dyne/cm² (monotonic), T in K, Kzz in "
+                         "cm²/s. Re-gridded onto the chosen layer count.")
                 if up_tp is not None:
                     _raw_tp = up_tp.getvalue()
                     _sha_tp = hashlib.sha1(_raw_tp).hexdigest()[:16]
@@ -549,29 +578,25 @@ with st.sidebar:
         # no fixed-O validity ceiling: C-rich (> 1) is the same code path.
         # A corner with no certified steady state errors loudly (longdy
         # gate); it can never return a wrong spectrum.
-        met = st.select_slider(
-            "Metallicity (× solar)",
-            options=[0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0,
-                     50.0, 100.0],
-            value=10.0, key=K("met"),
-            help="Scales the network's O/C/N/S abundances together (He "
+        met = st.number_input(
+            "Metallicity (× solar)", 0.1, 100.0, 10.0, 0.5,
+            format="%.2f", key=K("met"),
+            help="Any value in [0.1, 100] × solar. Scales the network's "
+                 "O/C/N/S abundances together (He "
                  "fixed); every value is a full FastChem re-initialization. "
                  "Reported in dex ([M/H]) by the constraint forecast. Far "
                  "corners (0.1x, 100x on cold profiles) may fail the "
                  "convergence gate loudly.")
-        _co_opts = [0.25, 0.30, 0.35, 0.40, 0.46, 0.50, forward.CO_BASELINE,
-                    0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
-                    1.05, 1.20, 1.50, 2.00]
-        co_ratio = st.select_slider(
-            "C/O (carbon/oxygen number ratio)", options=_co_opts,
-            value=forward.CO_BASELINE, key=K("co"),
-            format_func=lambda x: (f"{x:.2f} (baseline)"
-                                   if abs(x - forward.CO_BASELINE) < 1e-6
-                                   else f"{x:.2f}"),
-            help="Total carbon/oxygen number ratio N_C/N_O: sets C_H = C/O × "
+        co_ratio = st.number_input(
+            "C/O (carbon/oxygen number ratio)",
+            0.10, 2.00, float(forward.CO_BASELINE), 0.05,
+            format="%.3f", key=K("co"),
+            help="Any value in [0.1, 2.0]. Total carbon/oxygen number ratio "
+                 "N_C/N_O: sets C_H = C/O × "
                  "O_H at the metallicity-scaled oxygen, then the network "
-                 "re-initializes. Baseline 0.55 = this network's WASP-39b "
-                 "set (Tsai et al. 2023). Carbon-rich values (> 1) work "
+                 "re-initializes. The default 0.549 is the network's "
+                 "WASP-39b elemental set (Tsai et al. 2023). Carbon-rich "
+                 "values (> 1) work "
                  "too, but near C/O = 1 solves slow down and derivatives "
                  "are ill-conditioned: constrain C/O per side, not across "
                  "it.")
@@ -600,34 +625,36 @@ with st.sidebar:
         kzz_const = kzz_kmax = kzz_plev = kzz_kdeep = 0.0
         kzz_x = 1.0
         if kzz_mode == "const":
-            log_kzz = st.slider("log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
-                                key=_k("kzz"),
-                                help="Constant eddy-diffusion coefficient: "
-                                     "stronger mixing quenches photochemical "
-                                     "gradients.")
+            log_kzz = st.number_input(
+                "log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
+                key=_k("kzz"),
+                help="Constant eddy-diffusion coefficient: "
+                     "stronger mixing quenches photochemical "
+                     "gradients.")
             kzz_const = 10.0 ** log_kzz
         elif kzz_mode == "Pfunc":
-            kzz_kmax = 10.0 ** st.slider(
+            kzz_kmax = 10.0 ** st.number_input(
                 "log₁₀ deep K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
                 key=_k("kzkmax"),
                 help="Deep-atmosphere Kzz; above the transition level the "
                      "profile rises as (P_lev/P)^0.4.")
-            kzz_plev = 10.0 ** st.slider(
+            kzz_plev = 10.0 ** st.number_input(
                 "log₁₀ transition level (bar)", -5.0, 2.0, -1.0, 0.25,
                 key=_k("kzplev"),
                 help="Pressure above which Kzz starts rising (VULCAN "
                      "Pfunc K_p_lev).")
         elif kzz_mode == "JM16":
-            kzz_kdeep = 10.0 ** st.slider(
+            kzz_kdeep = 10.0 ** st.number_input(
                 "log₁₀ deep-floor K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
                 key=_k("kzkdeep"),
                 help="Deep floor of the Moses-type profile "
                      "Kzz = max(K_deep, 1e5 (300 mbar/P)^0.5).")
         else:
-            st.caption("Kzz is read from the Kzz column of the selected "
-                       "T-P table (rejected loudly if the table has none).")
+            st.caption("Kzz is read from the Kzz column of the uploaded "
+                       "array / selected table (rejected loudly if it has "
+                       "no Kzz column).")
         if kzz_mode != "const":
-            kzz_x = 10.0 ** st.slider(
+            kzz_x = 10.0 ** st.number_input(
                 "log₁₀ K_zz scale factor", -1.0, 1.0, 0.0, 0.05,
                 key=_k("kzzx"),
                 help="Multiplies the whole profile (the same on-graph "
@@ -646,13 +673,13 @@ with st.sidebar:
                  "differentiation method requires photolysis ON (its "
                  "validated tangent regime), so this is locked while AD is "
                  "selected.")
-        sl_angle_deg = st.slider(
+        sl_angle_deg = st.number_input(
             "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
             disabled=not use_photo,
             help="Slant path of the stellar UV. 83° = terminator slant "
                  "(Tsai et al. 2023 W39b); smaller angles = more direct "
                  "illumination.")
-        f_diurnal = st.slider(
+        f_diurnal = st.number_input(
             "Diurnal photolysis factor", 0.1, 1.0, 1.0, 0.05, key=K("fdiur"),
             disabled=not use_photo,
             help="Multiplies every photolysis rate. 1.0 = permanent dayside "
@@ -675,23 +702,19 @@ with st.sidebar:
     with st.expander("Numerical grid (layers & convergence)"):
         st.caption("Grid resolution and solver tolerance, same physics, finer "
                    "grids (this replaced the old fast/high fidelity switch).")
-        nz = st.slider(
+        nz = st.number_input(
             "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
             forward.NZ_DEFAULT, 10, key=K("nz"),
             help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
                  "grid is LOCKED to the same count. More layers resolve steep "
                  "photochemical gradients. Roughly 2 min at 100 layers, "
                  "2.5 min at 150 (other settings at defaults).")
-        yconv_cri = st.select_slider(
+        yconv_cri = st.number_input(
             "Convergence tolerance (yconv)",
-            options=[1.0e-2, 3.0e-3, 1.0e-3, 3.0e-4, 1.0e-4],
-            value=forward.YCONV_DEFAULT, key=K("yconv"),
-            format_func={1.0e-2: "1e-2 (fast, VULCAN default)",
-                         3.0e-3: "3e-3",
-                         1.0e-3: "1e-3 (strict, validated tier)",
-                         3.0e-4: "3e-4",
-                         1.0e-4: "1e-4 (very strict, slow)"}.get,
-            help="Steady-state convergence criterion. 1e-2 is the VULCAN master "
+            1.0e-4, 1.0e-2, forward.YCONV_DEFAULT, 1.0e-4,
+            format="%.1e", key=K("yconv"),
+            help="Steady-state convergence criterion, any value in "
+                 "[1e-4, 1e-2]. 1e-2 is the VULCAN master "
                  "default; 1e-3 (with more layers) is the validated strict tier "
                  "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
                  "runtime. A solve that cannot reach the tolerance errors "
@@ -838,12 +861,12 @@ with st.sidebar:
                  "(marginalized over) -- cheap RT-only Jacobian rows; leave "
                  "them out of the free list to condition on a known deck.")
         if cloud_on:
-            log_kappa_cloud = st.slider(
+            log_kappa_cloud = st.number_input(
                 "log₁₀ κ_cloud (cm²/g at 3.5 µm)", -4.0, 2.0, -1.0, 0.1,
                 key=K("ck"),
                 help="Gray amplitude. τ=1 pressure ≈ g/(κ·10⁶) bar: at WASP-39b "
                      "gravity, −1 → ~4 mbar deck, −3 → ~0.4 bar.")
-            alpha_cloud = st.slider(
+            alpha_cloud = st.number_input(
                 "Cloud spectral slope α (κ ∝ ν^α)", 0.0, 4.0, 0.0, 0.25,
                 key=K("ca"),
                 help="0 = gray deck; 4 ≈ Rayleigh-like small-particle haze.")
@@ -871,16 +894,16 @@ with st.sidebar:
                     f"No Mie grid for {mie_condensate} yet; generate it once "
                     f"with 'python tools/generate_miegrid.py {mie_condensate}' "
                     "(~1 h) or the run will refuse.")
-            mie_log_rg = st.slider(
+            mie_log_rg = st.number_input(
                 "log₁₀ mean radius r_g (cm)", float(forward.MIE_LOG_RG_RANGE[0]),
                 float(forward.MIE_LOG_RG_RANGE[1]), -5.0, 0.1, key=K("mierg"),
                 help="Lognormal mean particle radius: −5 = 0.1 µm, −4 = 1 µm.")
-            mie_sigmag = st.slider(
+            mie_sigmag = st.number_input(
                 "size dispersion σ_g", float(forward.MIE_SIGMAG_RANGE[0]),
                 float(forward.MIE_SIGMAG_RANGE[1]), 2.0, 0.05, key=K("miesg"),
                 help="Geometric standard deviation of the lognormal size "
                      "distribution (≈1.05 near-monodisperse, 2 typical).")
-            mie_log_mmr = st.slider(
+            mie_log_mmr = st.number_input(
                 "log₁₀ condensate MMR", float(forward.MIE_LOG_MMR_RANGE[0]),
                 float(forward.MIE_LOG_MMR_RANGE[1]), -6.0, 0.25, key=K("miemmr"),
                 help="Mass mixing ratio of the condensate (column-uniform).")
@@ -902,13 +925,12 @@ with st.sidebar:
                  "'h2he' = planetary H₂/He blend, first use downloads "
                  "separate line-list caches, and molecules with no H₂/He "
                  "coverage raise loudly instead of silently falling back.")
-        nu_pts = st.select_slider(
-            "Native spectral sampling (nu_pts)", options=[4000, 6000, 8000],
-            value=forward.NU_PTS_DEFAULT, key=K("nupts"),
-            format_func={4000: "4000 (native R≈1500)",
-                         6000: "6000 (native R≈2200)",
-                         8000: "8000 (native R≈3000)"}.get,
-            help="Wavenumber grid points across 1-15 µm, before binning to your "
+        nu_pts = st.number_input(
+            "Native spectral sampling (nu_pts)", *forward.NU_PTS_RANGE,
+            forward.NU_PTS_DEFAULT, 500, key=K("nupts"),
+            help="Wavenumber grid points across 1-15 µm, any value in "
+                 "[4000, 8000] (native R ≈ nu_pts/2.7: 4000 ≈ R 1500, "
+                 "8000 ≈ R 3000), before binning to your "
                  "chosen display R below. Higher sampling sharpens narrow "
                  "features (the weak mid-IR bands) at more runtime.")
 
@@ -916,15 +938,13 @@ with st.sidebar:
         st.caption("ExoJAX modeling choices that can move the spectrum. The "
                    "defaults are the validated baseline; every choice is "
                    "cache-keyed, so changing one re-runs the model.")
-        rt_ptop_bar = st.select_slider(
+        rt_ptop_bar = st.number_input(
             "RT top pressure (bar)",
-            options=[1.0e-6, 1.0e-7, 1.0e-8, 1.0e-9], value=1.0e-8,
-            key=K("rtptop"),
-            format_func={1.0e-6: "1e-6",
-                         1.0e-7: "1e-7 (chemistry top)",
-                         1.0e-8: "1e-8 (default)",
-                         1.0e-9: "1e-9"}.get,
-            help="Where the RT column ends. Above VULCAN's 1e-7 bar "
+            1.0e-9, 1.0e-6, 1.0e-8, 1.0e-9,
+            format="%.1e", key=K("rtptop"),
+            help="Where the RT column ends, any value in [1e-9, 1e-6] bar "
+                 "(1e-8 is the default; 1e-7 is the chemistry top). "
+                 "Above VULCAN's 1e-7 bar "
                  "chemistry top the topmost abundances and temperature are "
                  "held constant (a standard transmission-modeling "
                  "convention, not chemistry). Too low a top saturates "
@@ -941,12 +961,11 @@ with st.sidebar:
                  "conservative comparison choice. The difference is a "
                  "grid-convergence diagnostic: if it moves your answer, "
                  "raise the layer count.")
-        rt_dit_res = st.select_slider(
+        rt_dit_res = st.number_input(
             "Line-wing (broadening) grid resolution",
-            options=[0.2, 0.5, 1.0], value=1.0, key=K("rtdit"),
-            format_func={0.2: "0.2 (fine, ExoJAX default)", 0.5: "0.5",
-                         1.0: "1.0 (this tool's default)"}.get,
-            help="PreMODIT broadening-parameter grid spacing "
+            0.1, 1.0, 1.0, 0.1, format="%.1f", key=K("rtdit"),
+            help="Any value in [0.1, 1.0]. "
+                 "PreMODIT broadening-parameter grid spacing "
                  "(dit_grid_resolution). Smaller resolves pressure-broadened "
                  "line wings finer at a slower opacity build; 1.0 is the "
                  "value every validated result here used, 0.2 is ExoJAX's "
@@ -1077,17 +1096,21 @@ with st.sidebar:
             format_func=lambda k: (f"{ins.MODES[k]['label']}  "
                                    f"({ins.MODES[k]['wl_min']:g}-"
                                    f"{ins.MODES[k]['wl_max']:g} µm)"))
-        r_bin = st.select_slider("Binned resolving power R",
-                                 options=[50, 100, 200], value=100, key=K("rbin"))
-        n_transits = st.slider("Number of transits", 1, 10, 1, key=K("ntr"))
+        r_bin = st.number_input(
+            "Binned resolving power R", 25, 500, 100, 25, key=K("rbin"),
+            help="Display/scoring bin resolution (any value in [25, 500]; "
+                 "50-200 is the usual range).")
+        n_transits = st.number_input("Number of transits", 1, 10, 1, 1,
+                                     key=K("ntr"))
         t_base = st.number_input("Out-of-transit baseline (hr)", 0.5, 10.0,
                                  float(t14), 0.1, key=_k("tbase"),
                                  help="Sets how well the stellar flux is "
                                       "anchored; PandExo convention is ≈ T14.")
-        sat_limit = st.slider("Saturation limit (full-well fraction)",
-                              0.5, 0.95, 0.80, 0.05, key=K("sat"),
-                              help="Group selection keeps the brightest pixel "
-                                   "below this full-well fraction.")
+        sat_limit = st.number_input(
+            "Saturation limit (full-well fraction)",
+            0.5, 0.95, 0.80, 0.05, key=K("sat"),
+            help="Group selection keeps the brightest pixel "
+                 "below this full-well fraction.")
 
     with st.expander("Noise model"):
         st.markdown("**Minimum noise floor** (PandExo convention)")
@@ -1894,7 +1917,8 @@ if fisher_names and "jac" in model:
                 _parts.append(f"{_sym} FD {e:.3f}")
         st.caption(
             "Jacobian provenance, per row: **FD** rows are central finite "
-            "differences of certified solves, Richardson-combined, shown "
+            "differences of independently converged solves, Richardson-"
+            "combined, shown "
             "with their h-vs-2h consistency (0 = perfect, gate "
             f"{forward.FD_CONSISTENCY_TOL}); **AD** rows are warm-started "
             "forward-mode derivatives through the solver (photo-on regime, "
@@ -1910,8 +1934,8 @@ if fisher_names and "jac" in model:
             "retrieval posteriors can only be wider.\n"
             "- The sensitivities d(spectrum)/d(parameter) use the method "
             "you picked in the sidebar's **Differentiation method** menu, "
-            "shown per row in the provenance line above: **certified "
-            "central finite differences** of independently re-converged "
+            "shown per row in the provenance line above: **central finite "
+            "differences** of independently re-converged "
             "VULCAN-JAX solves (default; composition rows re-initialize "
             "the chemistry at the perturbed elemental abundances, the "
             "standard VULCAN workflow), or **warm-started forward-mode "
@@ -1930,7 +1954,7 @@ if fisher_names and "jac" in model:
             "in a mode's band reads *unconstrained* rather than a fake number.\n"
             "- Metallicity **[M/H]** and vertical mixing **log Kzz** are reported "
             "in **dex** (factors of 10); **C/O** is the absolute carbon/oxygen "
-            "number ratio N_C/N_O (baseline ≈ 0.55, the network's WASP-39b "
+            "number ratio N_C/N_O (default ≈ 0.55, the network's WASP-39b "
             "elemental set from Tsai et al. 2023).\n"
             "- σ is evaluated at the transit count you set. Only the "
             "photon/detector term averages down with more transits; the "
@@ -1955,7 +1979,7 @@ with st.expander("Which reactions and temperatures control a molecule?"):
         "temperature** at once. These are the high-dimensional questions "
         "where automatic differentiation is the only practical tool. The "
         "Fisher Jacobians above, over a handful of parameters, use "
-        "certified finite differences instead. The adjoint is validated "
+        "finite differences instead. The adjoint is validated "
         "upstream to 0.2-0.8% against finite differences on the WASP-39b "
         "SO2 and HD 189733 b CH4 benchmarks.")
     _adj_mols = [str(m) for m in model["mols"]]

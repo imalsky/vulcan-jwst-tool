@@ -3,7 +3,7 @@
 A live-forward-model instrument selector (PandExo-style GUI): pick a science
 goal (detect molecule X on a WASP-39b-like planet), and the tool runs the
 live VULCAN-JAX + ExoJax forward model locally, builds parameter Jacobians
-as certified central finite differences of independently converged solves
+as central finite differences of independently converged solves
 by default (each row ships its own step-size consistency bound -- see
 forward.py's FD block) with an opt-in warm-jvp AD path for every row,
 simulates each JWST instrument mode's transit-depth precision with the real

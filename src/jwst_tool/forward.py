@@ -1883,7 +1883,7 @@ def run_model(params: dict, log=print) -> Path:
                     "AD Jacobian for dlnCO refused at this composition: the "
                     f"fixed-O differential direction's oxygen-reservoir "
                     f"bound b_z = {float(_bz):.3g} <= {CO_BZ_MIN_AD:g} "
-                    f"(C-rich baseline, C/O = {cp['co_ratio']:g}: O-only "
+                    f"(C-rich composition, C/O = {cp['co_ratio']:g}: O-only "
                     "carriers are within one FD stencil of exhaustion, so "
                     "the tangent direction is ill-conditioned). Use "
                     "jac_method='fd' -- the certified FD row re-initializes "
