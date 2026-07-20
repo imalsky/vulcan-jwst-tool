@@ -24,22 +24,7 @@ if [ -d /srv/hub-data/jwst-data ]; then
     echo "[entrypoint] dataset volume found at /srv/hub-data (no download)"
     # jwst-data is a pure READ consumer (cdbs/refdata/PSFs/mie): serve it
     # straight from the read-only mount.
-    DATA_SRC=/srv/hub-data/jwst-data
-    # Tail overlay: 78 files the main dataset's commit rate limiter locked
-    # out live in a second dataset volume. Merge both into one symlink
-    # tree so every reader sees a complete jwst-data (chmod between the
-    # two cp calls: cp -r copies the mount's read-only dir modes).
-    if [ -d /srv/hub-tail/jwst-data ]; then
-        echo "[entrypoint] overlaying tail dataset volume ..."
-        MERGED=/tmp/jwst-data-merged
-        rm -rf "$MERGED"
-        cp -rs /srv/hub-data/jwst-data "$MERGED"
-        chmod -R u+wX "$MERGED"
-        cp -rsf /srv/hub-tail/jwst-data/. "$MERGED/"
-        chmod -R u+wX "$MERGED"
-        DATA_SRC="$MERGED"
-    fi
-    export JWST_TOOL_DATA_DIR="$DATA_SRC"
+    export JWST_TOOL_DATA_DIR=/srv/hub-data/jwst-data
     # retrieval-data must be WRITABLE: radis creates a tempdir + lock files
     # inside exojax_linelists even for pure cache reads, and h2he line
     # lists download on first use. Sync the mount to the bucket (~360 MB

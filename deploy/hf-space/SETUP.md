@@ -102,10 +102,33 @@ proxy, which is fine for an invited-user tool but not for a public one.
 
 ## Updating code later
 
-Push to GitHub, then Space Settings -> Factory rebuild. Caches on /data
-survive rebuilds and self-invalidate by version keys. The exact SHAs baked
-into the running image are recorded at /srv/vulcan/BUILD_INFO (shown in the
-build logs).
+Push to GitHub, bump the SRC_STAMP line in this directory's Dockerfile to
+the new commit SHA (the API factory-rebuild endpoint refuses OAuth tokens,
+so the stamp is the cache-buster that forces a fresh clone), and push the
+Space files. Caches on /data survive rebuilds and self-invalidate by
+version keys. The exact SHAs baked into the running image are recorded at
+/srv/vulcan/BUILD_INFO (shown in the build logs).
+
+## Operational lessons (2026-07-20 deployment, learned the hard way)
+
+- The repository-commit rate limiter (256/hr) is PER-REPO, far stickier
+  than its message suggests, and rejected attempts keep it armed: never
+  let an uploader retry-storm it; go silent, then make ONE attempt.
+- Kill background uploaders by PID and verify: `pkill` on a wrapper can
+  orphan the python child, which then storms the limiter invisibly.
+- Small binary files are inlined into commits and REJECTED unless the
+  repo's .gitattributes routes their extension through LFS/xet. On any
+  new dataset repo, upload a .gitattributes with `*.fits`/`*.pdf` lfs
+  rules BEFORE committing data via `upload_folder`.
+- `upload-large-folder` is resumable and xet-native, but with multiple
+  workers on a home uplink the bulk transfer starves its own commit
+  calls (408s); one worker is faster in practice.
+- Dataset volume mounts update live as commits land; bucket volumes are
+  the writable persistent storage (the legacy per-Space storage API is
+  retired).
+- radis needs WRITE access inside exojax_linelists even for cache reads
+  (scratch tempdir), and `cp -a` from a read-only mount preserves the
+  read-only modes: sync + `chmod -R u+wX`.
 
 ## Known limitations
 
