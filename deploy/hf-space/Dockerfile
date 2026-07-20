@@ -58,12 +58,14 @@ RUN rm -f /srv/vulcan/VULCAN-JAX/src/vulcan_jax/fastchem_vulcan/fastchem \
 RUN rm -rf /srv/vulcan/vulcan-retrieval/data /srv/vulcan/vulcan-retrieval/output
 
 COPY entrypoint.sh bootstrap_data.py /srv/app/
-# Spaces run the container as uid 1000. FastChem writes its input/output
-# inside its package dir at runtime, so the whole tree is chowned.
+# Spaces run the container as uid 1000; the base image may already ship a
+# UID-1000 user (miniforge does), so create one only if absent and chown
+# numerically. FastChem writes its input/output inside its package dir at
+# runtime, so the whole tree is chowned.
 RUN chmod +x /srv/app/entrypoint.sh \
-    && useradd -m -u 1000 user \
-    && chown -R user:user /srv/vulcan /srv/app
-USER user
+    && (id -u 1000 >/dev/null 2>&1 || useradd -m -u 1000 user) \
+    && chown -R 1000:1000 /srv/vulcan /srv/app
+USER 1000
 
 ENV VULCAN_PROJECT_ROOT=/srv/vulcan \
     JWST_TOOL_DATA_DIR=/data/jwst-data \
