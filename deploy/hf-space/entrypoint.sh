@@ -35,10 +35,14 @@ if [ ! -d /data ] || ! touch /data/.rwtest 2>/dev/null; then
          "EPHEMERAL (lost on restart/rebuild)"
 fi
 rm -f /data/.rwtest 2>/dev/null || true
-mkdir -p "$STATE/output" "$STATE/retrieval-output" "$STATE/home"
+mkdir -p "$STATE/output" "$STATE/retrieval-output" "$STATE/home" "$STATE/cwd"
 export JWST_TOOL_OUTPUT_DIR="$STATE/output"
 export HOME="$STATE/home"
 ln -sfn "$STATE/retrieval-output" /srv/vulcan/vulcan-retrieval/output
+# VULCAN-JAX's legacy IO writes a RELATIVE output/ dir in the process CWD
+# (harmless junk, but the CWD must be writable -- the container default is
+# root-owned and the forward subprocess inherits CWD from here).
+cd "$STATE/cwd"
 
 # CORS/XSRF off: required for uploads (T-P tables, noise-floor tables) to
 # work behind the Spaces proxy. Keep the Space PRIVATE.
