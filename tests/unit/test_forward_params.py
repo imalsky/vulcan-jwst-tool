@@ -1,12 +1,14 @@
 """Pure-Python validation of forward.canonical_params (no chemistry stack).
 
-Covers the parameter-scope contract: the WASP-39b GCM special cases
-(tp_mode='baseline', kzz_mode='scale', has_gcm_baseline) are REMOVED — only
-explicit isothermal/Guillot profiles with constant Kzz exist — and
-condensation is REMOVED as an option (2026-07-14): use_condense is no longer
-a parameter and a truthy request raises, because a condensing VULCAN column
-is not reliably differentiable through its window+fix-species pin and so
-cannot enter the Fisher forecast this tool is built around.
+Covers the parameter-scope contract. The WASP-39b GCM special cases
+(tp_mode='baseline', kzz_mode='scale', has_gcm_baseline) are REMOVED: only
+explicit isothermal/Guillot profiles with constant Kzz exist. Condensation
+(use_condense, v14) is a canonical parameter again, accepted as a
+DETECTION-ONLY forward option; canonical_params refuses it in combination
+with fisher_params under ANY jac_method (the pinned condensed reservoir is a
+step-sequence-dependent transient, so neither AD nor FD rows through it are
+trustworthy), with photochemistry off (no certifiable steady state), and
+with molecular diffusion off (the growth term IS the moldiff coefficient).
 """
 import pytest
 

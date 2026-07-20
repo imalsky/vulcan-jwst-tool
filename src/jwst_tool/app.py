@@ -65,7 +65,7 @@ def _csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode()
 
 
-def _never_reason(tt: dict, scenario: str, val: str) -> str:
+def _never_reason(scenario: str, val: str) -> str:
     """Honest 'unreachable' phrasing. Under the default random scenario
     sig_inf is an exact ceiling (score monotone in N: 'floor caps at').
     Under a correlated scenario sig_inf is only the N-to-infinity limit --
@@ -80,7 +80,7 @@ def _never_reason(tt: dict, scenario: str, val: str) -> str:
 def _transits_cell(tt: dict, scenario: str, val_never: str) -> str:
     """'transits → target' table cell, window-aware for correlated scenarios."""
     if not tt["reachable"]:
-        return f"never ({_never_reason(tt, scenario, val_never)})"
+        return f"never ({_never_reason(scenario, val_never)})"
     cell = str(tt["n"])
     if (tt.get("n_last") is not None
             and tt["n_last"] < detect.N_TRANSITS_CAP):
@@ -387,8 +387,13 @@ with st.sidebar:
                                    format="%.4f",
                                    help="Scales the stellar UV reaching the "
                                         "planet (photochemistry).")
-        t14 = st.number_input("Transit duration T14 (hr)", 0.5, 10.0,
-                              pdef["t14_hr"], 0.1, key=_k("t14"))
+        t14 = st.number_input("Transit / eclipse duration T14 (hr)", 0.5, 10.0,
+                              pdef["t14_hr"], 0.1, key=_k("t14"),
+                              help="Duration of the observed event: the "
+                                   "transit in transmission, the secondary "
+                                   "eclipse in emission (near-equal on a "
+                                   "circular orbit). Sets the in-event "
+                                   "integration time per visit.")
         _uv_ok = datacheck.uv_spectra_status()
         sflux = st.selectbox("Stellar UV spectrum (photochemistry)",
                              list(planets.SFLUX_CHOICES),
@@ -420,6 +425,10 @@ with st.sidebar:
              "scores, and Fisher constraints all carry over to the eclipse "
              "depth; the run also certifies the RT column is optically "
              "thick at its bottom (no see-through windows).")
+    # Event word for every observation-facing label: the noise model is the
+    # same machinery either way (N events + out-of-event baseline), only the
+    # vocabulary changes with the geometry.
+    _evw = "eclipse" if science_mode == "emission" else "transit"
     st.divider()
     st.markdown("### Differentiation method")
     jac_method = st.selectbox(
@@ -1082,7 +1091,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### Instrument & noise")
-    st.caption("The JWST measurement itself: which modes, how many transits, "
+    st.caption(f"The JWST measurement itself: which modes, how many {_evw}s, "
                "detector saturation, and the Pandeia/PandExo noise model. "
                "Independent of the atmosphere physics above.")
 
@@ -1097,12 +1106,15 @@ with st.sidebar:
                                    f"({ins.MODES[k]['wl_min']:g}-"
                                    f"{ins.MODES[k]['wl_max']:g} µm)"))
         r_bin = st.number_input(
-            "Binned resolving power R", 25, 500, 100, 25, key=K("rbin"),
-            help="Display/scoring bin resolution (any value in [25, 500]; "
-                 "50-200 is the usual range).")
-        n_transits = st.number_input("Number of transits", 1, 10, 1, 1,
+            "Analysis binning R (λ/Δλ)", 25, 500, 100, 25, key=K("rbin"),
+            help="NOT display-only: this sets the wavelength bins that "
+                 "noise, the template S/N, and the Fisher forecasts are all "
+                 "computed on (one binning operator for noise, model, and "
+                 "Jacobians), as well as the plotted spectrum. Any value in "
+                 "[25, 500]; 50-200 is the usual range.")
+        n_transits = st.number_input(f"Number of {_evw}s", 1, 10, 1, 1,
                                      key=K("ntr"))
-        t_base = st.number_input("Out-of-transit baseline (hr)", 0.5, 10.0,
+        t_base = st.number_input(f"Out-of-{_evw} baseline (hr)", 0.5, 10.0,
                                  float(t14), 0.1, key=_k("tbase"),
                                  help="Sets how well the stellar flux is "
                                       "anchored; PandExo convention is ≈ T14.")
@@ -1117,7 +1129,7 @@ with st.sidebar:
         st.caption("Applied as σ_final = max(σ_random, floor) on the final "
                    "binned uncertainties: a hard minimum, never added in "
                    "quadrature, never rescaled by the binning R, and never "
-                   "averaged below by adding transits.")
+                   f"averaged below by adding {_evw}s.")
         floor_mode = st.radio(
             "Floor type", ["constant", "none", "file"], horizontal=True,
             key=K("floormode"),
@@ -1168,7 +1180,7 @@ with st.sidebar:
                    "≈1.05-1.12×; Radica+2023 1.2× NIRISS SOSS; Bouwman+2023 "
                    "≈1.15× MIRI LRS) are program-specific reference points "
                    "for sensitivity studies, not a calibration. Proportional "
-                   "noise, averages down with transits, unlike the floor. "
+                   f"noise, averages down with {_evw}s, unlike the floor. "
                    "Recorded in the result metadata.")
         infl = {k: st.number_input(ins.MODES[k]["label"] + " ", 1.0, 3.0,
                                    float(ins.MODES[k].get("noise_infl", 1.0)),
@@ -1411,6 +1423,11 @@ goal_r = meta.get("goal", "detect")
 # conversion (sigma_CO = C/O * sigma_lnCO); since v13 params_json carries it
 # directly as co_ratio (composition is structural)
 _cpj = json.loads(str(model["params_json"]))
+# Event word for the CACHED run's results (the sidebar radio may have moved
+# since the run; the stored canonical params are the truth for this output).
+_ev = ("eclipse" if str(_cpj.get("science_mode", "transmission")) == "emission"
+       else "transit")
+_tt_col = f"{_ev}s → target"
 co_eval = float(_cpj.get("co_ratio", forward.CO_BASELINE))
 
 for k, err in out["failed"]:
@@ -1457,7 +1474,7 @@ if goal_r == "detect":
     ntr = meta["n_transits"]
     verdict = (f"**Best mode for detecting {meta['target']} on "
                f"{meta.get('planet', '?')}: {best['label']}**, "
-               f"{bsig:.1f}σ in {ntr} transit{'s' if ntr > 1 else ''} "
+               f"{bsig:.1f}σ in {ntr} {_ev}{'s' if ntr > 1 else ''} "
                f"(target {tsig:g}σ; Δχ² = {bsig * bsig:.0f}; median precision "
                f"{best['median_sigma_ppm']:.0f} ppm per R={meta['r_bin']} bin).")
     if bsig >= tsig:
@@ -1472,14 +1489,14 @@ if goal_r == "detect":
             _win = ("" if tt.get("n_last") is None
                     or tt["n_last"] >= detect.N_TRANSITS_CAP else
                     f" Correlated-scenario window: past {tt['n_last']} "
-                    "transits the detection is lost again.")
-            st.error(verdict + f"  Missing the target, {tt['n']} transits of "
+                    f"{_ev}s the detection is lost again.")
+            st.error(verdict + f"  Missing the target, {tt['n']} {_ev}s of "
                      f"{best['label']} would reach it (floor-aware estimate)."
                      + _win)
         else:
             _lim = f"{tt['sig_inf']:.1f}σ"
             st.error(verdict + "  Missing the target, and NO number of "
-                     f"transits reaches it ({_never_reason(tt, _scen, _lim)}). "
+                     f"transits reaches it ({_never_reason(_scen, _lim)}). "
                      "Lower the floor, choose other modes, or relax the "
                      "target.")
     else:
@@ -1541,7 +1558,7 @@ else:
         else:
             _lim = f"±{tsig * tt['sig_inf']:.3g}{usp} at {tsig:g}σ"
             st.error(verdict + "  Missing the target, and NO number of "
-                     f"transits reaches it ({_never_reason(tt, _scen, _lim)}). "
+                     f"transits reaches it ({_never_reason(_scen, _lim)}). "
                      "Lower the floor, combine modes, or relax the target.")
 
 # --- spectrum figure -------------------------------------------------------
@@ -1769,10 +1786,10 @@ for r in sorted(results, key=key_order):
         _t = float(meta.get("target_sig") or 3.0)
         if r["sigma_detect"] > 0:
             _tt = detect.transits_to_target(r, _t)
-            row["transits → target"] = _transits_cell(
+            row[_tt_col] = _transits_cell(
                 _tt, meta.get("scenario", "random"), f"{_tt['sig_inf']:.1f}σ")
         else:
-            row["transits → target"] = ", "
+            row[_tt_col] = ""
     else:
         s = per_mode.get(r["mode_key"], np.inf)
         row[f"±{forward.param_axis(gp)} at {tsig:g}σ"] = (
@@ -1783,11 +1800,11 @@ for r in sorted(results, key=key_order):
                                                 target / tsig,
                                                 detect.sigma_at_transits,
                                                 co_eval=co_eval)
-            row["transits → target"] = _transits_cell(
+            row[_tt_col] = _transits_cell(
                 _tt, meta.get("scenario", "random"),
                 f"±{tsig * _tt['sig_inf']:.3g}")
         else:
-            row["transits → target"] = ", "
+            row[_tt_col] = ""
     row.update({"median σ (ppm)": round(r["median_sigma_ppm"]),
                 "bins": r["n_bins"], "ngroup": r["ngroup"],
                 "cadence (s)": round(r["t_cycle_s"], 1),
@@ -1824,8 +1841,8 @@ if goal_r == "detect":
 else:
     st.caption(
         f"± per mode is the marginalized Fisher forecast scaled to {tsig:g}σ "
-        "(see the table below); 'transits → target' re-solves the Fisher forecast "
-        "at each transit count with the random term scaled 1/N and the minimum "
+        f"(see the table below); '{_tt_col}' re-solves the Fisher forecast "
+        f"at each {_ev} count with the random term scaled 1/N and the minimum "
         "floor as a hard lower bound, floor-limited targets read 'never' instead "
         "of an optimistic 1/√N estimate. Saturated modes are excluded from all "
         "forecasts."
@@ -1863,7 +1880,7 @@ if fisher_names and "jac" in model:
             # shown for completeness, but a saturated mode contributes no usable
             # data -- same exclusion policy as the verdict + combined row
             frows.append({"mode": r["label"] + "  [saturated, excluded]",
-                          **{c: ", " for c in _fcols}})
+                          **{c: "" for c in _fcols}})
             continue
         cond = {}
         sig = fisher_mod.mode_forecast(r, fisher_names, conditional=cond)
@@ -1956,7 +1973,7 @@ if fisher_names and "jac" in model:
             "in **dex** (factors of 10); **C/O** is the absolute carbon/oxygen "
             "number ratio N_C/N_O (default ≈ 0.55, the network's WASP-39b "
             "elemental set from Tsai et al. 2023).\n"
-            "- σ is evaluated at the transit count you set. Only the "
+            f"- σ is evaluated at the {_ev} count you set. Only the "
             "photon/detector term averages down with more transits; the "
             "systematic floor does not, use the 'transits → target' column, "
             "not a 1/√N extrapolation."

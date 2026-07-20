@@ -70,10 +70,12 @@ from jwst_tool import forward
 from jwst_tool import instruments as _ins
 
 ADJOINT_CACHE = _ins.OUTPUT_DIR / "adjoint_cache"
-_ADJ_VERSION = 2          # bump to invalidate cached adjoint diagnostics
+_ADJ_VERSION = 3          # bump to invalidate cached adjoint diagnostics
 #                           v2 (2026-07-19): key strips ALL RT/observable-only
 #                           knobs (the v15/v16 additions had been fragmenting
 #                           the cache) + canonical conv_normal certification
+#                           v3 (2026-07-20): JSON npz fields auto-size their
+#                           U dtype (fixed widths could truncate silently)
 
 # Transit-photosphere pressure window for picking the loss layer (bar):
 # transmission spectra probe roughly mbar-to-0.1-bar; the peak-VMR layer is
@@ -345,6 +347,7 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     from vulcan_jax.gibbs import load_nasa9
     from vulcan_jax import rates_jax
     from vulcan_jax._paths import resolve_data_path
+    from vulcan_jax.phy_const import kb
 
     cfg = integ._cfg
     thermo_dir = resolve_data_path(cfg.network).parent
@@ -355,7 +358,6 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     nasa9_j = jnp.asarray(nasa9)
     remove_list = getattr(cfg, "remove_list", None)
     use_caps = bool(getattr(cfg, "use_lowT_limit_rates", False))
-    kb = 1.380649e-16
     # frozen hydrostatic pressures: rebuild(T) varies T at fixed P (the
     # upstream-validated d/dT recipe; photolysis rows spliced in FROZEN)
     pco_j = jnp.asarray(np.asarray(atm_step.M) * kb * np.asarray(atm_step.Tco))
@@ -411,16 +413,18 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
         solver_map=np.array(str(info["solver_map"]), dtype="U16"),
         audit_max_rel_defect=np.float64(audit["max_rel_defect"]),
         audit_loss_footprint_defect=np.float64(audit["loss_footprint_defect"]),
-        audit_findings_json=np.array(json.dumps(findings), dtype="U8192"),
+        # JSON payloads take the auto-sized U dtype; a fixed width truncates
+        # silently once the serialized dict outgrows it
+        audit_findings_json=np.array(json.dumps(findings)),
         body_dt=np.float64(body_dt),
-        audit_trail_json=np.array(json.dumps(audit_trail), dtype="U2048"),
+        audit_trail_json=np.array(json.dumps(audit_trail)),
         dLdT=dLdT_np,
         p_bar=p_bar,
         rebuild_consistency=np.float64(rc_worst),
         dLdT_resid_median=np.float64(info_T["resid_median"]),
         conv_longdy=np.float64(longdy),
         conv_gate=np.float64(chem.yconv_min),
-        params_json=np.array(json.dumps(cp), dtype="U2048"),
+        params_json=np.array(json.dumps(cp)),
         adjoint_version=np.int64(_ADJ_VERSION),
     )
     log("[adj] PROG 1.000 done")

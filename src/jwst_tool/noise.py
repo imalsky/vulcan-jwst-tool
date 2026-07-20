@@ -145,14 +145,9 @@ def noise_job(star: dict, mode_keys: list[str], sat_limit: float = 0.80) -> dict
         "star": {k: float(star[k]) for k in ("teff", "log_g", "metallicity", "ks_mag")},
         "sat_limit": float(sat_limit),
         "modes": modes,
-        # cache-buster: bump when pandeia_worker output changes.
-        # v5 = engine/refdata release-match gate + top-level "__provenance__"
-        # block (exact backend identity recorded in every result/cache file).
-        # v6 = t_cycle_s is the TRUE per-integration cycle time (nint=2 minus
-        # nint=1 exposure difference; the nint=1 scalar missed the between-
-        # integration reset on MIRI FASTR1 -- sigma was optimistic by
-        # ~0.5/(ngroup+1)) + loud _sat_curve + legacy-only Vega requirement
-        # + cdbs_identity in the fingerprint.
+        # cache-buster: bump whenever pandeia_worker.py output changes
+        # (output semantics in the worker docstring, per-version history
+        # in notes.md)
         "worker_version": 6,
     }
 

@@ -177,60 +177,25 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 17  # Bump whenever the physics or the canonical key set changes:
-               # invalidates all cached spectra. Full v1-v14 history lives in
-               # notes.md. v14: jac_method fd/ad for EVERY row (per-row
-               # jac_row_method provenance, b_z guard on the dlnCO AD row) +
-               # use_condense back as a DETECTION-ONLY forward option
-               # (certified S8 recipe, refused with any derivative).
-               # v15: three ExoJAX RT knobs become canonical params --
-               # rt_ptop_bar (RT top pressure), rt_integration (transit
-               # chord scheme, simpson/trapezoid), rt_dit_res (PreMODIT
-               # broadening-grid spacing). Defaults reproduce v14 physics
-               # exactly. Requires vulcan-retrieval >= 0.10.1 (the engine
-               # echoes the knobs; run_model verifies the echo loudly).
-               # v16: tp_mode="file" (tabulated T-P/Kzz, content-hash keyed,
-               # no T-P Fisher rows -- forecasts conditional on the profile),
-               # kzz_mode const/Pfunc/JM16/file, the boundary-condition set
-               # (use_settling / diff_esc / top_flux / bot_flux), cloud
-               # Fisher marginalization (log_kappa_cloud / alpha_cloud as
-               # RT-only Jacobian rows), emission mode (science_mode +
-               # star_teff/logg/feh), and the Mie condensate deck
-               # (mie_condensate + mie_log_rg / mie_sigmag / mie_log_mmr,
-               # freeable as RT-only Fisher rows). Defaults reproduce v15
-               # physics exactly, but the key set changed, so pre-v16 caches
-               # are stale. Emission + Mie need vulcan-retrieval >= 0.11.0.
-               # v17 (2026-07-19 audit response): gas-phase-only RT
-               # normalization/mmw (condensed *_l_s reservoirs no longer
-               # dilute the gas VMRs -- conden-on spectra change, conden-off
-               # bit-identical), canonical certification gate (ConvDiag.
-               # conv_normal, not longdy alone), per-removed-molecule
-               # emission tau-bottom certification, T-P file span
-               # validation, a REACHABLE b_z margin on the AD dlnCO row,
-               # composition FD stencils kept inside the validated
-               # envelope, and photo-off sflux/orbit_au key normalization
-               # (the key set changed: pre-v17 caches are stale).
+_VERSION = 17  # model_cache buster: bump whenever the physics or the
+               # canonical key set changes (invalidates all cached spectra).
+               # Per-version history lives in notes.md.
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
 # NUMBER ratio  C/O = N_C / N_O  (NOT [C/H]/[O/H], and not a log quantity).
 # The basis is the W39b cfg's CUSTOMIZED elemental set (vulcan_jax
 # configs/W39b.yaml: use_solar false, C_H 2.95e-3, O_H 5.37e-3 -- the
-# Tsai et al. 2023 WASP-39b 10x-solar composition; their ref is Lodders
-# (2020) solar abundances, whose O gives exactly O_H/10 = 5.37e-4 and whose
-# C/O ~ 0.55 -- NOT Asplund 2009, whose O is 4.90e-4; the ratio merely
-# coincides). That set defines the CONSERVED atom columns: the elemental
-# mode rebuilds every column (and atom_ini) in the cfg basis, and both
-# build-time diagnostics confirm it ("[chem] ... baseline C/O = 0.5493").
-# It is NOT the FastChem solar_element_abundances.dat set (Lodders 2009
-# protosolar, C/O = 0.458) -- that file only seeds the EQUILIBRIUM INITIAL
-# GUESS for the non-network trace metals and does not survive into the
-# converged column. v10 shipped CO_BASELINE = 0.4579 from the FastChem file;
-# that wrong basis skewed every absolute-C/O surface by a factor 1.2.
-# Since v13 this constant is only the GUI's DEFAULT co_ratio and display
-# baseline (composition itself is structural: run_model pins the cfg
-# abundances per request); run_model still cross-checks it against the
-# loaded cfg's C_H/O_H and refuses to run on drift.
+# Tsai et al. 2023 WASP-39b 10x-solar composition, on Lodders (2020) solar
+# abundances). That set defines the CONSERVED atom columns and is the ONLY
+# valid basis here: the FastChem solar_element_abundances.dat set (C/O =
+# 0.458) merely seeds the EQUILIBRIUM INITIAL GUESS for the non-network
+# trace metals and never survives into the converged column (the wrong-basis
+# episode is in notes.md v18). Since v13 this constant is only the GUI's
+# DEFAULT co_ratio and display baseline (composition itself is structural:
+# run_model pins the cfg abundances per request); run_model still
+# cross-checks it against the loaded cfg's C_H/O_H and refuses to run on
+# drift.
 CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
 
 # --- Finite-difference Fisher Jacobians (v13: the ONLY Jacobian path) --------
