@@ -105,52 +105,52 @@ def _intro_gate() -> None:
         st.title("JWST instrument selector")
         st.markdown(
             """
-**vulcan-jwst-tool** is a local JWST transmission-spectroscopy planning tool
-that ranks JWST time-series instrument modes by how well each one can **detect a
-target molecule** or **constrain an atmospheric parameter** for a given
-exoplanet, and it reports the number of transits needed to reach a chosen
-precision.
+**vulcan-jwst-tool** ranks JWST time-series instrument modes by how well
+each one can **detect a target molecule** or **constrain an atmospheric
+parameter** (metallicity, C/O, vertical mixing, temperature, clouds) for a
+given exoplanet, in transmission or in eclipse emission, and reports how
+many transits or eclipses reach a chosen precision.
 
-It follows the same principle as **PandExo**, a Pandeia exposure-time-calculator
-noise forecast for JWST exoplanet spectra, but replaces the assumed input
-spectrum with a live forward model whose chemistry follows the
-**VULCAN** photochemical kinetics code at
-[github.com/exoclime/VULCAN](https://github.com/exoclime/VULCAN) (ported to JAX
-as VULCAN-JAX and chained into ExoJAX radiative transfer). Derivatives are
-computed by the method suited to each question, and the tool states which
-one it used everywhere a number appears:
+It follows the same principle as **PandExo** (a Pandeia
+exposure-time-calculator forecast for JWST exoplanet spectra), but instead
+of an assumed input spectrum it computes one live, for exactly the
+atmosphere you configure:
 
-- The spectral Jacobian feeding the **Fisher-information forecast** defaults
-  to **finite differences**: central differences of independently
-  converged solves (each passing the solver's convergence gate), evaluated
-  at two step sizes that must agree before a row is reported (composition derivatives re-initialize
-  the chemistry at the perturbed elemental abundances, the standard VULCAN
-  workflow). Slower than automatic differentiation but transparent and
-  self-verifying; cross-validated against the AD rows to 0.07-1.6%.
-- Every Jacobian row can optionally use the ~1.7-4x-faster **forward-mode
-  AD** path (warm-started jvp, photochemistry on). The method is a per-run
-  menu choice, recorded per row, and physically invalid combinations are
-  refused loudly, such as AD through condensation or the C/O direction on
-  carbon-rich compositions.
-- **Reverse-mode AD (adjoint) diagnostics** answer the high-dimensional
-  questions finite differences cannot afford: the sensitivity of a
-  molecule's abundance to every reaction rate and every layer's temperature
-  in one solve, scope-audited and certification-reported.
+1. **Chemistry**: steady-state photochemical kinetics with
+   [VULCAN](https://github.com/exoclime/VULCAN), run through its JAX port
+   VULCAN-JAX. A solve that cannot pass the convergence gate errors loudly
+   instead of returning a wrong spectrum.
+2. **Spectrum**: ExoJAX radiative transfer, either the transit depth or the
+   dayside eclipse depth against a PHOENIX stellar model.
+3. **Noise**: the real Pandeia 2026.2 ETC engine per instrument mode, with
+   a PandExo-style minimum noise floor.
+4. **Scores**: a conditional template S/N per molecule, Fisher (Cramer-Rao)
+   parameter forecasts, and a floor-aware count of the transits or eclipses
+   needed to reach your target.
+
+**How to use it**: work down the sidebar in order (planet and star,
+atmosphere physics, science goal, instrument modes and noise), then press
+Run. A fresh configuration solves the chemistry from scratch and takes
+minutes; any configuration computed before loads instantly from the cache.
+Constraint forecasts add several minutes per freed parameter with the
+default finite differences (a faster forward-AD method is a sidebar
+option); every number is labeled with the method that produced it, and
+every result stores its convergence and version provenance.
 
 The forecasts are **deliberately optimistic** in three ways:
 
-- Molecule-detection scores are a conditional matched-template signal-to-noise
+- Detection scores are a conditional matched-template signal-to-noise
   ratio at one fixed atmosphere, so a real retrieval does worse.
-- The Fisher results are local Cramer-Rao lower bounds rather than posterior
+- Fisher results are local Cramer-Rao lower bounds rather than posterior
   widths.
-- The noise model omits time-correlated systematics, so achieved precision is
-  usually poorer.
+- The noise model omits time-correlated systematics (visit-long trends,
+  1/f residuals, detrending covariance, stellar heterogeneity), so achieved
+  precision is usually poorer. Treat mode rankings as more robust than
+  absolute ppm numbers.
 
-It is a **planning tool, not an atmospheric retrieval**, and it does not model
-time-correlated instrument systematics such as visit-long trends, 1/f residuals,
-detrending covariance, or stellar heterogeneity. Condensation (S8 rainout)
-is offered for detection goals only. It can never be combined with a
-derivative-based forecast, under either differentiation method.
+This is a **planning tool, not an atmospheric retrieval**. Condensation
+(S8 rainout) is offered for detection goals only and never combines with a
+derivative-based forecast.
             """
         )
         st.write("")
@@ -164,9 +164,10 @@ _intro_gate()
 
 st.title("JWST instrument selector")
 st.caption(
-    "VULCAN-JAX photochemistry → ExoJAX transmission spectrum → Pandeia ETC noise. "
-    "Pick a planet and a science goal, run the model locally, and see which "
-    "instrument mode achieves it best. Uncertainties are a **Pandeia "
+    "VULCAN-JAX photochemistry → ExoJAX spectrum (transmission or eclipse "
+    "emission) → Pandeia ETC noise. "
+    "Pick a planet and a science goal, run the live forward model, and see "
+    "which instrument mode achieves it best. Uncertainties are a **Pandeia "
     "instrument-model forecast** with an optional PandExo-style minimum noise "
     "floor, not a full time-series systematics forecast; treat mode rankings "
     "as more robust than absolute ppm."
