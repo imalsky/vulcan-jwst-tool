@@ -34,6 +34,9 @@ if [ -d /srv/hub-data/jwst-data ]; then
     echo "[entrypoint] syncing retrieval-data to writable storage ..."
     mkdir -p "$STATE/retrieval-data"
     cp -au /srv/hub-data/retrieval-data/. "$STATE/retrieval-data/"
+    # cp -a preserves the mount's read-only modes -- restore owner-write
+    # (radis mkdirs its tempdir inside exojax_linelists at import).
+    chmod -R u+wX "$STATE/retrieval-data"
     ln -sfn "$STATE/retrieval-data" /srv/vulcan/vulcan-retrieval/data
 else
     if [ ! -d /data ]; then
