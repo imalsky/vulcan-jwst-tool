@@ -28,7 +28,8 @@ and the reference for what the script does.
 
 All three repos pushed to GitHub INCLUDING vulcan-jwst-tool's `deploy/`
 directory -- the Space build reads the version pins from the cloned repo's
-`deploy/constraints-app.txt` and `deploy/requirements-pandeia.txt`.
+`deploy/requirements-app-lock.txt` and `deploy/requirements-pandeia.txt`
+(regenerate the lock with `deploy/make_app_lock.py` after env changes).
 
 ## 1. Hugging Face CLI (Mac)
 

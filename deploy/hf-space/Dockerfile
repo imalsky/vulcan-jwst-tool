@@ -28,15 +28,19 @@ RUN git clone --depth 1 https://github.com/imalsky/jax-vulcan.git /srv/vulcan/VU
     && cat /srv/vulcan/BUILD_INFO
 
 # Pins live in the jwst-tool repo (deploy/) so the Space shim never drifts
-# from the validated versions. huggingface_hub is the data bootstrap's dep.
+# from the validated versions. The app env installs the FULL LOCK with
+# --no-deps: the validated environment violates some declared metadata
+# (exojax 2.2.3 pins numpy<2, the working env runs numpy 2.0.2), so a
+# resolver pass is guaranteed to fail -- replicate, don't resolve. The lock
+# includes streamlit/pandas (gui extra) and huggingface_hub (bootstrap).
 RUN /opt/conda/envs/pandeia/bin/pip install --no-cache-dir \
         -r /srv/vulcan/vulcan-jwst-tool/deploy/requirements-pandeia.txt
-RUN /opt/conda/envs/app/bin/pip install --no-cache-dir \
-        -c /srv/vulcan/vulcan-jwst-tool/deploy/constraints-app.txt \
+RUN /opt/conda/envs/app/bin/pip install --no-cache-dir --no-deps \
+        -r /srv/vulcan/vulcan-jwst-tool/deploy/requirements-app-lock.txt
+RUN /opt/conda/envs/app/bin/pip install --no-cache-dir --no-deps \
         -e /srv/vulcan/VULCAN-JAX \
         -e /srv/vulcan/vulcan-retrieval \
-        -e "/srv/vulcan/vulcan-jwst-tool[gui]" \
-        huggingface_hub
+        -e /srv/vulcan/vulcan-jwst-tool
 
 # FastChem for THIS platform (any checked-in binary would be the wrong arch).
 RUN rm -f /srv/vulcan/VULCAN-JAX/src/vulcan_jax/fastchem_vulcan/fastchem \

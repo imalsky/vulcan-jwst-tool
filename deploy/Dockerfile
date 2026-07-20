@@ -30,22 +30,26 @@ RUN conda create -y -n app python=3.12 \
 COPY vulcan-jwst-tool/deploy/requirements-pandeia.txt /srv/build/requirements-pandeia.txt
 RUN /opt/conda/envs/pandeia/bin/pip install --no-cache-dir -r /srv/build/requirements-pandeia.txt
 
+# App env: install the FULL LOCK with --no-deps. The validated environment
+# violates some declared metadata (exojax 2.2.3 pins numpy<2, the working
+# env runs numpy 2.0.2), so a resolver pass is guaranteed to fail --
+# replicate the working set, don't re-resolve it. Lock includes streamlit/
+# pandas (gui extra). Regenerate with deploy/make_app_lock.py.
+COPY vulcan-jwst-tool/deploy/requirements-app-lock.txt /srv/build/requirements-app-lock.txt
+RUN /opt/conda/envs/app/bin/pip install --no-cache-dir --no-deps \
+        -r /srv/build/requirements-app-lock.txt
+
 # Source trees. data/ and output/ are excluded by .dockerignore; they are
 # volume mounts at runtime (the engine's import-time data marker check runs
 # then, against the mounted data).
 COPY VULCAN-JAX /srv/vulcan/VULCAN-JAX
 COPY vulcan-retrieval /srv/vulcan/vulcan-retrieval
 COPY vulcan-jwst-tool /srv/vulcan/vulcan-jwst-tool
-COPY vulcan-jwst-tool/deploy/constraints-app.txt /srv/build/constraints-app.txt
 
-# Editable installs, same pattern as the NAS deployment: all three in ONE
-# resolve so the local checkouts satisfy the vulcan-* version floors and
-# PyPI provides the rest, pinned to the versions validated on the Mac.
-RUN /opt/conda/envs/app/bin/pip install --no-cache-dir \
-        -c /srv/build/constraints-app.txt \
+RUN /opt/conda/envs/app/bin/pip install --no-cache-dir --no-deps \
         -e /srv/vulcan/VULCAN-JAX \
         -e /srv/vulcan/vulcan-retrieval \
-        -e "/srv/vulcan/vulcan-jwst-tool[gui]"
+        -e /srv/vulcan/vulcan-jwst-tool
 
 # Pre-compile the FastChem equilibrium-init binary for THIS platform.
 # (ini_abun would compile it on the first run; doing it here keeps first user
