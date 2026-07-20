@@ -1,13 +1,16 @@
 # Hugging Face Space setup runbook
 
-One-time setup. Cost: $5/mo persistent storage + $0.03/hr CPU Upgrade
-hardware while awake (~$22/mo always-on; with a 1 h sleep timer and light
-use, typically well under $20/mo total). Prices approximate.
+One-time setup. Cost: a PRO subscription (~$9/mo -- REQUIRED to host any
+Docker Space, even on free hardware; the create call 402s without it) +
+$5/mo persistent storage + $0.03/hr CPU Upgrade hardware while awake
+(~$14/mo fixed; with a 1 h sleep timer and light use, typically under
+$20/mo total). Prices approximate. Dataset repos and the data upload are
+free and work without PRO.
 
 ## Fast path (scripted)
 
-After the prerequisite in step 0 below, plus an HF account with billing
-configured (hf.co/settings/billing):
+After the prerequisite in step 0 below, plus an HF account with PRO
+(huggingface.co/pro) and billing configured (hf.co/settings/billing):
 
     pip install -U huggingface_hub
     hf auth login
@@ -51,8 +54,9 @@ Delete the staging dir when the Space is confirmed working.
 
 ## 4. Create the Space (browser)
 
-hf.co/new-space -> Name: `jwst-tool` -> SDK: Docker (blank template) ->
-Private -> CPU basic for now -> Create.
+Requires PRO (Docker Spaces are PRO-gated). hf.co/new-space -> Name:
+`jwst-tool` -> SDK: Docker (blank template) -> Private -> CPU basic for
+now -> Create.
 
 ## 5. Push the Space files (Mac)
 

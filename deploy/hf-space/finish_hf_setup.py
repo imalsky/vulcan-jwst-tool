@@ -81,43 +81,66 @@ def main() -> int:
 
     step("creating repos (idempotent)")
     api.create_repo(dataset, repo_type="dataset", private=True, exist_ok=True)
-    api.create_repo(space, repo_type="space", private=True,
-                    space_sdk="docker", exist_ok=True)
-    print("repos exist")
-
-    step("uploading Space shim files (triggers a build)")
-    api.upload_folder(
-        repo_id=space, repo_type="space", folder_path=str(HERE),
-        ignore_patterns=["__pycache__/*", "*.pyc", ".DS_Store"])
-    print(f"pushed {HERE.name}/ contents to the Space repo")
-
-    step("configuring Space secrets/variables")
-    api.add_space_secret(space, "HF_TOKEN", token)
-    print("HF_TOKEN secret set from your login token.")
-    print("NOTE: for least privilege, later create a fine-grained READ token")
-    print("at hf.co/settings/tokens (access to the dataset repo only) and")
-    print("replace the secret in Space Settings.")
-    if dataset != f"{user}/vulcan-jwst-tool-data":
-        api.add_space_variable(space, "DATASET_REPO", dataset)
-        print(f"DATASET_REPO variable set to {dataset}")
-
-    step("requesting storage + hardware + sleep timer (needs billing)")
-    billing_hint = ("-- configure billing at hf.co/settings/billing, then "
-                    "either re-run this script or set it in Space Settings")
+    print(f"dataset repo exists: {dataset}")
+    # HF policy (2026): hosting a DOCKER Space -- even on free cpu-basic
+    # hardware -- requires a PRO subscription (~$9/mo). Without it the
+    # create call 402s; everything dataset-side is still free, so the data
+    # upload below proceeds and the Space steps are skipped until PRO.
+    from huggingface_hub.errors import HfHubHTTPError
+    space_ok = True
     try:
-        api.request_space_storage(space, "small")
-        print("persistent storage: small (20 GB, ~$5/mo)")
-    except Exception as e:  # noqa: BLE001
-        print(f"WARNING: storage request failed ({e}) {billing_hint}",
-              file=sys.stderr)
-    try:
-        api.request_space_hardware(space, "cpu-upgrade")
-        print("hardware: cpu-upgrade (8 vCPU / 32 GB, ~$0.03/hr while awake)")
-        api.set_space_sleep_time(space, 3600)
-        print("sleep timer: 1 h idle")
-    except Exception as e:  # noqa: BLE001
-        print(f"WARNING: hardware/sleep request failed ({e}) {billing_hint}",
-              file=sys.stderr)
+        api.create_repo(space, repo_type="space", private=True,
+                        space_sdk="docker", exist_ok=True)
+        print(f"space repo exists: {space}")
+    except HfHubHTTPError as e:
+        if getattr(e, "response", None) is not None \
+                and e.response.status_code == 402:
+            space_ok = False
+            print("WARNING: Space creation refused (402 Payment Required): "
+                  "Docker Spaces need a PRO subscription "
+                  "(huggingface.co/pro, ~$9/mo) even on free hardware. "
+                  "Skipping every Space step; the data upload still runs. "
+                  "Subscribe, then re-run this script to finish.",
+                  file=sys.stderr)
+        else:
+            raise
+
+    if space_ok:
+        step("uploading Space shim files (triggers a build)")
+        api.upload_folder(
+            repo_id=space, repo_type="space", folder_path=str(HERE),
+            ignore_patterns=["__pycache__/*", "*.pyc", ".DS_Store"])
+        print(f"pushed {HERE.name}/ contents to the Space repo")
+
+        step("configuring Space secrets/variables")
+        api.add_space_secret(space, "HF_TOKEN", token)
+        print("HF_TOKEN secret set from your login token.")
+        print("NOTE: for least privilege, later create a fine-grained READ "
+              "token")
+        print("at hf.co/settings/tokens (access to the dataset repo only) and")
+        print("replace the secret in Space Settings.")
+        if dataset != f"{user}/vulcan-jwst-tool-data":
+            api.add_space_variable(space, "DATASET_REPO", dataset)
+            print(f"DATASET_REPO variable set to {dataset}")
+
+        step("requesting storage + hardware + sleep timer (needs billing)")
+        billing_hint = ("-- configure billing at hf.co/settings/billing, then "
+                        "either re-run this script or set it in Space Settings")
+        try:
+            api.request_space_storage(space, "small")
+            print("persistent storage: small (20 GB, ~$5/mo)")
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING: storage request failed ({e}) {billing_hint}",
+                  file=sys.stderr)
+        try:
+            api.request_space_hardware(space, "cpu-upgrade")
+            print("hardware: cpu-upgrade (8 vCPU / 32 GB, "
+                  "~$0.03/hr while awake)")
+            api.set_space_sleep_time(space, 3600)
+            print("sleep timer: 1 h idle")
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING: hardware/sleep request failed ({e}) "
+                  f"{billing_hint}", file=sys.stderr)
 
     step("uploading staged data (~7.5 GB, resumable; the long step)")
     api.upload_large_folder(repo_id=dataset, repo_type="dataset",
@@ -125,6 +148,12 @@ def main() -> int:
     print("data upload complete")
 
     step("done -- what remains")
+    if not space_ok:
+        print("1. Subscribe to PRO (huggingface.co/pro) -- required for "
+              "Docker Spaces.")
+        print("2. Re-run this script: the resumable uploader skips "
+              "already-uploaded data and the Space steps will complete.")
+        return 0
     print(f"1. Watch the build: https://huggingface.co/spaces/{space} "
           "(Build logs tab; 15-30 min).")
     print("2. If the build ran before your GitHub push: Settings -> "
