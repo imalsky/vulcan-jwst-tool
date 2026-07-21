@@ -410,7 +410,7 @@ def check_synphot_cdbs(cdbs: str | Path = None) -> list[Item]:
     return items
 
 
-def check_picaso_data() -> list[Item]:
+def check_picaso_data(deep: bool = False) -> list[Item]:
     """PICASO provider + climate reference data (opt-in feature, all
     ``required=False``): the tree selected by ``JWST_TOOL_PICASO_REFDATA``.
 
@@ -508,14 +508,26 @@ def check_picaso_data() -> list[Item]:
     if manifest.is_file():
         try:
             entries = json.loads(manifest.read_text())["files"]
-            bad = [rel for rel, size in entries.items()
+            # SAMPLED by default (v18.1 GUI-latency fix): a full pass stats
+            # every entry -- thousands of files, tens of seconds on a remote
+            # Space volume. The sample is deterministic (every k-th entry);
+            # `jwst-tool data --deep` runs the full pass.
+            rels = sorted(entries)
+            if deep or len(rels) <= 48:
+                sample = rels
+            else:
+                step = max(1, len(rels) // 48)
+                sample = rels[::step][:48]
+            bad = [rel for rel in sample
                    if not (root / rel).is_file()
-                   or (root / rel).stat().st_size != int(size)]
+                   or (root / rel).stat().st_size != int(entries[rel])]
+            _scope = (f"all {len(rels)}" if len(sample) == len(rels)
+                      else f"{len(sample)} of {len(rels)} (spot check; "
+                           "full pass: jwst-tool data --deep)")
             items.append(Item(
                 key="picaso:manifest", label="Deployed-data manifest check",
                 status=OK if not bad else MISSING, required=False,
-                detail=(f"all {len(entries)} manifest entries match"
-                        if not bad else
+                detail=(f"{_scope} manifest entries match" if not bad else
                         f"{len(bad)} mismatched entries, e.g. {bad[:3]}"),
                 remedy="" if not bad else
                 "The mounted dataset does not match its manifest: re-sync "
@@ -567,7 +579,7 @@ def full_report(base_mols: list[str] = None, extra_mols: list[str] = None,
         f"Pandeia noise backend ({ins.JWST_TOOL_BACKEND})":
             check_pandeia_backend(),
         "Star normalization data (synphot CDBS)": check_synphot_cdbs(),
-        "PICASO provider data (opt-in)": check_picaso_data(),
+        "PICASO provider data (opt-in)": check_picaso_data(deep=deep),
     }
     for name, items in sections.items():
         for it in items:
@@ -625,3 +637,60 @@ def format_report(report: dict) -> str:
                    f"{len(miss)} required item(s) MISSING -- runs that need "
                    "them will refuse loudly. Remedies above.")]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Disk-persisted report cache (v18.1 GUI-latency fix)
+# ---------------------------------------------------------------------------
+# The full report walks every external dataset; on a Space the volumes are
+# remote and the first page load paid the whole scan behind a spinner. The
+# report is therefore persisted to disk: the GUI serves the file when fresh,
+# and the Space entrypoint warms it in the BACKGROUND at boot so even the
+# first visitor gets an instant panel. The GUI's refresh button deletes the
+# file and rebuilds.
+
+REPORT_CACHE_FILE = Path(ins.OUTPUT_DIR) / "datacheck_report.json"
+REPORT_CACHE_MAX_AGE_S = 3600.0
+
+
+def _report_to_jsonable(report: dict) -> dict:
+    from dataclasses import asdict
+    out = dict(report)
+    out["sections"] = {name: [asdict(it) for it in items]
+                       for name, items in report["sections"].items()}
+    return out
+
+
+def _report_from_jsonable(d: dict) -> dict:
+    out = dict(d)
+    out["sections"] = {name: [Item(**it) for it in items]
+                       for name, items in d["sections"].items()}
+    return out
+
+
+def load_cached_report(max_age_s: float = REPORT_CACHE_MAX_AGE_S):
+    """The disk-cached report if present and fresh, else None."""
+    import time
+    try:
+        if not REPORT_CACHE_FILE.is_file():
+            return None
+        env = json.loads(REPORT_CACHE_FILE.read_text())
+        if time.time() - float(env.get("generated_at", 0.0)) > max_age_s:
+            return None
+        return _report_from_jsonable(env["report"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None                     # unreadable cache: recompute
+
+
+def warm_report_cache(**kw) -> dict:
+    """Compute the full report and persist it (atomic write). Called by the
+    Space entrypoint in the background at boot and by the GUI on a miss."""
+    import os
+    import time
+    report = full_report(**kw)
+    REPORT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REPORT_CACHE_FILE.with_suffix(".json.tmp.%d" % os.getpid())
+    tmp.write_text(json.dumps({"generated_at": time.time(),
+                               "report": _report_to_jsonable(report)}))
+    os.replace(tmp, REPORT_CACHE_FILE)
+    return report

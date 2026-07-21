@@ -81,6 +81,12 @@ fi
 # root-owned and the forward subprocess inherits CWD from here).
 cd "$STATE/cwd"
 
+# Warm the data-status report in the BACKGROUND (v18.1 latency fix): the
+# full scan stats thousands of remote-volume files, and without this the
+# first visitor pays it behind a spinner. The GUI serves the disk-cached
+# report the moment it exists.
+(python -c "from jwst_tool import datacheck; datacheck.warm_report_cache()"     >/dev/null 2>&1 &)
+
 # CORS/XSRF off: required for uploads (T-P tables, noise-floor tables) to
 # work behind the Spaces proxy.
 exec jwst-tool \

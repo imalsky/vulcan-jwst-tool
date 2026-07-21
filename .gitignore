@@ -24,6 +24,9 @@ data/cdbs/calspec/
 # Large pandeia reference data (one-time ~4.3 GB download; see README "Backend configuration")
 data/pandeia_data-2026.2-jwst/
 data/pandeia_psfs-2026.2-jwst/
+# PandExo-side scratch from the 2026-07-12 parity run (cdbs symlink shim +
+# noise cache + a pickled single run) -- machine-local, never tracked
+pandeia_2026_refdata/
 CLAUDE.md
 notes.md
 

@@ -117,13 +117,16 @@ exposure-time-calculator forecast for JWST exoplanet spectra), but instead
 of an assumed input spectrum it computes one live, for exactly the
 atmosphere you configure:
 
-1. **Chemistry**: your choice of two engines -- steady-state photochemical
-   kinetics with [VULCAN](https://github.com/exoclime/VULCAN) (run through
-   its JAX port VULCAN-JAX), or PICASO chemical-equilibrium tables (fast,
-   no photochemistry, so no SO2). A solve that cannot pass its quality
-   gate errors loudly instead of returning a wrong spectrum. PICASO can
-   also supply a self-consistent climate temperature profile for either
-   engine.
+1. **Chemistry**: two independent choices. First the **chemistry engine**
+   -- who computes the abundances: steady-state photochemical kinetics
+   with [VULCAN](https://github.com/exoclime/VULCAN) (run through its JAX
+   port VULCAN-JAX), or PICASO chemical-equilibrium tables (fast, no
+   photochemistry, so no SO2). Second the **temperature profile** that
+   chemistry runs on: isothermal, Guillot, your own table, or a PICASO
+   radiative-convective climate solve -- all four available under EITHER
+   engine, so VULCAN photochemistry can run on a PICASO-computed climate
+   profile. A solve that cannot pass its quality gate errors loudly
+   instead of returning a wrong spectrum.
 2. **Spectrum**: ExoJAX radiative transfer, either the transit depth or the
    dayside eclipse depth against a PHOENIX stellar model.
 3. **Noise**: the real Pandeia 2026.2 ETC engine per instrument mode, with
@@ -187,19 +190,26 @@ _STATUS_LABEL = {datacheck.OK: "installed", datacheck.MISSING: "MISSING",
                  datacheck.AUTO: "downloads on first use"}
 
 
-@st.cache_data(ttl=300, show_spinner="Checking installed data ...")
+@st.cache_data(ttl=3600, show_spinner="Checking installed data ...")
 def _cached_full_report(_nonce: int, _backend: str, _picaso_root: str):
-    # v18.1: the full report stats every external dataset -- including, when
-    # the PICASO tree is a remote Space volume, a ~2.5k-entry manifest pass
-    # -- so it must NOT run on every Streamlit rerun (every widget click).
-    # The TTL + the manual refresh button below bound its staleness; the
-    # backend + picaso-root args re-key the cache when the environment
-    # changes.
-    return datacheck.full_report(base_mols=forward.MOLECULES,
-                                 extra_mols=forward.EXTRA_MOLECULES)
+    # v18.1 latency fix, twice over: the report is DISK-persisted (the Space
+    # entrypoint warms it in the background at boot, so even the first
+    # visitor gets an instant panel) and the in-process st.cache keeps
+    # reruns free. The manifest check inside is sampled, not exhaustive
+    # (full pass: `jwst-tool data --deep`). The refresh button deletes the
+    # disk cache and rebuilds.
+    cached = datacheck.load_cached_report()
+    if cached is not None:
+        return cached
+    return datacheck.warm_report_cache(base_mols=forward.MOLECULES,
+                                       extra_mols=forward.EXTRA_MOLECULES)
 
 
 def _bump_data_nonce():
+    try:
+        datacheck.REPORT_CACHE_FILE.unlink()
+    except OSError:
+        pass
     st.session_state["data_report_nonce"] = (
         st.session_state.get("data_report_nonce", 0) + 1)
 

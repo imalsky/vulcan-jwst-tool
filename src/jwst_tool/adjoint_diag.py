@@ -435,6 +435,15 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
 def main():
     params = json.load(open(sys.argv[1]))
     species = sys.argv[2]
+    # vulcan_jax's legacy IO creates RELATIVE output/ + plot/ directories in
+    # the process CWD (legacy_io.py) -- junk wherever the app was launched
+    # from. Run the subprocess from a dedicated scratch cwd instead (the
+    # same fix the Space entrypoint uses). Library callers of run_model are
+    # unaffected: only this subprocess entrypoint changes directory.
+    import os
+    _cwd = __import__('pathlib').Path(_ins.OUTPUT_DIR) / "cwd"
+    _cwd.mkdir(parents=True, exist_ok=True)
+    os.chdir(_cwd)
     run_adjoint(params, species, log=lambda *a: print(*a, flush=True))
     print("[adj] DONE", flush=True)
 
