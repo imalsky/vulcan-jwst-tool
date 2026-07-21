@@ -467,17 +467,7 @@ with st.sidebar:
         "Geometry", ["transmission", "emission"], horizontal=True,
         key=K("scimode"),
         format_func={"transmission": "Transmission (transit)",
-                     "emission": "Emission (secondary eclipse)"}.get,
-        help="Transmission models the terminator in transit; the observable "
-             "is the transit depth. Emission models the day side at "
-             "secondary eclipse; the observable is the eclipse depth "
-             "Fp/Fs × (Rp/Rs)², with a PHOENIX stellar SED for Fs (the "
-             "star parameters above). Emission needs a non-isothermal T-P "
-             "(an isothermal column emits a featureless blackbody), so the "
-             "isothermal profile is unavailable there. Noise, detection "
-             "scores, and Fisher constraints all carry over to the eclipse "
-             "depth; the run also certifies the RT column is optically "
-             "thick at its bottom (no see-through windows).")
+                     "emission": "Emission (secondary eclipse)"}.get)
     # Event word for every observation-facing label: the noise model is the
     # same machinery either way (N events + out-of-event baseline), only the
     # vocabulary changes with the geometry.
@@ -539,12 +529,7 @@ with st.sidebar:
                    "derivative through a table the way AD does through "
                    "VULCAN's equations.")
     st.markdown("### PICASO chemistry" if _pic else "### VULCAN chemistry")
-    if _pic:
-        st.caption("What goes into the PICASO equilibrium lookup: the "
-                   "temperature profile and the composition below. The "
-                   "same temperature profile also drives the ExoJAX "
-                   "radiative transfer.")
-    else:
+    if not _pic:
         st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward "
                    "model (composition + transport + photochemistry → "
                    "steady-state abundances). The T-P profile is shared: it "
@@ -648,16 +633,6 @@ with st.sidebar:
                      "EMISSION at depth-probing wavelengths genuinely "
                      "depends on it (the warning below appears in emission "
                      "mode).")
-            st.caption(
-                "PICASO computes a self-consistent temperature profile by "
-                "balancing starlight in against heat out (a radiative-"
-                "convective climate solve), and the selected chemistry "
-                "engine then runs on that profile. The information flows "
-                "one way: the chemistry you compute afterwards never feeds "
-                "back into the climate's heating. The first solve takes a "
-                "minute or two, then it is cached and shared by both "
-                "engines. Best tested around WASP-39 b; other planets are "
-                "checked at run time and refuse loudly if anything fails.")
             if science_mode == "emission":
                 st.warning(
                     "Emission + climate mode: day-side light at some "
@@ -854,15 +829,6 @@ with st.sidebar:
         # exist -- canonical_params refuses explicit requests, the GUI
         # simply never offers them. Quench/lnKzz is a deferred feature
         # (docs/picaso_roadmap.md in the repo).
-        st.caption(
-            "The PICASO engine assumes the chemistry has fully settled, so "
-            "the knobs for mixing, photochemistry, condensation, and "
-            "boundary conditions do not exist here -- in equilibrium, none "
-            "of them would change the answer. A planned update adds "
-            "'quenching' (a shortcut for the effect of mixing) together "
-            "with its Kzz constraint; the plan is in "
-            "docs/picaso_roadmap.md. If you want photochemical sulfur "
-            "(SO2), switch the chemistry engine to VULCAN.")
         kzz_mode, kzz_x = "const", 1.0
         kzz_const, kzz_kmax, kzz_plev, kzz_kdeep = 1.0e9, 0.0, 0.0, 0.0
         use_photo, sl_angle_deg, f_diurnal = False, 83.0, 1.0
@@ -1098,11 +1064,6 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
-    st.caption(f"Turns the {'PICASO' if _pic else 'VULCAN'} abundances (at "
-               f"the same T-P) into the "
-               f"{'eclipse emission' if science_mode == 'emission' else 'transmission'} "
-               "spectrum. Opacity set, scattering, clouds, and line "
-               "broadening.")
 
     with st.expander("Opacity, scattering & clouds"):
         _base_set, _extra_set = ((forward.MOLECULES, forward.EXTRA_MOLECULES)
