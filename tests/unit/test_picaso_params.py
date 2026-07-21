@@ -9,7 +9,7 @@ from jwst_tool import forward
 
 
 def _p(**kw):
-    base = dict(planet="wasp39b", tp_mode="isothermal", T_iso=900.0,
+    base = dict(planet="wasp39b", tp_mode="guillot",
                 kzz_mode="const", kzz_const=1.0e9)
     base.update(kw)
     return base
@@ -18,7 +18,7 @@ def _p(**kw):
 def _pp(**kw):
     """A minimal valid picaso-provider param set."""
     base = dict(planet="wasp39b", chem_provider="picaso",
-                tp_mode="isothermal", T_iso=900.0, co_ratio=0.50)
+                tp_mode="guillot", co_ratio=0.50)
     base.update(kw)
     return base
 
@@ -44,7 +44,7 @@ def _fp(monkeypatch):
 
 def test_vulcan_defaults_carry_inert_picaso_keys():
     cp = forward.canonical_params(_p())
-    assert cp["version"] == 20
+    assert cp["version"] == 21
     assert cp["chem_provider"] == "vulcan"
     assert cp["picaso_version"] == ""
     assert cp["picaso_chemgrid_sha1"] == ""
@@ -67,7 +67,7 @@ def test_v17_to_v18_key_regression():
         "nz", "nu_pts", "yconv_cri", "rp_rjup", "gs_cgs", "rstar_rsun",
         "orbit_au", "sflux", "met_x_solar", "co_ratio", "kzz_mode", "kzz_x",
         "kzz_const", "kzz_kmax", "kzz_plev", "kzz_kdeep", "tp_mode",
-        "tp_file", "tp_file_sha1", "T_iso", "Tirr", "Tint", "log_kappa",
+        "tp_file", "tp_file_sha1", "Tirr", "Tint", "log_kappa",
         "log_gamma", "use_photo", "sl_angle_deg", "f_diurnal", "use_moldiff",
         "use_vm_mol", "use_rayleigh", "broadening", "rt_ptop_bar",
         "rt_integration", "rt_dit_res", "cloud_on", "log_kappa_cloud",
@@ -119,8 +119,8 @@ def test_picaso_refusals(bad, match):
 
 def test_picaso_fisher_menu_and_envelope():
     cp = forward.canonical_params(
-        _pp(fisher_params=["lnZ", "dlnCO", "T_iso"]))
-    assert sorted(cp["fisher_params"]) == ["T_iso", "dlnCO", "lnZ"]
+        _pp(fisher_params=["lnZ", "dlnCO", "Tirr"]))
+    assert sorted(cp["fisher_params"]) == ["Tirr", "dlnCO", "lnZ"]
     # the composition stencil must stay ON the tables: co near the 1.10 cap
     with pytest.raises(ValueError, match="stencil"):
         forward.canonical_params(
@@ -236,7 +236,7 @@ def test_co_default_is_mode_aware():
     assert cp["co_ratio"] == 0.55              # the 10x-solar node
     cp2 = forward.canonical_params(dict(planet="wasp39b",
                                         chem_provider="picaso",
-                                        tp_mode="isothermal", T_iso=900.0))
+                                        tp_mode="guillot"))
     assert cp2["co_ratio"] == 0.50             # mid-cell
     cp3 = forward.canonical_params(_p())
     assert cp3["co_ratio"] == round(forward.CO_BASELINE, 6)

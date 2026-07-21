@@ -67,7 +67,7 @@ N_TRANSITS_CAP = 500
 # very signal being scored. Must track forward.TP_PARAM_NAMES +
 # forward.CLOUD_FISHER_PARAMS + forward.MIE_FISHER_PARAMS.
 _NUISANCE_JAC = frozenset(
-    {"T_iso", "Tirr", "Tint", "Tint_cl", "log_kappa", "log_gamma", "lnR0",
+    {"Tirr", "Tint", "Tint_cl", "log_kappa", "log_gamma", "lnR0",
      "log_kappa_cloud", "alpha_cloud",
      "mie_log_rg", "mie_sigmag", "mie_log_mmr"})
 
@@ -364,6 +364,7 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     # extend at most one native pixel past the bin span, hence the margin.
     r_native = mode_result.get("r_native")
     lsf_applied = False
+    _lsf_skip_note = None
     jac_rows = None
     if "jac" in model:
         jac_rows = [np.asarray(row)[order] for row in model["jac"]]
@@ -397,6 +398,17 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
                                                    r_nat, b_lo, b_hi,
                                                    weight=flux_model)
                         for row in jac_rows]
+    else:
+        # Fail loud, never silently: a missing native-R means the depth,
+        # removed-molecule depth, and Jacobians go UNBLURRED. That is only safe
+        # for high-R modes -- every shipped low-R mode (PRISM, LRS, SOSS) ships
+        # a dispersion file, so a None here on such a mode signals a refdata or
+        # config problem, not a no-op (standing loud-error rule). Surfaced via
+        # the result's own warning channel below (same as the <3-cycle notice).
+        _reason = mode_result.get("r_native_source") or "no native-R exported"
+        _lsf_skip_note = (f"native-R LSF NOT applied ({_reason}); depth and "
+                          "Jacobians unblurred -- safe only for high-R modes, a "
+                          "refdata/config error on a low-R mode")
 
     edges = noise_mod.make_bins(lo, hi, R_bin)
     op = binning.build_operator(wl_pix, flux_pix, edges,
@@ -464,6 +476,8 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
     if n_cyc_in < 3.0:
         warnings[f"only {n_cyc_in:.1f} integration cycles fit in transit "
                  "(PandExo enforces >= 3 by shortening the ramp)"] = True
+    if _lsf_skip_note:
+        warnings[_lsf_skip_note] = True
 
     keep = op["keep"]
     return dict(

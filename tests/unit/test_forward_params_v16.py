@@ -45,7 +45,7 @@ def _pf(path, **kw):
 
 
 def _p(**kw):
-    base = dict(planet="wasp39b", tp_mode="isothermal", T_iso=900.0,
+    base = dict(planet="wasp39b", tp_mode="guillot",
                 kzz_mode="const", kzz_const=1.0e9)
     base.update(kw)
     return base
@@ -69,15 +69,12 @@ def test_file_mode_has_no_tp_fisher_rows(tmp_path):
     cp = forward.canonical_params(_pf(p, fisher_params=["lnZ", "lnKzz"]))
     assert cp["fisher_params"] == ["lnKzz", "lnZ"]
     with pytest.raises(ValueError, match="NO T-P Fisher rows"):
-        forward.canonical_params(_pf(p, fisher_params=["T_iso"]))
-    with pytest.raises(ValueError, match="NO T-P Fisher rows"):
         forward.canonical_params(_pf(p, fisher_params=["Tirr"]))
 
 
 def test_file_mode_zeroes_parametric_tp_knobs(tmp_path):
     p = _table(tmp_path)
-    cp = forward.canonical_params(_pf(p, T_iso=1234.0, Tirr=1560.0))
-    assert cp["T_iso"] == 0.0
+    cp = forward.canonical_params(_pf(p, Tirr=1560.0))
     assert cp["Tirr"] == cp["Tint"] == cp["log_kappa"] == cp["log_gamma"] == 0.0
     # outside file mode the file identity is empty (cache hygiene)
     cp_iso = forward.canonical_params(_p())
@@ -298,8 +295,8 @@ def test_every_freeable_param_has_display_metadata():
 def test_science_mode_gating():
     with pytest.raises(ValueError, match="science_mode"):
         forward.canonical_params(_p(science_mode="reflection"))
-    with pytest.raises(ValueError, match="featureless blackbody"):
-        forward.canonical_params(_p(science_mode="emission"))
+    # isothermal was removed, so the old emission+isothermal "featureless
+    # blackbody" refusal is gone; guillot emission is the normal path
     cp = forward.canonical_params(_p(science_mode="emission",
                                      tp_mode="guillot", Tirr=1560.0))
     assert cp["science_mode"] == "emission"

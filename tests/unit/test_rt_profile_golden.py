@@ -9,7 +9,7 @@ from jwst_tool import forward
 
 
 def _cp(**kw):
-    base = dict(planet="wasp39b", tp_mode="isothermal", T_iso=900.0,
+    base = dict(planet="wasp39b", tp_mode="guillot",
                 kzz_mode="const", kzz_const=1.0e9)
     base.update(kw)
     return forward.canonical_params(base)

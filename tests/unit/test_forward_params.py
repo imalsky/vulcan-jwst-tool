@@ -16,7 +16,7 @@ from jwst_tool import forward, planets
 
 
 def _p(**kw):
-    base = dict(planet="wasp39b", tp_mode="isothermal", T_iso=900.0,
+    base = dict(planet="wasp39b", tp_mode="guillot",
                 kzz_mode="const", kzz_const=1.0e9)
     base.update(kw)
     return base
@@ -73,15 +73,20 @@ def test_gcm_baseline_and_scale_are_removed():
     assert all("has_gcm_baseline" not in pd for pd in planets.PLANETS.values())
 
 
-def test_default_tp_mode_is_isothermal():
-    # the old default was the removed GCM baseline; it must now be explicit
-    assert forward.canonical_params(dict(planet="wasp39b"))["tp_mode"] == "isothermal"
+def test_default_tp_mode_is_guillot():
+    # isothermal (and the older GCM baseline) were removed; Guillot is the
+    # default and every profile must be explicit
+    assert forward.canonical_params(dict(planet="wasp39b"))["tp_mode"] == "guillot"
 
 
-def test_isothermal_guillot_const_are_accepted():
-    for tp, extra in (("isothermal", dict(T_iso=1100.0)),
-                      ("guillot", dict(Tirr=1560.0, Tint=100.0,
-                                       log_kappa=-2.3, log_gamma=-1.0))):
+def test_isothermal_is_removed():
+    with pytest.raises(ValueError, match="isothermal profile"):
+        forward.canonical_params(_p(tp_mode="isothermal", T_iso=1100.0))
+
+
+def test_guillot_const_are_accepted():
+    for tp, extra in (("guillot", dict(Tirr=1560.0, Tint=100.0,
+                                       log_kappa=-2.3, log_gamma=-1.0)),):
         cp = forward.canonical_params(_p(tp_mode=tp, **extra))
         assert cp["tp_mode"] == tp
         assert cp["kzz_mode"] == "const"
@@ -174,7 +179,7 @@ def test_fisher_works_photo_off_and_validates_names():
     with pytest.raises(ValueError, match="unknown Fisher parameter"):
         forward.canonical_params(_p(fisher_params=["lnFoo"]))
     with pytest.raises(ValueError, match="unknown Fisher parameter"):
-        forward.canonical_params(_p(fisher_params=["Tirr"]))  # guillot-only
+        forward.canonical_params(_p(fisher_params=["Tint_cl"]))  # climate-only
 
 
 def test_jac_method_default_fd_and_validated():
@@ -190,7 +195,7 @@ def test_jac_method_default_fd_and_validated():
 def test_jac_method_ad_requires_photo_on():
     # the warm-jvp AD rows are validated only in the photo-on regime; FD
     # keeps working photo-off (previous test), AD does not
-    cp = forward.canonical_params(_p(fisher_params=["lnKzz", "T_iso"],
+    cp = forward.canonical_params(_p(fisher_params=["lnKzz", "Tirr"],
                                      jac_method="ad"))
     assert cp["jac_method"] == "ad"
     with pytest.raises(ValueError, match="photo-on"):

@@ -123,8 +123,8 @@ atmosphere you configure:
    with [VULCAN](https://github.com/exoclime/VULCAN) (run through its JAX
    port VULCAN-JAX), or PICASO chemical-equilibrium tables (fast, no
    photochemistry, so no SO2). Second the **temperature profile** that
-   chemistry runs on: isothermal, Guillot, your own table, or a PICASO
-   radiative-convective climate solve -- all four available under EITHER
+   chemistry runs on: Guillot, your own table, or a PICASO
+   radiative-convective climate solve -- all available under EITHER
    engine, so VULCAN photochemistry can run on a PICASO-computed climate
    profile. A solve that cannot pass its quality gate errors loudly
    instead of returning a wrong spectrum.
@@ -346,7 +346,7 @@ def _watch_proc(proc, on_line, on_tick, tick_s: float = 1.0) -> None:
 
 # default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
-                   "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
+                   "Tirr": 50.0, "Tint": 50.0,
                    "Tint_cl": 50.0,
                    "log_kappa": 0.30, "log_gamma": 0.30,
                    "log_kappa_cloud": 0.30, "alpha_cloud": 0.50,
@@ -401,7 +401,8 @@ with st.sidebar:
         else "Custom planet …",
         help="Every planet runs the same validated chemistry+RT machinery; the "
              "system identity (gravity, radii, star, orbit, UV spectrum) is "
-             "swapped in. The T-P profile is set below (isothermal or Guillot).")
+             "swapped in. The T-P profile is set below (Guillot, table, or "
+             "climate).")
     pdef = planets.PLANETS.get(planet_key, planets.CUSTOM_DEFAULTS)
     st.caption(pdef["note"] if planet_key in planets.PLANETS
                else "Starts from WASP-39 b values, edit everything below.")
@@ -529,6 +530,212 @@ with st.sidebar:
                    "table lookups, and there is no way to carry an exact "
                    "derivative through a table the way AD does through "
                    "VULCAN's equations.")
+    # --- Science goal + Fisher controls, placed by the FD/AD choice they
+    # depend on. The constraint/Fisher MENUS depend on selections made further
+    # down the sidebar (T-P mode, cloud/Mie decks, condensation, extra
+    # molecules); those are read from session_state -- the value persisted from
+    # the previous rerun. Streamlit reruns top-to-bottom on every interaction,
+    # so the menus refresh one interaction after such a change; the model run
+    # below always uses the live widget values.
+    _tp_ss = st.session_state.get(_k("tp"), "guillot")
+    if _tp_ss not in forward.TP_PARAM_NAMES:
+        _tp_ss = "guillot"
+    _cloud_ss = bool(st.session_state.get(K("cloud"), False))
+    _mie_ss = str(st.session_state.get(K("miec"), "") or "")
+    _conden_ss = bool(st.session_state.get(K("conden"), False))
+    _extra_ss = list(st.session_state.get(K(f"xmols_{chem_provider}"), []) or [])
+    # Freeable parameters per engine/mode. Under PICASO + climate, C/O
+    # (dlnCO) is NOT offered: climate composition sits exactly on a
+    # chemistry-table node where no trustworthy C/O derivative exists
+    # (canonical_params refuses it too -- the menu just spares the user the
+    # error).
+    if _pic:
+        _chem_free = (["lnZ"] if _tp_ss == "picaso_climate"
+                      else ["lnZ", "dlnCO"])
+    else:
+        _chem_free = list(forward.CHEM_PARAM_NAMES)
+    avail_free = _chem_free + forward.TP_PARAM_NAMES[_tp_ss]
+    if _cloud_ss:                        # v16: cloud-deck marginalization
+        avail_free = avail_free + list(forward.CLOUD_FISHER_PARAMS)
+    if _mie_ss:                  # v16: Mie-deck marginalization
+        avail_free = avail_free + list(forward.MIE_FISHER_PARAMS)
+    mol_options = forward.active_molecules(
+        {"chem_provider": chem_provider, "extra_mols": _extra_ss})
+
+    st.divider()
+    st.markdown("### Science goal")
+
+    with st.expander("Goal", expanded=True):
+        if _conden_ss:
+            st.session_state[K("goal")] = "detect"
+        goal = st.radio(
+            "Goal", ["detect", "constrain"], horizontal=True, key=K("goal"),
+            disabled=_conden_ss,
+            format_func={"detect": "Detect a molecule",
+                         "constrain": "Constrain a parameter"}.get,
+            help="Detecting a molecule scores the significance of its "
+                 "presence, the Δχ² between the spectrum with and without "
+                 "it. Constraining a parameter forecasts how tightly "
+                 "metallicity, C/O, Kzz, or a temperature could be "
+                 "measured, via a Fisher forecast whose Jacobian uses the "
+                 "differentiation method selected above. Constraints cost "
+                 "minutes per freed parameter.")
+        if _conden_ss:
+            goal = "detect"
+            st.caption(
+                "Condensation is detection-only: parameter constraints need "
+                "d(spectrum)/d(parameter), and no differentiation method is "
+                "valid through the condensation pin (see the condensation "
+                "note above).")
+        goal_param, target_prec, marginalize = None, None, True
+        if goal == "detect":
+            # SO2 is the headline W39b science under VULCAN; the equilibrium
+            # provider has no SO2, so its default detection target is H2O
+            _mol_default = "SO2" if "SO2" in mol_options else "H2O"
+            target_mol = st.selectbox(
+                "Detect molecule", mol_options,
+                index=mol_options.index(_mol_default),
+                key=K(f"mol_{chem_provider}_" + "_".join(sorted(_extra_ss))))
+        else:
+            target_mol = None
+            goal_param = st.selectbox(
+                "Constrain parameter", avail_free,
+                key=K(f"gp_{chem_provider}_{_tp_ss}_{int(_cloud_ss)}_"
+                      f"{int(bool(_mie_ss))}"),
+                format_func=lambda n: forward.PARAM_LABELS[n],
+                help="By default the constraint is marginalized over the other "
+                     "free parameters (Fisher forecast section) and a "
+                     "reference-radius nuisance -- an honest joint-fit "
+                     "uncertainty. Uncheck marginalization below to condition "
+                     "on the others instead (optimistic).")
+            marginalize = st.checkbox(
+                "Marginalize over the other parameters", value=True,
+                key=K("marg"),
+                help="On (default, recommended): the joint-fit Cramér-Rao "
+                     "bound, marginalized over the other free parameters plus a "
+                     "reference-radius nuisance -- a realistic retrieval "
+                     "uncertainty. Off: every other parameter is held FIXED and "
+                     "the forecast conditions on them, an OPTIMISTIC lower bound "
+                     "that is NOT a real retrieval uncertainty.")
+            if not marginalize:
+                st.warning(
+                    "Marginalization OFF: the forecast holds every other "
+                    "parameter fixed and reports a conditional (others-known) "
+                    "bound. This is optimistic and NOT a realistic retrieval "
+                    "uncertainty -- read it only as a best-case sensitivity. "
+                    "Leave it on unless you specifically want that.")
+            unit = forward.PARAM_UNITS[goal_param]
+            # label uses the unit when there is one (dex / K), else the bare
+            # symbol -- C/O is a dimensionless number ratio
+            _tgt_lbl = (f"Target precision (±{unit})" if unit else
+                        f"Target precision (±{forward.PARAM_SYMBOLS[goal_param]})")
+            if unit == "K":
+                target_prec = st.number_input(_tgt_lbl, 5.0, 500.0,
+                                              _TARGET_DEFAULT[goal_param], 5.0,
+                                              key=K(f"tgt_{goal_param}"))
+            else:
+                target_prec = st.number_input(_tgt_lbl, 0.01, 3.0,
+                                              _TARGET_DEFAULT[goal_param], 0.01,
+                                              key=K(f"tgt_{goal_param}"))
+        target_sig = st.number_input(
+            "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"))
+
+    with st.expander("Fisher forecast"):
+        if _conden_ss:
+            st.caption(
+                "Unavailable with condensation on: the Fisher forecast "
+                "needs d(spectrum)/d(parameter), and no differentiation "
+                "method is valid through the condensation pin. Turn "
+                "condensation off to free parameters.")
+            fisher_params = []
+        else:
+            st.caption(
+                "Expected 1σ constraints on atmosphere parameters from "
+                "this observation, a linearized retrieval (Cramér-Rao "
+                "bound) built from the spectrum's parameter derivatives"
+                + (" via finite differences of the equilibrium tables. "
+                   "Under PICASO each composition or temperature row is a "
+                   "handful of fast table lookups plus the radiative "
+                   "transfer -- well under a minute; a climate T_int row "
+                   "re-runs the climate a few times and takes several "
+                   "minutes. There is no MCMC and there are no priors."
+                   if _pic else
+                   " using the **differentiation method selected at the "
+                   "top** of the sidebar. With finite differences, a "
+                   "composition row re-solves the chemistry four times "
+                   "from scratch and takes about 6 to 8 minutes, and a "
+                   "Kzz or temperature row adds four cold solves at about "
+                   "1 minute each (3 to 5 minutes per row). With AD, each "
+                   "row is one warm-started derivative and takes about 1 "
+                   "to 2 minutes. There is no MCMC and there are no "
+                   "priors."))
+            if goal == "constrain" and marginalize:
+                # defaults FILTERED by the live menu and the key carries the
+                # provider (v18.1): under picaso lnKzz is not an option, and
+                # Streamlit hard-raises on a default outside the options --
+                # an unfiltered default crashed every constrain-goal render
+                # after switching to the PICASO engine.
+                fisher_extra = st.multiselect(
+                    "Jointly free parameters", avail_free,
+                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
+                             if p in avail_free],
+                    key=K(f"fx_{chem_provider}_{_tp_ss}_{int(_cloud_ss)}_"
+                          f"{int(bool(_mie_ss))}"),
+                    format_func=lambda n: forward.PARAM_LABELS[n],
+                    help="The goal parameter is always included. More free "
+                         "parameters = a more honest (wider) forecast; each "
+                         "adds minutes of solves (see above).")
+                fisher_params = sorted(set(fisher_extra) | {goal_param})
+            elif goal == "constrain":
+                # marginalization turned OFF in the Goal section: free only the
+                # constraint parameter (condition on everything else).
+                st.caption(
+                    "Marginalization is off (Goal section): only the "
+                    "constraint parameter is freed; every other parameter is "
+                    "held fixed, so this is the optimistic conditional bound.")
+                fisher_params = [goal_param]
+            else:
+                do_fisher = st.checkbox(
+                    "Compute parameter constraints too", value=False,
+                    key=K("dofish"),
+                    help=("Adds constraint rows. Under the PICASO engine "
+                          "each row is a handful of fast table lookups "
+                          "plus the radiative transfer -- well under a "
+                          "minute per parameter (a climate T_int row is "
+                          "the exception: it re-runs the climate a few "
+                          "times, several minutes)." if _pic else
+                          "Adds Jacobian rows by the method selected at "
+                          "the top: FD ~6-8 min per composition parameter "
+                          "and ~3-5 min per Kzz/T parameter "
+                          "(photochemistry on or off); AD ~1-2 min per "
+                          "row (photochemistry on)."))
+                fisher_params = st.multiselect(
+                    "Free parameters", avail_free,
+                    key=K(f"fp_{chem_provider}_{_tp_ss}_{int(_cloud_ss)}_"
+                          f"{int(bool(_mie_ss))}"),
+                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
+                             if p in avail_free],
+                    format_func=lambda n: forward.PARAM_LABELS[n],
+                    ) if do_fisher else []
+            # Loud slow-path flag: finite differences re-solve the chemistry per
+            # row, so freeing many parameters can take a long time -- point the
+            # user at AD before they launch a multi-hour run (AD is table-only
+            # for picaso, so this only applies to the VULCAN engine).
+            if fisher_params and jac_method == "fd" and not _pic:
+                _n_comp = sum(p in ("lnZ", "dlnCO") for p in fisher_params)
+                _n_theta = sum(p in ("lnKzz", "Tirr", "Tint", "log_kappa",
+                                     "log_gamma") for p in fisher_params)
+                _est_min = _n_comp * 7 + _n_theta * 4
+                if _est_min >= 20:
+                    st.warning(
+                        f"Finite differences with {len(fisher_params)} free "
+                        f"parameters is slow: roughly {_est_min}-"
+                        f"{int(_est_min * 1.4)} min (each composition row "
+                        "re-solves the chemistry 4x, ~6-8 min; each Kzz/T row "
+                        "~3-5 min). Switch the differentiation method to AD at "
+                        "the top (~1-2 min/row, photochemistry forced on) or "
+                        "free fewer parameters.")
+
     st.markdown("### PICASO chemistry" if _pic else "### VULCAN chemistry")
     if not _pic:
         st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward "
@@ -537,34 +744,29 @@ with st.sidebar:
                    "also sets the ExoJAX radiative transfer below.")
 
     with st.expander("Atmosphere structure, T-P profile (shared with RT)"):
-        _tp_opts = (["guillot", "file", "picaso_climate"]
-                    if science_mode == "emission"
-                    else ["isothermal", "guillot", "file", "picaso_climate"])
+        _tp_opts = ["guillot", "file", "picaso_climate"]
         if st.session_state.get(_k("tp")) not in _tp_opts:
             st.session_state[_k("tp")] = _tp_opts[0]
         tp_mode = st.selectbox(
             "T-P profile", _tp_opts, index=0,
             key=_k("tp"),
-            format_func={"isothermal": "Isothermal",
-                         "guillot": "Guillot (2010)",
+            format_func={"guillot": "Guillot (2010)",
                          "file": "Tabulated table (T-P, optional Kzz)",
                          "picaso_climate":
                              "PICASO radiative-convective (climate solve)"}.get,
             help="Sets the temperature the chemistry AND the radiative "
-                 "transfer see. Four choices: isothermal, Guillot, an "
+                 "transfer see. Three choices: a Guillot analytic profile, an "
                  "explicit tabulated table you provide, or a PICASO "
                  "radiative-convective climate solve that computes the "
                  "profile self-consistently from the stellar irradiation "
                  "(a GCM profile is never silently substituted; a tabulated "
                  "table also sets the hydrostatic grid and the equilibrium "
-                 "initialization).")
+                 "initialization). A globally isothermal profile was removed: "
+                 "it holds the deep CO/CH4/NH3 quench region at a single "
+                 "temperature and biases disequilibrium abundances.")
         tp_kwargs = {}
         tp_file, tp_file_path, tp_file_ok = "", None, True
-        if tp_mode == "isothermal":
-            tp_kwargs["T_iso"] = st.number_input(
-                "T_iso (K)", 400.0, 2500.0,
-                float(np.clip(teq, 400.0, 2500.0)), 25.0, key=_k("tiso"))
-        elif tp_mode == "guillot":
+        if tp_mode == "guillot":
             tirr0 = float(np.clip(round(teq * np.sqrt(2.0) / 10) * 10,
                                   800.0, 2500.0))
             tp_kwargs["Tirr"] = st.number_input(
@@ -1239,153 +1441,6 @@ with st.sidebar:
                  "value every validated result here used, 0.2 is ExoJAX's "
                  "own default.")
 
-    # Freeable parameters per engine/mode. Under PICASO + climate, C/O
-    # (dlnCO) is NOT offered: climate composition sits exactly on a
-    # chemistry-table node where no trustworthy C/O derivative exists
-    # (canonical_params refuses it too -- the menu just spares the user the
-    # error).
-    if _pic:
-        _chem_free = (["lnZ"] if tp_mode == "picaso_climate"
-                      else ["lnZ", "dlnCO"])
-    else:
-        _chem_free = list(forward.CHEM_PARAM_NAMES)
-    avail_free = _chem_free + forward.TP_PARAM_NAMES[tp_mode]
-    if cloud_on:                        # v16: cloud-deck marginalization
-        avail_free = avail_free + list(forward.CLOUD_FISHER_PARAMS)
-    if mie_condensate:                  # v16: Mie-deck marginalization
-        avail_free = avail_free + list(forward.MIE_FISHER_PARAMS)
-    mol_options = forward.active_molecules(
-        {"chem_provider": chem_provider, "extra_mols": extra_mols})
-
-    st.divider()
-    st.markdown("### Science goal")
-
-    with st.expander("Goal", expanded=True):
-        if use_condense:
-            st.session_state[K("goal")] = "detect"
-        goal = st.radio(
-            "Goal", ["detect", "constrain"], horizontal=True, key=K("goal"),
-            disabled=use_condense,
-            format_func={"detect": "Detect a molecule",
-                         "constrain": "Constrain a parameter"}.get,
-            help="Detecting a molecule scores the significance of its "
-                 "presence, the Δχ² between the spectrum with and without "
-                 "it. Constraining a parameter forecasts how tightly "
-                 "metallicity, C/O, Kzz, or a temperature could be "
-                 "measured, via a Fisher forecast whose Jacobian uses the "
-                 "differentiation method selected above. Constraints cost "
-                 "minutes per freed parameter.")
-        if use_condense:
-            goal = "detect"
-            st.caption(
-                "Condensation is detection-only: parameter constraints need "
-                "d(spectrum)/d(parameter), and no differentiation method is "
-                "valid through the condensation pin (see the condensation "
-                "note above).")
-        goal_param, target_prec = None, None
-        if goal == "detect":
-            # SO2 is the headline W39b science under VULCAN; the equilibrium
-            # provider has no SO2, so its default detection target is H2O
-            _mol_default = "SO2" if "SO2" in mol_options else "H2O"
-            target_mol = st.selectbox(
-                "Detect molecule", mol_options,
-                index=mol_options.index(_mol_default),
-                key=K(f"mol_{chem_provider}_" + "_".join(sorted(extra_mols))))
-        else:
-            target_mol = None
-            goal_param = st.selectbox(
-                "Constrain parameter", avail_free,
-                key=K(f"gp_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
-                      f"{int(bool(mie_condensate))}"),
-                format_func=lambda n: forward.PARAM_LABELS[n],
-                help="Constraint is marginalized over the other free parameters "
-                     "(Fisher forecast section) and a reference-radius nuisance.")
-            unit = forward.PARAM_UNITS[goal_param]
-            # label uses the unit when there is one (dex / K), else the bare
-            # symbol -- C/O is a dimensionless number ratio
-            _tgt_lbl = (f"Target precision (±{unit})" if unit else
-                        f"Target precision (±{forward.PARAM_SYMBOLS[goal_param]})")
-            if unit == "K":
-                target_prec = st.number_input(_tgt_lbl, 5.0, 500.0,
-                                              _TARGET_DEFAULT[goal_param], 5.0,
-                                              key=K(f"tgt_{goal_param}"))
-            else:
-                target_prec = st.number_input(_tgt_lbl, 0.01, 3.0,
-                                              _TARGET_DEFAULT[goal_param], 0.01,
-                                              key=K(f"tgt_{goal_param}"))
-        target_sig = st.number_input(
-            "Significance level (σ)", 1.0, 10.0, 3.0, 0.5, key=K("tsig"))
-
-    with st.expander("Fisher forecast"):
-        if use_condense:
-            st.caption(
-                "Unavailable with condensation on: the Fisher forecast "
-                "needs d(spectrum)/d(parameter), and no differentiation "
-                "method is valid through the condensation pin. Turn "
-                "condensation off to free parameters.")
-            fisher_params = []
-        else:
-            st.caption(
-                "Expected 1σ constraints on atmosphere parameters from "
-                "this observation, a linearized retrieval (Cramér-Rao "
-                "bound) built from the spectrum's parameter derivatives"
-                + (" via finite differences of the equilibrium tables. "
-                   "Under PICASO each composition or temperature row is a "
-                   "handful of fast table lookups plus the radiative "
-                   "transfer -- well under a minute; a climate T_int row "
-                   "re-runs the climate a few times and takes several "
-                   "minutes. There is no MCMC and there are no priors."
-                   if _pic else
-                   " using the **differentiation method selected at the "
-                   "top** of the sidebar. With finite differences, a "
-                   "composition row re-solves the chemistry four times "
-                   "from scratch and takes about 6 to 8 minutes, and a "
-                   "Kzz or temperature row adds four cold solves at about "
-                   "1 minute each (3 to 5 minutes per row). With AD, each "
-                   "row is one warm-started derivative and takes about 1 "
-                   "to 2 minutes. There is no MCMC and there are no "
-                   "priors."))
-            if goal == "constrain":
-                # defaults FILTERED by the live menu and the key carries the
-                # provider (v18.1): under picaso lnKzz is not an option, and
-                # Streamlit hard-raises on a default outside the options --
-                # an unfiltered default crashed every constrain-goal render
-                # after switching to the PICASO engine.
-                fisher_extra = st.multiselect(
-                    "Jointly free parameters", avail_free,
-                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
-                             if p in avail_free],
-                    key=K(f"fx_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
-                          f"{int(bool(mie_condensate))}"),
-                    format_func=lambda n: forward.PARAM_LABELS[n],
-                    help="The goal parameter is always included. More free "
-                         "parameters = a more honest (wider) forecast; each "
-                         "adds minutes of solves (see above).")
-                fisher_params = sorted(set(fisher_extra) | {goal_param})
-            else:
-                do_fisher = st.checkbox(
-                    "Compute parameter constraints too", value=False,
-                    key=K("dofish"),
-                    help=("Adds constraint rows. Under the PICASO engine "
-                          "each row is a handful of fast table lookups "
-                          "plus the radiative transfer -- well under a "
-                          "minute per parameter (a climate T_int row is "
-                          "the exception: it re-runs the climate a few "
-                          "times, several minutes)." if _pic else
-                          "Adds Jacobian rows by the method selected at "
-                          "the top: FD ~6-8 min per composition parameter "
-                          "and ~3-5 min per Kzz/T parameter "
-                          "(photochemistry on or off); AD ~1-2 min per "
-                          "row (photochemistry on)."))
-                fisher_params = st.multiselect(
-                    "Free parameters", avail_free,
-                    key=K(f"fp_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
-                          f"{int(bool(mie_condensate))}"),
-                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
-                             if p in avail_free],
-                    format_func=lambda n: forward.PARAM_LABELS[n],
-                    ) if do_fisher else []
-
     st.divider()
     st.markdown("### Instrument & noise")
     st.caption(f"The JWST measurement itself: which modes, how many {_evw}s, "
@@ -1557,8 +1612,7 @@ else:
 if rt_dit_res < 1.0:                 # finer broadening grid = slower opa builds
     base_min += 0.3 * (5 + len(extra_mols))
 # cool columns (<~900 K) converge much more slowly (a W107b run took ~5 min)
-t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
-          "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0),
+t_char = {"guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0),
           "file": float(teq),
           "picaso_climate": float(teq)}.get(tp_mode, 1100.0)
 if t_char < 900.0 and not _pic:

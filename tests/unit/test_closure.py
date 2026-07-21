@@ -100,19 +100,19 @@ def test_jacobian_row_matches_finite_difference():
     def quiet(_s):
         return None
 
-    T0 = 1100.0
-    base = dict(planet="wasp39b", tp_mode="isothermal",
-                T_iso=T0, fisher_params=["T_iso"], use_photo=True)
+    T0 = 1560.0
+    base = dict(planet="wasp39b", tp_mode="guillot",
+                Tirr=T0, fisher_params=["Tirr"], use_photo=True)
     if forward.load_result(base) is None:
         forward.run_model(base, log=quiet)
     m0 = forward.load_result(base)
     names = [str(x) for x in m0["jac_names"]]
-    row = np.asarray(m0["jac"][names.index("T_iso")])
+    row = np.asarray(m0["jac"][names.index("Tirr")])
 
     h = 2.0                                          # K, small vs T ~ 1000 K
     d = {}
     for s, tag in ((+h, "p"), (-h, "m")):
-        p = dict(base, T_iso=T0 + float(s), fisher_params=[])
+        p = dict(base, Tirr=T0 + float(s), fisher_params=[])
         if forward.load_result(p) is None:
             forward.run_model(p, log=quiet)
         d[tag] = np.asarray(forward.load_result(p)["depth"])

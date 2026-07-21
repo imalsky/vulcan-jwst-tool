@@ -62,8 +62,14 @@ def main():
     from jwst_tool import picaso_chem as pc
     from jwst_tool import picaso_env as pe
 
+    # OFFLINE diagnostic: the isothermal tp_mode was removed from the tool, so
+    # canonical_params runs under guillot here. The native/tool RT below is
+    # still compared on the SAME manually-built isothermal T_ISO column
+    # (p_bar + T arrays constructed directly), so the parity state is unchanged;
+    # only the canonical_params tp_mode label differs. (REPORT.md still describes
+    # the isothermal comparison state.)
     cp = forward.canonical_params(dict(
-        chem_provider="picaso", tp_mode="isothermal", T_iso=T_ISO,
+        chem_provider="picaso", tp_mode="guillot",
         met_x_solar=MET, co_ratio=CO))
 
     # --- the ONE shared state ----------------------------------------------

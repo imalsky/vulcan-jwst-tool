@@ -32,7 +32,6 @@ Atmosphere-structure knobs (all consumed by the same validated pipeline hooks th
 retrieval framework uses):
 
     T-P profile (tp_mode) -- explicit profiles only:
-      "isothermal"  T(P) = T_iso  (on-graph tp_eval hook)
       "guillot"     ExoJax atmprof_Guillot(Tirr, Tint, log10 kappa, log10 gamma)
                     with f=0.25 and the planet's surface gravity (on-graph)
       "file"        (v16) an EXPLICIT tabulated T(P) [+ Kzz(P)] table: the
@@ -180,7 +179,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # feature, NH3 the cool (<~900 K) nitrogen chemistry, OCS the second
 # equilibrium sulfur carrier (nu3 ~4.85 um; the SNCHO network token is COS).
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3", "OCS"]
-_VERSION = 20  # model_cache buster: bump whenever the physics or the
+_VERSION = 21  # model_cache buster: bump whenever the physics or the
                # canonical key set changes (invalidates all cached spectra).
                # Per-version history lives in notes.md. v18 = the PICASO
                # equilibrium provider + picaso_climate T-P mode; v19 = the
@@ -238,7 +237,7 @@ CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
 # VULCAN-JAX steady_state_reaction_sensitivity /
 # steady_state_input_sensitivity (validated 0.2-0.8% there).
 FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.10, "lnKzz": 0.10,      # ln-space steps
-            "T_iso": 10.0, "Tirr": 10.0, "Tint": 10.0,      # Kelvin
+            "Tirr": 10.0, "Tint": 10.0,                     # Kelvin
             # Tint_cl: the climate-mode internal temperature; each FD point
             # is a FULL certified climate re-run (spike 2026-07-20: the
             # solve is bit-deterministic, repeat noise exactly 0 K, and the
@@ -354,20 +353,35 @@ PICASO_FD_STEPS = {"lnZ": 0.10, "dlnCO": 0.04}
 # VULCAN"). Composition under climate mode is EXACT-CK-NODE only (the CK
 # tables are per-node files with no interpolation); the converged profile is
 # cached per (climate inputs + refdata fingerprint) in picaso_climate.py.
-# climate_rcb (the radiative-convective-boundary guess, a layer index on the
-# 91-level climate grid) is an explicit MODEL ASSUMPTION, not just a solver
-# seed: measured on W39b defaults (2026-07-20), rcb 60 vs 65 both "converge"
-# but differ by up to 341 K below 0.4 bar with the boundary parked at the
-# guess -- the weakly-constrained deep-adiabat degeneracy of strongly
-# irradiated planets, which PICASO's stratification search does not resolve.
-# Layers above the RCB agree to ~2 K. It is cache-keyed and surfaced in the
-# GUI with this caveat; the Tint_cl FD row differentiates at FIXED rcb.
+# climate_rcb (a layer index on the 91-level climate grid) is a NUMERICAL SEED
+# -- PICASO's initial convective-zone guess (rcb_guess), NOT a physical model
+# parameter. PICASO grows/merges convective zones UPWARD but cannot shrink one
+# seeded too shallow (climate.py convective-growth loop), so a shallow seed
+# imposes a spurious convective region (the ~1 bar kink) that then passes every
+# a-posteriori check because PICASO forcibly put those layers on an adiabat.
+# What earlier notes called a "341 K deep-adiabat degeneracy" (rcb 60 vs 65) is
+# that documented INITIALIZATION FAILURE, not a physical degeneracy: PICASO's
+# own guidance initializes near the DEEPEST layer (rcb_guess ~83-85 for a
+# 91-level grid; official tutorial uses 85). Default is now the deep seed (85);
+# the value is still cache-keyed and the Tint_cl FD row differentiates at FIXED
+# seed until seed-independence is certified (run from 85 + a second bottom-only
+# guess, require agreement; PICASO 4.0 / Mukherjee+2023 climate paper).
 TINT_CL_RANGE = (50.0, 500.0)
 TINT_CL_DEFAULT = 200.0
 RFACV_CHOICES = (0.0, 0.5, 1.0)       # no / full-redistribution / dayside
-CLIMATE_RCB_RANGE = (10, 85)
-CLIMATE_RCB_DEFAULT = 60
 CLIMATE_N_LEVELS = 91
+# rcb_guess is a LAYER INDEX on the climate grid, so the deep seed must scale
+# WITH the grid, not be a hardcoded number: PICASO grows/merges convective
+# zones upward but cannot shrink one seeded too shallow, so we seed the bottom
+# few levels convective (PICASO's guidance / official tutorial = 85 on a
+# 91-level grid = the deepest CLIMATE_RCB_DEEP_MARGIN layers). Derive both the
+# default and the range top from CLIMATE_N_LEVELS so changing the grid keeps
+# the seed near the bottom automatically. The floor stays a shallow 10 so an
+# advanced user can still probe seed sensitivity (shallow seeds are refused by
+# the cert gate, not silently accepted).
+CLIMATE_RCB_DEEP_MARGIN = 6                            # convective layers below
+CLIMATE_RCB_DEFAULT = CLIMATE_N_LEVELS - CLIMATE_RCB_DEEP_MARGIN   # 85 @ 91
+CLIMATE_RCB_RANGE = (10, CLIMATE_N_LEVELS - 3)        # (10, 88) @ 91
 CLIMATE_P_SPAN_BAR = (1.0e-6, 300.0)  # solve grid (the equilibrium tables
                                       # start at 1e-6 bar -- pressure policy
                                       # in picaso_chem's module docstring)
@@ -418,7 +432,6 @@ T_WINDOW = (320.0, 2980.0)
 # file-mode forecasts condition on the profile (documented as optimistic).
 CHEM_PARAM_NAMES = ["lnZ", "dlnCO", "lnKzz"]
 TP_PARAM_NAMES = {
-    "isothermal": ["T_iso"],
     "guillot": ["Tirr", "Tint", "log_kappa", "log_gamma"],
     "file": [],
     # climate mode: ONE structure parameter, the internal temperature. It is
@@ -433,20 +446,20 @@ TP_PARAM_NAMES = {
 # symbols are [M/H] and log Kzz (never "ln", which would mislabel the base); C/O
 # is the absolute number ratio N_C/N_O (dimensionless, so no unit bracket).
 PARAM_SYMBOLS = {"lnZ": "[M/H]", "dlnCO": "C/O", "lnKzz": "log Kzz",
-                 "T_iso": "T_iso", "Tirr": "T_irr", "Tint": "T_int",
+                 "Tirr": "T_irr", "Tint": "T_int",
                  "Tint_cl": "T_int (climate)",
                  "log_kappa": "log κ_IR", "log_gamma": "log γ",
                  "log_kappa_cloud": "log κ_cloud", "alpha_cloud": "α_cloud",
                  "mie_log_rg": "log r_g", "mie_sigmag": "σ_g",
                  "mie_log_mmr": "log MMR"}
 PARAM_UNITS = {"lnZ": "dex", "dlnCO": "", "lnKzz": "dex",
-               "T_iso": "K", "Tirr": "K", "Tint": "K", "Tint_cl": "K",
+               "Tirr": "K", "Tint": "K", "Tint_cl": "K",
                "log_kappa": "dex", "log_gamma": "dex",
                "log_kappa_cloud": "dex", "alpha_cloud": "",
                "mie_log_rg": "dex(cm)", "mie_sigmag": "", "mie_log_mmr": "dex"}
 PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
                 "lnKzz": "Vertical mixing (Kzz)",
-                "T_iso": "Isothermal T", "Tirr": "Guillot T_irr",
+                "Tirr": "Guillot T_irr",
                 "Tint": "Guillot T_int", "log_kappa": "Guillot log κ_IR",
                 "log_gamma": "Guillot log γ",
                 "Tint_cl": "Climate internal T (full re-solve)",
@@ -460,7 +473,7 @@ PARAM_LABELS = {"lnZ": "Metallicity", "dlnCO": "C/O ratio",
 def param_axis(name: str) -> str:
     """Axis/column label for a parameter: 'Symbol [unit]', or bare 'Symbol' when
     it is dimensionless (C/O). Keeps every user-facing header on the standard
-    representation (e.g. '[M/H] [dex]', 'C/O', 'T_iso [K]')."""
+    representation (e.g. '[M/H] [dex]', 'C/O', 'T_irr [K]')."""
     u = PARAM_UNITS[name]
     return f"{PARAM_SYMBOLS[name]} [{u}]" if u else PARAM_SYMBOLS[name]
 
@@ -733,13 +746,13 @@ CONDEN_CFG = {
 
 
 def canonical_params(params: dict) -> dict:
-    tp_mode = str(params.get("tp_mode", "isothermal"))
+    tp_mode = str(params.get("tp_mode", "guillot"))
     if tp_mode not in TP_PARAM_NAMES:
         raise ValueError(
             f"unknown tp_mode {tp_mode!r} (choose from {list(TP_PARAM_NAMES)}). "
-            "The WASP-39b GCM 'baseline' mode was removed -- use an explicit "
-            "isothermal or Guillot profile, tp_mode='file' with an explicit "
-            "table (v16), or tp_mode='picaso_climate' (v18).")
+            "The WASP-39b GCM 'baseline' and the isothermal profile were removed "
+            "-- use a Guillot profile, tp_mode='file' with an explicit table "
+            "(v16), or tp_mode='picaso_climate' (v18).")
     provider = str(params.get("chem_provider", "vulcan"))
     if provider not in CHEM_PROVIDERS:
         raise ValueError(
@@ -764,12 +777,6 @@ def canonical_params(params: dict) -> dict:
         raise ValueError(
             f"unknown science_mode {science_mode!r}: choose 'transmission' "
             "(transit depth) or 'emission' (secondary-eclipse depth)")
-    if science_mode == "emission" and tp_mode == "isothermal":
-        raise ValueError(
-            "emission with an isothermal T-P is a featureless blackbody: "
-            "the day-side spectrum only carries molecular features through "
-            "the vertical temperature gradient. Choose tp_mode='guillot' "
-            "(set T_int and the opacity ratios) or 'file'.")
     planet = str(params.get("planet", "wasp39b"))
     if planet not in planets.PLANETS and planet != "custom":
         raise ValueError(f"unknown planet {planet!r}")
@@ -840,7 +847,6 @@ def canonical_params(params: dict) -> dict:
         # tables can never share an entry ("" outside file mode)
         "tp_file": tp_file,
         "tp_file_sha1": tp_file_sha1,
-        "T_iso": round(float(params.get("T_iso", 1100.0)), 2),
         "Tirr": round(float(params.get("Tirr", 1560.0)), 2),
         "Tint": round(float(params.get("Tint", 100.0)), 2),
         "log_kappa": round(float(params.get("log_kappa", -2.3)), 3),
@@ -1307,6 +1313,18 @@ def canonical_params(params: dict) -> dict:
             raise ValueError(
                 f"mie_log_mmr={cp['mie_log_mmr']} outside {MIE_LOG_MMR_RANGE} "
                 "(log10 condensate mass mixing ratio)")
+        if science_mode == "emission":
+            # The ExoJax emission solver (ArtEmisPure) is pure-absorption, so a
+            # Mie deck's scattering extinction would be counted as thermal
+            # absorption -- a conservative-scattering cloud would radiate like a
+            # blackbody instead of zero, faking a thermal source in a cloudy
+            # eclipse. Refuse upfront (loud) rather than return a wrong flux.
+            raise ValueError(
+                "mie_condensate is not supported with science_mode='emission': "
+                "Mie scattering cannot be treated by the pure-absorption "
+                "emission solver (it violates the conservative-scattering "
+                "zero-emission limit). Use transmission, or the absorbing "
+                "power-law cloud for emission.")
     else:                              # deck off: zero the knobs (cache hygiene)
         cp["mie_log_rg"] = cp["mie_sigmag"] = cp["mie_log_mmr"] = 0.0
     # --- science-mode hygiene + gating (v16 emission) ----------------------
@@ -1333,8 +1351,6 @@ def canonical_params(params: dict) -> dict:
         # model physics there and must stay in the cache key (v18).
         cp["star_teff"] = cp["star_logg"] = cp["star_feh"] = 0.0
     # drop fields inert for the chosen modes so they don't fragment the cache
-    if tp_mode != "isothermal":
-        cp["T_iso"] = 0.0
     if tp_mode != "guillot":
         cp["Tirr"] = cp["Tint"] = cp["log_kappa"] = cp["log_gamma"] = 0.0
     # --- Kzz profile mode (v16: const / Pfunc / JM16 / file) ----------------
@@ -1431,10 +1447,6 @@ def _build_tp(cp: dict, gs_cgs: float):
     import jax.numpy as jnp
 
     mode = cp["tp_mode"]
-    if mode == "isothermal":
-        def tp_eval(tp, p_bar):
-            return jnp.zeros_like(jnp.asarray(p_bar)) + tp[0]
-        return tp_eval, 1, [cp["T_iso"]], CHEM_PARAM_NAMES + ["T_iso"]
     if mode == "guillot":
         from exojax.atm.atmprof import atmprof_Guillot
 
@@ -1636,10 +1648,11 @@ def _assemble_chem(cp: dict, log, clim=None):
         # (S8 -> S8_l_s + particle properties + the certified convergence
         # recipe) is CONDEN_CFG.
         ovr.update(CONDEN_CFG)
-    # Structural baseline. Parametric modes (isothermal/guillot): isothermal
-    # structural baseline for EVERY planet -- the on-graph tp_eval supplies
-    # the actual T(P) for chemistry+RT, the structural profile only sets the
-    # hydrostatic grid + EQ init. File mode (v16): the tabulated profile IS
+    # Structural baseline. Guillot mode uses an isothermal STRUCTURAL baseline
+    # for EVERY planet (atm_type="isothermal" at a representative T) -- the
+    # on-graph tp_eval supplies the actual T(P) for chemistry+RT, the structural
+    # profile only sets the hydrostatic grid + EQ init. File mode (v16): the
+    # tabulated profile IS
     # the structure -- atm_type="file" re-grids it onto nz levels, T_base is
     # the profile, and the engine's default temperature path (tp_eval=None,
     # theta[3]=0) runs the chemistry exactly on it. Never a silent
@@ -1662,8 +1675,7 @@ def _assemble_chem(cp: dict, log, clim=None):
             f"rfacv={cp['rfacv']:g}, node {cp['picaso_ck_node']}), "
             f"UV = {cp['sflux']}")
     else:
-        T_struct = (cp["T_iso"] if cp["tp_mode"] == "isothermal"
-                    else cp["Tirr"] / np.sqrt(2.0))   # ~equilibrium T at f=0.25
+        T_struct = cp["Tirr"] / np.sqrt(2.0)   # guillot: ~equilibrium T at f=0.25
         ovr.update({"atm_type": "isothermal", "Tiso": float(T_struct)})
         log(f"[fwd] planet {cp['planet']}: isothermal structural baseline "
             f"{T_struct:.0f} K, UV = {cp['sflux']}")

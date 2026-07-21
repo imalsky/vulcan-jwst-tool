@@ -9,7 +9,7 @@ from jwst_tool import adjoint_diag, forward
 
 
 def _p(**kw):
-    base = dict(planet="wasp39b", tp_mode="isothermal", T_iso=900.0,
+    base = dict(planet="wasp39b", tp_mode="guillot",
                 kzz_mode="const", kzz_const=1.0e9)
     base.update(kw)
     return base
@@ -62,14 +62,14 @@ def test_adjoint_key_ignores_rt_only_knobs():
 def test_adjoint_key_tracks_chemistry_and_species():
     k0 = adjoint_diag.adjoint_key(_p(), "SO2")
     assert adjoint_diag.adjoint_key(_p(), "CH4") != k0
-    assert adjoint_diag.adjoint_key(_p(T_iso=1100.0), "SO2") != k0
+    assert adjoint_diag.adjoint_key(_p(Tirr=1100.0), "SO2") != k0
     assert adjoint_diag.adjoint_key(_p(co_ratio=1.5), "SO2") != k0
     assert adjoint_diag.adjoint_key(_p(use_photo=False), "SO2") != k0
     assert adjoint_diag.adjoint_key(_p(use_vm_mol=True), "SO2") != k0
 
 
 def test_load_result_missing_is_none():
-    assert adjoint_diag.load_result(_p(T_iso=871.23), "SO2") is None
+    assert adjoint_diag.load_result(_p(Tirr=871.23), "SO2") is None
 
 
 def test_run_adjoint_refuses_condensing_states():

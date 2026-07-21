@@ -51,7 +51,7 @@ def test_climate_key_fragments_on_inputs_and_tint_override():
 
 def test_climate_subset_refuses_outside_mode():
     with pytest.raises(ValueError):
-        pcl.climate_subset(_cp(tp_mode="isothermal"))
+        pcl.climate_subset(_cp(tp_mode="guillot"))
 
 
 # --- certificate revalidation on load ---------------------------------------

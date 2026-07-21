@@ -14,13 +14,19 @@ Contracts:
   can hide behind a "converged" flag); the convective zone must not reach the
   model top. The certificate is stored WITH the profile and revalidated on
   every cache load.
-* DETERMINISM + the rcb caveat -- the solve is bit-deterministic for
+* DETERMINISM + the rcb seed -- the solve is bit-deterministic for
   identical inputs (measured 2026-07-20: repeat and fresh-opacity reruns
-  differ by exactly 0 K), so the cache is exact. ``climate_rcb`` is a MODEL
-  ASSUMPTION, not a solver seed: rcb 60 vs 65 both certify but differ by up
-  to 341 K below ~0.4 bar (the weakly-constrained deep-adiabat degeneracy of
-  strongly irradiated planets; layers above the RCB agree to ~2 K). It is
-  cache-keyed; the Tint_cl FD row differentiates at FIXED rcb.
+  differ by exactly 0 K), so the cache is exact. ``climate_rcb`` is a
+  NUMERICAL SEED (PICASO's ``rcb_guess``, the initial convective-zone
+  topology), NOT a physical model parameter. PICASO grows convective zones
+  upward but cannot shrink one seeded too shallow, so a shallow seed imposes
+  a spurious convective region; the earlier "341 K rcb 60 vs 65 degeneracy"
+  is that documented initialization failure, not physics. The default seed is
+  now the deep one (85, per PICASO's guidance to initialize near the deepest
+  layer). It is still cache-keyed and the Tint_cl FD row differentiates at
+  FIXED seed until seed-independence is certified (rerun from 85 + a second
+  bottom-only guess and require agreement in the RCB location and the T-P over
+  the consumed range).
 * CACHE KEY -- ``climate_subset(cp)``: the climate inputs + the FULL climate
   reference-data content fingerprint (selected CK table, continuum DBs,
   adiabat table, wavenumber grid, config/version, stellar-grid manifest).
@@ -55,7 +61,9 @@ from jwst_tool import picaso_env as pe
 from jwst_tool.forward import (CHEM_P_SPAN_DYN, CLIMATE_N_LEVELS,
                                CLIMATE_P_SPAN_BAR, T_WINDOW)
 
-_CLIMATE_VERSION = 1
+_CLIMATE_VERSION = 2   # v2 (2026-07-21): rcb reinterpreted as a deep numerical
+                       # seed (default 60->85); invalidates every v1 cache built
+                       # under the shallow-seed shallow-RCB assumption.
 CLIMATE_CACHE = Path(_ins.OUTPUT_DIR) / "picaso_climate_cache"
 
 FLUX_BALANCE_MAX = 1.0e-3   # solver's own TOA metric |flux_net[0]/tidal[0]|

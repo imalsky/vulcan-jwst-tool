@@ -63,7 +63,7 @@ def test_results_render_with_synthetic_run():
         "T": np.full(30, 1100.0),
         "p_bar": np.logspace(-7, 0.8, 30),
         "params_json": json.dumps({"co_ratio": 0.549348,
-                                   "tp_mode": "isothermal"}),
+                                   "tp_mode": "guillot"}),
     }
     nb = 12
     result = {

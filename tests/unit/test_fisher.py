@@ -215,7 +215,7 @@ def test_display_sigma_units():
     with pytest.raises(ValueError, match="co_eval"):
         fisher.display_sigma("dlnCO", 0.1)
     # a plain temperature is unit-1 (K in, K out)
-    assert fisher.display_sigma("T_iso", 42.0) == 42.0
+    assert fisher.display_sigma("Tirr", 42.0) == 42.0
 
 
 def test_conditional_sigmas_bound_marginalized():
