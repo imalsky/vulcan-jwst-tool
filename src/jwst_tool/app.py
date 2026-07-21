@@ -2546,6 +2546,12 @@ with st.expander("Which reactions and temperatures control a molecule?"):
                 _adj_slot.release()
     else:
         _trust = bool(adj["magnitudes_trusted"])
+        # pair antisymmetry is an ADDITIONAL diagnostic (added 2026-07-21);
+        # older cached npz predate it, so show it only when present. It is
+        # diagnostic-only, never a trust gate (see adjoint_diag docstring).
+        _pa_txt = (f", forward/reverse pair antisymmetry "
+                   f"{float(adj['pair_antisym']):.3g} (diagnostic only, "
+                   "not a trust gate)" if "pair_antisym" in adj.files else "")
         st.caption(
             f"Loss: log10 VMR({adj_species}) = "
             f"{float(adj['loss_log10_vmr']):.2f} at "
@@ -2553,7 +2559,7 @@ with st.expander("Which reactions and temperatures control a molecule?"):
             f"fixed-point error {float(adj['fp_err']):.1e}, adjoint "
             f"residual (median) {float(adj['resid_median']):.3g}, "
             f"twin-ensemble spread {float(adj['ensemble_spread']):.3g} "
-            f"over {int(adj['n_solves'])} solves; scope-audit worst "
+            f"over {int(adj['n_solves'])} solves{_pa_txt}; scope-audit worst "
             f"defect {float(adj['audit_max_rel_defect']):.1e} "
             f"(loss footprint {float(adj['audit_loss_footprint_defect']):.1e})"
             f"; photolysis feedback "

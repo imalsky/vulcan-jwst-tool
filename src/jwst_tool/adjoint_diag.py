@@ -37,7 +37,12 @@ Honesty contract (all recorded in the npz and shown in the GUI):
   ``resid_median`` (adjoint solve residual), ``ensemble_spread`` (the honest
   magnitude error bar over ulp-perturbed twin solves). Magnitudes are
   labeled trustworthy only when resid_median <= 0.2 AND spread <= 0.15
-  (the upstream thresholds); otherwise the result is presented as a RANKING;
+  (the upstream thresholds); otherwise the result is presented as a RANKING.
+  ``pair_antisym`` (worst forward/reverse row asymmetry near partial
+  equilibrium) is also recorded and shown, but it is a DIAGNOSTIC ONLY, never a
+  trust gate: it is bare-map calibrated and reads ~1 for the accurate renorm
+  default (upstream contract), so it does not enter the magnitudes-trusted
+  decision;
 * the rate-uncertainty spread: a delta-method sigma(log10 VMR) under a
   UNIFORM Agundez (2025) class-B rate uncertainty (0.65 dex per reaction) --
   a stated assumption, not a per-reaction assessment;
@@ -330,7 +335,8 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     g = np.asarray(dLdlnk, dtype=float)
     log(f"[adj] dL/dlnk in {time.time()-t1:.0f} s: fp_err "
         f"{info['fp_err']:.2e}, resid_median {info['resid_median']:.3g}, "
-        f"spread {info['ensemble_spread']:.3g}")
+        f"spread {info['ensemble_spread']:.3g}, "
+        f"pair_antisym {info['pair_antisym']:.3g}")
 
     phys = _pair_physical(g, network)
     trust = (float(info["resid_median"]) <= RESID_MEDIAN_TRUST
@@ -407,6 +413,10 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
         fp_err=np.float64(info["fp_err"]),
         resid_median=np.float64(info["resid_median"]),
         ensemble_spread=np.float64(info["ensemble_spread"]),
+        # Worst forward/reverse pair antisymmetry over the top rows. Reported
+        # for context, NOT a trust gate (bare-map calibrated; reads ~1 for the
+        # accurate renorm default -- upstream contract). Never enters `trust`.
+        pair_antisym=np.float64(info["pair_antisym"]),
         n_solves=np.int64(info["n_solves"]),
         magnitudes_trusted=np.bool_(trust),
         photo_feedback=np.bool_(bool(info["photo_feedback"])),
