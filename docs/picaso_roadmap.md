@@ -62,16 +62,25 @@ findings behind its design decisions, and the features deliberately deferred
   structurally). Metallicity spans 0.1-100x solar ([M/H] in [-1, 2]).
 - **Composition derivatives are TWO-CELL INTERPOLANT SECANTS**, not local
   derivatives: the grid nodes are kinks of the interpolant. MEASURED
-  (2026-07-20, W39b defaults): at the C/O = 0.55 NODE the one-sided dlnCO
-  secants disagree by 152% of the symmetric row (left cell [0.46, 0.55] vs
-  right cell [0.55, 0.82] carry genuinely different chemistry response), so
-  the kink gate HARD-ERRORS there -- by design. At the mid-cell C/O = 0.50
-  (the GUI default for the provider) the whole stencil stays inside one
-  cell: kink 0.089, h-vs-2h 0.003. lnZ at the [M/H] = +1.0 node passes
-  (kink 0.17; the metallicity cells are symmetric). Cross-node blend
-  accuracy (leave-one-node-out at feh0.5/co0.46): median ~0.01-0.03 dex,
-  p95 <~ 0.05 dex for major species; worst ~0.2 dex (CO2); ~1 dex locally
-  at the K condensation edge.
+  (2026-07-20/21, W39b defaults): at the C/O = 0.55 NODE the one-sided
+  dlnCO secants disagree by 152% of the symmetric row, so the kink gate
+  HARD-ERRORS there -- by design. The kink is the TABLE's own physics: at
+  1 bar the per-cell abundance slopes are nearly symmetric (ratios
+  1.0-1.7), but at 1 mbar -- where transmission forms -- the right cell
+  [0.55, 0.82] carries 7-14x the left cell's slope (d log10 X / d ln C/O:
+  CH4 +1.2 vs +9.6, H2O -0.9 vs -9.3, CO2 -0.6 vs -9.1) because the sharp
+  upper-atmosphere CH4/H2O equilibrium transition sits INSIDE that cell.
+  A smoother interpolant does NOT fix this: PCHIP along the C/O axis was
+  evaluated and rejected (its node derivative is the interpolant's slope
+  convention, not data, and its leave-one-node-out p95 error is WORSE than
+  linear for CH4/HCN, 0.093 vs 0.019 dex). The only real fix is denser
+  upstream C/O sampling (see the upstream report). At the mid-cell
+  C/O = 0.50 (the GUI default for the provider) the whole stencil stays
+  inside one cell: kink 0.089, h-vs-2h 0.003. lnZ at the [M/H] = +1.0 node
+  passes (kink 0.17; the metallicity cells are symmetric). Cross-node
+  blend accuracy (leave-one-node-out at feh0.5/co0.46): median ~0.01-0.03
+  dex, p95 <~ 0.05 dex for major species; worst ~0.2 dex (CO2); ~1 dex
+  locally at the K condensation edge.
 - **Climate composition is EXACT-CK-NODE only**: the correlated-k tables
   carry no composition interpolation, so climate mode accepts only shipped
   nodes (extreme metallicities +-1.5/+-2.0 ship only C/O 0.27-0.82).
@@ -81,15 +90,26 @@ findings behind its design decisions, and the features deliberately deferred
   opacities, then post-processed with either engine's chemistry and ExoJax
   RT. The chemistry NEVER feeds back into the climate opacity. This is not
   radiative-chemical self-consistency and is never labeled as such.
-- **`climate_rcb` is a model assumption**: MEASURED on W39b defaults,
-  rcb_guess 60 vs 65 both pass every certification but differ by up to
-  341 K below ~0.4 bar with the convective boundary parked at the guess
-  (layers above agree to ~2 K) -- the weakly-constrained deep-adiabat
-  degeneracy of strongly irradiated planets; PICASO's stratification search
-  does not resolve it. It is cache-keyed, surfaced in the GUI with the
-  measured numbers, and the Tint_cl row differentiates at FIXED rcb. The
-  climate solve itself is bit-deterministic (repeat and fresh-opacity
-  reruns: exactly 0 K).
+- **`climate_rcb` is a model assumption, bounded by certification on the
+  shallow side** (measured in full 2026-07-21, W39b default node): rcb 45
+  and 50 FAIL the TOA flux-balance gate (metrics 4.2e-2, 2.8e-3 > 1e-3)
+  and rcb 55 drives T(7.6 bar) to 3074 K, refused by the T-window gate --
+  the shipped certification already rejects the shallow branch. Every
+  certified deep guess (60/65/70/75) is Schwarzschild-CONSISTENT against
+  the solver's own adiabat table (radiative margins +0.17..+0.23 to the
+  zone top; no unstable radiative layers), so the deep-adiabat attachment
+  is genuinely degenerate in a static RCE solve (the classic irradiated-
+  planet non-uniqueness, set by interior entropy/evolution; T at 1 bar:
+  1820 K at rcb 60 vs ~1595 K at 65-75; T at 7.6 bar: 2832/2514/2075/
+  1790 K). OBSERVABLE consequence: T(0.1 bar) is identical across
+  certified choices, but the deep scale height lifts the whole transit
+  spectrum broadband by ~360-630 ppm median (largely absorbed by the lnR0
+  reference-radius nuisance the forecast machinery profiles out), while
+  EMISSION is genuinely sensitive in deep-probing windows (up to ~86% of
+  Fp at specific wavelengths, median ~0.05%) -- the GUI warns on the
+  emission + climate combination. rcb is cache-keyed and the Tint_cl row
+  differentiates at FIXED rcb. The climate solve itself is
+  bit-deterministic (repeat and fresh-opacity reruns: exactly 0 K).
 - **Pressure policy**: the equilibrium tables and the climate grid start at
   1e-6 bar; above it the topmost layer is held constant (the sibling
   interp_map's documented edge clamp -- it logs the clamped layer count on
@@ -111,12 +131,24 @@ findings behind its design decisions, and the features deliberately deferred
 ## Measured data-quality findings (upstream-reportable)
 
 - **One corrupted cell** in `sonora_2121grid_feh1.0_co0.55.txt` at
-  (T = 900 K, logP = -5.523): H2 and He are under-normalized by ~0.75 with
-  their ratio preserved while trace species keep normal absolute values
-  (gas sum 0.746; every other cell in that file >= 0.998). The W39b default
-  profile passes near this cell; the provider does NOT repair table data --
-  the loader flags it (`SUSPECT_SUM = 0.90`) and the certificate reports any
-  suspect cell inside the evaluated span.
+  (T = 900 K, logP = -5.523). Full anatomy (2026-07-21, superseding the
+  first characterization): EVERY species in the row is uniformly deflated
+  by ~x0.747 (H2 0.7471, He 0.7471, H2O 0.7477, CO 0.7474, Na 0.7467 ...
+  vs T-neighbor interpolation) -- a spurious ~25% phantom abundance entered
+  the row's normalization at generation -- plus two junk residues: VO
+  ~9.9e6x too high (5.2e-12 vs ~5e-19) and CrH ~4.8e4x (both
+  spectroscopically inert and not RT species). The same cell is clean in
+  all four neighboring node files. Handling (v18.1): the CONTENT-GUARDED
+  `picaso_chem.KNOWN_TABLE_CORRECTIONS` registry replaces the row by its
+  T-neighbor log-mean while the file still hashes to the registered
+  corrupt bytes (an upstream fix makes the entry a no-op); every
+  application is recorded in the certificate/npz and shown in the GUI.
+  Measured bound: the correction differs from the previous renormalize-
+  through treatment by <= 2.2 ppm worst-case (900 K profile), 0.0 ppm on
+  the 1100 K default. Any OTHER isolated anomaly (clean T-neighbors)
+  inside an evaluated span now REFUSES loudly -- unvetted corruption is
+  never renormalized through; the systematic extreme-metallicity cold-T
+  deficits (equally-low neighbors) remain renormalize + certificate.
 - **Extreme-metallicity gas sums**: the |feh| >= 1.5 files sum to 0.86-0.98
   at T <~ 500 K (documented missing-species behavior). The provider
   renormalizes per layer (the upstream-recommended treatment), records
@@ -184,3 +216,52 @@ blend accuracy, lnZ FD closure, picaso-vs-vulcan spectrum sanity, and the
 climate smoke matrix (W39b x rfacv {0, 0.5, 1}, solar node, HD 189733 b,
 WASP-107 b). The native-RT parity report lives in
 `tests/parity_picaso/outputs/REPORT.md`.
+
+## v18.1 (tool 0.12.1, model-cache v19): review-response hardening
+
+Release-gate fixes from the 2026-07-21 external code review (all verified by
+reproduction or inspection before fixing):
+
+- **GUI Fisher defaults**: both Fisher multiselects crashed with
+  StreamlitAPIException under the PICASO engine (default lnKzz not in the
+  provider's menu). Defaults are now filtered by the live menu and the
+  widget keys carry the provider; the exact crash paths are pinned in
+  test_app_smoke.
+- **Climate lock lifecycle**: the lock file is now NEVER unlinked. The
+  previous stale-lock breaking (unlink + retry) created the classic
+  two-inode double-lock race (two processes each holding an "exclusive"
+  flock on different inodes of the same path, reproduced in review), and
+  could fire on a LIVE holder past the age threshold. flock's own
+  release-on-death is the recovery mechanism; a live slow holder is waited
+  on (bounded, loud timeout), never broken. Verified: two concurrent
+  uncached solves share one computation (80.1 s solver / 79.4 s waiter,
+  bit-identical results); a kill -9'd holder releases to the survivor.
+- **Cache-load revalidation**: loading a cached climate profile now re-runs
+  every gate evaluable from the stored data (structure, gradient envelope,
+  stored flux metric, convective-zone sanity) -- loading is never weaker
+  than solving.
+- **Corrupt-cell policy** (above): catalogued content-guarded correction +
+  isolated-anomaly refusal replaced the renormalize-and-warn treatment.
+- **Data-status scan off the rerun path**: the full datacheck report
+  (including the ~2.5k-entry PICASO manifest stat pass, slow on remote
+  Space volumes) is cached for 5 minutes with a manual refresh button --
+  it no longer runs on every Streamlit interaction.
+- **Public-instance protection**: a cross-process flock semaphore caps
+  concurrent heavy subprocesses (forward + ETC, adjoint) at 2 per
+  instance; further launches are declined with a message instead of piling
+  onto shared hardware. Slot files follow the same never-unlink lifecycle.
+- **Deployment reproducibility**: upload_data.sh stages picaso-reference
+  (from JWST_TOOL_PICASO_REFDATA, APFS clonefile when possible) and
+  generates its manifest.json; the bootstrap fallback exports
+  JWST_TOOL_PICASO_REFDATA when the snapshot brought the tree.
+- **Provenance made exact**: the certificate stores the per-layer
+  pre-normalization gas-sum ARRAY; fd_grid_cell records BOTH cells a
+  node-centered stencil traverses; the npz ymix uses the same gas
+  normalization as the RT (graphite/_l_s excluded); the stellar-grid part
+  of the climate fingerprint is documented as a name+size MANIFEST
+  (content hashes cover the CK table, continuum DBs, climate_INPUTS, and
+  config/version files); the kink-gate refusal prints both one-sided
+  secant scales.
+
+The upstream-reportable items are drafted in `docs/upstream_report_picaso.md`
+(not posted anywhere without explicit approval).

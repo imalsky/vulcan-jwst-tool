@@ -64,6 +64,16 @@ else
     python /srv/app/bootstrap_data.py
     export JWST_TOOL_DATA_DIR=/data/jwst-data
     ln -sfn /data/retrieval-data /srv/vulcan/vulcan-retrieval/data
+    # bootstrap snapshots the WHOLE dataset repo, so picaso-reference lands
+    # too when it exists there (v18.1; OPTIONAL -- the provider refuses
+    # loudly without it and everything else is unaffected)
+    if [ -d /data/picaso-reference/chemistry/visscher_grid_2121 ]; then
+        export JWST_TOOL_PICASO_REFDATA=/data/picaso-reference
+        echo "[entrypoint] PICASO reference tree seeded (provider enabled)"
+    else
+        echo "[entrypoint] NOTE: no picaso-reference in the seeded dataset;" \
+             "the PICASO provider/climate mode will refuse until uploaded"
+    fi
 fi
 
 # VULCAN-JAX's legacy IO writes a RELATIVE output/ dir in the process CWD

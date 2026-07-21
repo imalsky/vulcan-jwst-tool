@@ -110,19 +110,83 @@ def test_picaso_vs_vulcan_spectrum_sanity():
     assert "SO2" not in list(mp["mols"]) and "SO2" in list(mv["mols"])
 
 
-@pytest.mark.parametrize("planet,met,co,rfacv", [
-    ("wasp39b", 10.0, 0.55, 0.5),      # the certified default
-    ("wasp39b", 10.0, 0.55, 0.0),
-    ("wasp39b", 10.0, 0.55, 1.0),
-    ("wasp39b", 1.0, 0.55, 0.5),       # solar node
-    ("hd189733b", 1.0, 0.55, 0.5),     # hotter star, high gravity
-    ("wasp107b", 10.0, 0.55, 0.5),     # cool, low gravity
+@pytest.mark.parametrize("planet,met,co,rfacv,expect", [
+    ("wasp39b", 10.0, 0.55, 0.5, "certified"),   # the certified default
+    # rfacv 0 (no irradiation): a Tint=200 K interior alone leaves the
+    # upper atmosphere far below the 320 K opacity floor; rfacv 1
+    # (dayside-only): the 7.6 bar bottom exceeds the 2980 K ceiling.
+    # Both are DOCUMENTED envelope refusals (loud, never clipped) --
+    # measured 2026-07-21; a silent bad profile is the failure mode here.
+    ("wasp39b", 10.0, 0.55, 0.0, "window-refusal"),
+    ("wasp39b", 10.0, 0.55, 1.0, "window-refusal"),
+    ("wasp39b", 1.0, 0.55, 0.5, "certified"),    # solar node
+    ("hd189733b", 1.0, 0.55, 0.5, "certified"),  # hotter star, high gravity
+    ("wasp107b", 10.0, 0.55, 0.5, "certified"),  # cool, low gravity
 ])
-def test_climate_smoke_matrix(planet, met, co, rfacv):
+def test_climate_smoke_matrix(planet, met, co, rfacv, expect):
     from jwst_tool import forward, picaso_climate
     cp = forward.canonical_params(dict(
         planet=planet, tp_mode="picaso_climate", met_x_solar=met,
         co_ratio=co, rfacv=rfacv))
+    if expect == "window-refusal":
+        with pytest.raises(RuntimeError, match="modelable window"):
+            picaso_climate.get_or_run(cp, lambda *a: None)
+        return
     clim = picaso_climate.get_or_run(cp, lambda *a: None)
     assert clim.cert["converged"]
     assert clim.cert["flux_toa_over_tidal"] < picaso_climate.FLUX_BALANCE_MAX
+
+
+_LOCK_WORKER = """
+import sys, time, warnings
+warnings.filterwarnings("ignore")
+from jwst_tool import forward as f
+from jwst_tool import picaso_climate as pcl
+tint = float(sys.argv[1])
+cp = f.canonical_params({"tp_mode": "picaso_climate", "met_x_solar": 10.0,
+                         "co_ratio": 0.55, "tint_cl": tint})
+t0 = time.time()
+clim = pcl.get_or_run(cp, lambda *a: None)
+print("RESULT", clim.key, float(clim.T[-1]), round(time.time() - t0, 1),
+      flush=True)
+"""
+
+
+def _spawn_lock_worker(tmp_path, tint):
+    import subprocess, sys
+    script = tmp_path / "lock_worker.py"
+    script.write_text(_LOCK_WORKER)
+    return subprocess.Popen([sys.executable, str(script), str(tint)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+
+
+def test_lock_concurrent_solves_share_one_computation(tmp_path):
+    # v18.1 lifecycle (gating): two concurrent processes on one uncached
+    # key -> exactly one solves, the other waits on the flock and loads the
+    # identical result. Measured pre-rewrite: 80.1 s / 79.4 s identical
+    # profiles; this pins the rewritten never-unlink lifecycle.
+    import numpy as np
+    tint = 200.0 + float(np.random.default_rng().integers(37, 493)) / 10.0
+    p1 = _spawn_lock_worker(tmp_path, tint)
+    p2 = _spawn_lock_worker(tmp_path, tint)
+    out1, _ = p1.communicate(timeout=900)
+    out2, _ = p2.communicate(timeout=900)
+    r1 = [ln for ln in out1.splitlines() if ln.startswith("RESULT")][-1].split()
+    r2 = [ln for ln in out2.splitlines() if ln.startswith("RESULT")][-1].split()
+    assert r1[1] == r2[1] and r1[2] == r2[2], (out1, out2)
+
+
+def test_lock_released_when_holder_is_killed(tmp_path):
+    # kill -9 the first (solving) process mid-solve: its flock releases with
+    # it and the second process must acquire and complete the solve.
+    import numpy as np, time
+    tint = 300.0 + float(np.random.default_rng().integers(37, 493)) / 10.0
+    holder = _spawn_lock_worker(tmp_path, tint)
+    time.sleep(25.0)                     # deep inside the ~80 s solve
+    holder.kill()
+    holder.wait()
+    survivor = _spawn_lock_worker(tmp_path, tint)
+    out, _ = survivor.communicate(timeout=900)
+    lines = [ln for ln in out.splitlines() if ln.startswith("RESULT")]
+    assert lines, out

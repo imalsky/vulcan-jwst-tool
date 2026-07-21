@@ -27,10 +27,14 @@ Contracts:
   ``chem_provider`` is EXCLUDED: the converged T-P is provider-independent,
   so both providers share one solve.
 * LOCKING -- atomic writes (tmp + os.replace) plus a process-safe fcntl.flock
-  per-key lock with stale-lock recovery (lock metadata carries pid + start
-  time; a lock whose pid is dead or older than ``LOCK_TIMEOUT_S`` is broken
-  loudly). Two concurrent Space requests can never corrupt or double-compute
-  a cache entry.
+  per-key lock whose file is NEVER unlinked (v18.1): flock releases on close
+  or process death -- that is the whole guarantee, and unlink-based "stale
+  lock breaking" reintroduces the classic two-inode double-lock race (two
+  processes each holding an exclusive flock on different inodes of the same
+  path -- reproduced in the 2026-07-21 review). A dead holder's lock releases
+  automatically; a LIVE slow holder means WAIT (up to ``LOCK_TIMEOUT_S``,
+  then raise loudly -- never break). The pid/start-time written into the
+  file is observability metadata only.
 * GUESS -- a DETERMINISTIC analytic Guillot profile built only from the
   canonical inputs (never warm-started from a previous solve; order
   independence measured). rfacv=0 runs star-free (``setup_nostar``).
@@ -196,13 +200,18 @@ def _write_atm_table(P_bar: np.ndarray, T: np.ndarray, path: Path) -> None:
     keep = P_dyn < bottom
     rows = [(bottom, T_bottom)] + [
         (float(p), float(t)) for p, t in zip(P_dyn[keep][::-1], T[keep][::-1])]
-    if T_bottom > T_WINDOW[1] or min(t for _, t in rows) < T_WINDOW[0]:
+    _t_lo = min(t for _, t in rows)
+    _t_hi = max(t for _, t in rows)
+    if _t_hi > T_WINDOW[1] or _t_lo < T_WINDOW[0]:
         raise RuntimeError(
             f"climate T-P leaves the modelable window {T_WINDOW} K over the "
-            f"chemistry span (T at the {bottom / 1e6:.1f} bar bottom = "
-            f"{T_bottom:.0f} K): this planet/Tint configuration is outside "
-            "the certified envelope (out-of-window profiles are rejected, "
-            "never clipped).")
+            f"chemistry span (profile spans [{_t_lo:.0f}, {_t_hi:.0f}] K; "
+            f"T at the {bottom / 1e6:.1f} bar bottom = {T_bottom:.0f} K): "
+            "this planet/irradiation/Tint configuration is outside the "
+            "certified envelope (out-of-window profiles are rejected, never "
+            "clipped). Too-cold tops come from weak irradiation (low rfacv "
+            "on a cool star), too-hot bottoms from strong irradiation or a "
+            "shallow radiative-convective boundary.")
     tmp = path.with_suffix(".txt.tmp.%d" % os.getpid())
     with open(tmp, "w") as fh:
         fh.write("#(dyne/cm2) (K) picaso_climate v%d\n" % _CLIMATE_VERSION)
@@ -228,8 +237,36 @@ def interp_T(clim, p_bar: np.ndarray) -> np.ndarray:
                      np.log(Pc), np.asarray(clim.T, float))
 
 
+def _revalidate(ns) -> bool:
+    """Re-run every gate that can be evaluated from the STORED data (v18.1):
+    a cache entry is served only if its arrays still pass the structural
+    gates and its stored solver metrics still pass the thresholds -- loading
+    is never weaker than solving."""
+    P = np.asarray(ns.pressure_bar, float)
+    T = np.asarray(ns.T, float)
+    c = ns.cert
+    try:
+        if not (P.size >= 4 and np.all(np.isfinite(P))
+                and np.all(np.isfinite(T)) and np.all(T > 0.0)
+                and np.all(np.diff(P) > 0.0)):
+            return False
+        grad = np.gradient(np.log(T), np.log(P))
+        if grad.min() < GRAD_MIN or grad.max() > GRAD_MAX:
+            return False
+        if not (float(c.get("flux_toa_over_tidal", np.inf))
+                <= FLUX_BALANCE_MAX):
+            return False
+        cvz = [int(x) for x in (c.get("cvz_locs") or [])]
+        if len(cvz) >= 2 and 0 < cvz[1] < CVZ_TOP_MIN:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _load(npz_path: Path, key: str):
-    """Cached result IF present and its certificate revalidates, else None."""
+    """Cached result IF present and its certificate REVALIDATES (identity +
+    every re-runnable gate on the stored arrays/metrics), else None."""
     if not npz_path.is_file():
         return None
     try:
@@ -240,11 +277,14 @@ def _load(npz_path: Path, key: str):
                     or cert.get("_climate_version") != _CLIMATE_VERSION
                     or not cert.get("converged")):
                 return None
-            return SimpleNamespace(
+            ns = SimpleNamespace(
                 pressure_bar=np.asarray(z["pressure_bar"], float),
                 T=np.asarray(z["temperature_K"], float),
                 dtdp=np.asarray(z["dtdp"], float),
                 cert=cert, provenance=prov, key=key, npz_path=npz_path)
+            if not _revalidate(ns):
+                return None
+            return ns
     except (OSError, ValueError, KeyError):
         return None      # unreadable/foreign file: recompute (never trust it)
 
@@ -303,48 +343,37 @@ def get_or_run(cp: dict, log, tint_override: float | None = None):
         return hit
 
     CLIMATE_CACHE.mkdir(parents=True, exist_ok=True)
+    # ONE fd for the whole acquisition; the lock FILE is never unlinked (the
+    # module-docstring locking contract). A dead holder's flock releases on
+    # its own; a live holder is waited on, never broken.
+    lf = open(lock_path, "a+")
     t_wait0 = time.time()
-    while True:
-        lf = open(lock_path, "a+")
-        try:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break                                    # lock acquired
-        except OSError:
-            lf.close()
-            # someone else holds it: stale-lock recovery, then wait
-            try:
-                meta = json.loads(lock_path.read_text() or "{}")
-            except (OSError, ValueError):
-                meta = {}
-            pid = int(meta.get("pid", 0) or 0)
-            age = time.time() - float(meta.get("t0", time.time()))
-            alive = False
-            if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except OSError:
-                    alive = False
-            if (not alive and meta) or age > LOCK_TIMEOUT_S:
-                log(f"[fwd] climate: breaking STALE lock {lock_path.name} "
-                    f"(pid={pid} alive={alive}, age={age:.0f}s)")
-                try:
-                    lock_path.unlink()
-                except OSError:
-                    pass
-                continue
-            if time.time() - t_wait0 > LOCK_TIMEOUT_S:
-                raise RuntimeError(
-                    f"timed out waiting {LOCK_TIMEOUT_S:.0f}s for the "
-                    f"climate lock {lock_path} (held by live pid {pid}). "
-                    "Another solve of this exact configuration is stuck; "
-                    "investigate before retrying.")
-            time.sleep(LOCK_POLL_S)
-            hit = _load(npz_path, key)               # holder may finish
-            if hit is not None and atm_path.is_file():
-                hit.atm_table = atm_path
-                return hit
+    got_lock = False
     try:
+        while True:
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                got_lock = True
+                break
+            except OSError:
+                if time.time() - t_wait0 > LOCK_TIMEOUT_S:
+                    try:
+                        meta = json.loads(lock_path.read_text() or "{}")
+                    except (OSError, ValueError):
+                        meta = {}
+                    raise RuntimeError(
+                        f"timed out waiting {LOCK_TIMEOUT_S:.0f}s for the "
+                        f"climate lock {lock_path} (holder metadata: "
+                        f"{meta}). A solve of this exact configuration is "
+                        "still running or stuck; investigate before "
+                        "retrying -- the lock is never broken while its "
+                        "holder lives.")
+                time.sleep(LOCK_POLL_S)
+                hit = _load(npz_path, key)           # holder may finish
+                if hit is not None and atm_path.is_file():
+                    hit.atm_table = atm_path
+                    return hit
+        # lock held: record holder metadata (observability only)
         lf.truncate(0)
         lf.write(json.dumps({"pid": os.getpid(), "t0": time.time()}))
         lf.flush()
@@ -380,9 +409,11 @@ def get_or_run(cp: dict, log, tint_override: float | None = None):
                                cert=cert, provenance=prov, key=key,
                                npz_path=npz_path, atm_table=atm_path)
     finally:
-        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        if got_lock:
+            try:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
         lf.close()
-        try:
-            lock_path.unlink()
-        except OSError:
-            pass
+        # the lock FILE stays: unlinking a path whose inode another process
+        # may still flock creates two simultaneous "exclusive" locks

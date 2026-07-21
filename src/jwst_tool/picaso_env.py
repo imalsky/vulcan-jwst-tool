@@ -255,7 +255,14 @@ def climate_refdata_fingerprint(node: str, tio_vo: bool) -> str:
         raise RuntimeError(
             f"stellar grid missing: {ck04} (the climate star() irradiation "
             "reads the ck04models atlas).")
-    stellar_manifest = _stat_signature(sorted(ck04.rglob("*.fits")))
+    # name+size MANIFEST (not a content hash, and deliberately no mtime --
+    # mtimes change on every copy/re-upload; a swapped file changes its
+    # size-name pair in practice): documented as a manifest, never claimed
+    # as a content fingerprint (v18.1).
+    h_st = hashlib.sha1()
+    for p in sorted(ck04.rglob("*.fits")):
+        h_st.update(f"{p.name}\0{p.stat().st_size}\n".encode())
+    stellar_manifest = h_st.hexdigest()
     kind = f"climate:{node}:{'tiovo' if tio_vo else 'notiovo'}"
     content = _cached_content_sha1(kind, content_files)
     h = hashlib.sha1((content + stellar_manifest).encode())

@@ -31,15 +31,26 @@ Scientific contract (2026-07-20 review, rev 3):
   shared path renormalizes the retained gas per layer, and the provider
   certificate records the per-layer pre-normalization sum -- refusing below
   ``GAS_SUM_MIN``, flagging below ``GAS_SUM_WARN``.
-* Known data defect (2026-07-20 survey of all 78 files): feh1.0_co0.55 has
-  ONE corrupted row at (900 K, 3e-6 bar) whose H2/He are under-normalized
-  (gas sum 0.746, H2/He ratio preserved, traces at normal absolute values).
-  We do NOT repair table data (that would fabricate science inputs); the
-  loader records rows with gas sum below ``SUSPECT_SUM`` and the certificate
-  reports any that fall inside the evaluated profile's interpolation
-  stencil. The extreme-metallicity files (|feh| >= 1.5) systematically sum
-  to 0.86-0.98 at T <~ 500 K -- expected missing-species behavior, covered
-  by the same bookkeeping.
+* Known data defect (measured 2026-07-20/21): feh1.0_co0.55 carries ONE
+  corrupted row at (900 K, logP = -5.523). Anatomy: EVERY species in the
+  row is uniformly deflated by ~x0.747 (a spurious ~25% phantom abundance
+  entered the row's normalization at generation), plus two junk residues:
+  VO ~9.9e6x and CrH ~4.8e4x too high (both spectroscopically inert at
+  ~1e-12 and not RT species). The same cell is clean in all four
+  neighboring node files. Handling (v18.1 review decision): a VERSIONED,
+  CONTENT-GUARDED correction -- ``KNOWN_TABLE_CORRECTIONS`` replaces the
+  row by the log-mean of its T-neighbors ONLY while the file's row still
+  hashes to the registered corrupt bytes (an upstream fix makes the entry
+  a no-op); every application is recorded in the certificate/npz. The
+  measured spectral difference between the correction and the previous
+  renormalize-through treatment is <= 2.2 ppm worst-case (900 K profile).
+  Any OTHER isolated anomaly (a row below ``SUSPECT_SUM`` whose T-neighbor
+  rows are clean) inside the evaluated span REFUSES loudly -- unvetted
+  corruption is never renormalized through. The extreme-metallicity files
+  (|feh| >= 1.5) systematically sum to 0.86-0.98 at T <~ 500 K with
+  equally-low neighbor rows -- expected missing-species behavior, NOT
+  isolated corruption: renormalized and certificate-flagged, never
+  refused.
 * Realized composition: gas-phase C/O from the blended abundances matches the
   file label only where nothing has condensed (verified: 0.458 vs label 0.46
   at 2000 K; at 800-1200 K silicate condensation sequesters O and the
@@ -97,6 +108,22 @@ CO_CHECK_T_K = 2000.0  # realized-C/O vs label comparisons only above this
 
 GRAPHITE = "C-gr"
 GRAPHITE_OUT = "C-gr_l_s"   # renamed so the shared condensate mask catches it
+
+#: Versioned, content-guarded corrections for CATALOGUED table defects
+#: (module docstring has the vetting evidence). Keyed by node token; each
+#: entry names the cell, the sha1-16 of the exact corrupt ROW bytes (the
+#: np.loadtxt float64 row including the T/logP columns -- if upstream fixes
+#: the file the hash no longer matches and the correction is a NO-OP), and
+#: the correction method. Never a general repair heuristic.
+KNOWN_TABLE_CORRECTIONS = {
+    "feh1.0_co0.55": (
+        {"T": 900.0, "logP": -5.523,
+         "corrupt_row_sha1": "29c1396fb5d35401",
+         "method": "T-neighbor log-mean",
+         "why": "uniform x0.747 row deflation + junk VO/CrH residues "
+                "(2026-07-20 anatomy; <= 2.2 ppm spectral impact bound)"},
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # Species masses + stoichiometry (one source for mmw AND realized composition)
@@ -218,16 +245,41 @@ def load_node_table(node: str) -> SimpleNamespace:
     if np.any(ab <= 0.0) or not np.all(np.isfinite(ab)):
         raise RuntimeError(f"{path}: non-positive or non-finite abundances.")
     order = np.lexsort((P_col, T_col))
+    raw_sorted = raw[order].reshape(N_T, N_P, 2 + len(species))
     cube = np.log10(ab[order]).reshape(N_T, N_P, len(species))
-    # suspect-row bookkeeping (gas total = everything but graphite)
+    # catalogued corrections (content-guarded; module docstring + registry)
+    corrections_applied = []
+    for entry in KNOWN_TABLE_CORRECTIONS.get(node, ()):
+        iT = int(np.argmin(np.abs(T - entry["T"])))
+        iP = int(np.argmin(np.abs(Plog - entry["logP"])))
+        import hashlib
+        row_sha = hashlib.sha1(
+            raw_sorted[iT, iP].tobytes()).hexdigest()[:16]
+        if row_sha != entry["corrupt_row_sha1"]:
+            continue          # upstream fixed (or changed) the row: no-op
+        if not 0 < iT < N_T - 1:
+            raise RuntimeError(
+                f"{path}: registered correction cell at a T edge -- the "
+                "T-neighbor method does not apply; update the registry.")
+        cube[iT, iP, :] = 0.5 * (cube[iT - 1, iP, :] + cube[iT + 1, iP, :])
+        corrections_applied.append(
+            {"node": node, "T": float(T[iT]), "logP": float(Plog[iP]),
+             "method": entry["method"], "row_sha1": row_sha})
+    # suspect-row bookkeeping (gas total = everything but graphite),
+    # AFTER corrections; ``isolated`` = both T-neighbor rows are clean, the
+    # signature of point corruption rather than systematic missing species
     igr = species.index(GRAPHITE)
     gas_cols = [j for j in range(len(species)) if j != igr]
     sums = (10.0 ** cube)[:, :, gas_cols].sum(axis=2)
     it, ip = np.where(sums < SUSPECT_SUM)
-    suspect = [(float(T[a]), float(Plog[b]), float(sums[a, b]))
-               for a, b in zip(it, ip)]
+    suspect = []
+    for a, b in zip(it, ip):
+        neigh = [sums[a + d, b] for d in (-1, 1) if 0 <= a + d < N_T]
+        suspect.append((float(T[a]), float(Plog[b]), float(sums[a, b]),
+                        bool(neigh and min(neigh) >= GAS_SUM_WARN)))
     return SimpleNamespace(node=node, T=T, Plog=Plog, cube=cube,
-                           species=species, suspect_cells=suspect)
+                           species=species, suspect_cells=suspect,
+                           corrections_applied=corrections_applied)
 
 
 def _bracket(nodes: tuple, x: float, what: str) -> tuple[int, int, float]:
@@ -348,21 +400,41 @@ def evaluate(met_x_solar: float, co_ratio: float, T_prof: np.ndarray,
                            np.nan)
 
     # suspect table rows that can actually influence this profile: any
-    # loader-flagged cell within the (T, P) bounding box of the profile
+    # loader-flagged cell within the (T, P) bounding box of the profile.
+    # ISOLATED anomalies (clean T-neighbors -> point corruption, not the
+    # systematic missing-species deficits) REFUSE unless a registered
+    # correction already handled them -- unvetted corruption is never
+    # renormalized through (v18.1).
     tmin, tmax = float(np.min(T_prof)), float(np.max(T_prof))
     plmin = float(np.min(np.log10(p_bar)))
     plmax = float(np.max(np.log10(p_bar)))
     dT = np.diff(ref.T).max()
     dP = np.diff(ref.Plog).max()
+    flat_tabs = (tabs[0][0], tabs[0][1], tabs[1][0], tabs[1][1])
     suspect_hit = sorted({
-        c for t in (tabs[0][0], tabs[0][1], tabs[1][0], tabs[1][1])
-        for c in t.suspect_cells
+        c for t in flat_tabs for c in t.suspect_cells
         if (tmin - dT) <= c[0] <= (tmax + dT)
         and (plmin - dP) <= c[1] <= (plmax + dP)})
+    isolated_hit = [c for c in suspect_hit if c[3]]
+    if isolated_hit:
+        c0 = isolated_hit[0]
+        raise RuntimeError(
+            f"equilibrium table cell at (T={c0[0]:g} K, logP={c0[1]:g}) "
+            f"has an ISOLATED anomalous gas sum {c0[2]:.3f} (clean "
+            "T-neighbors) inside the evaluated profile span: point "
+            "corruption is refused, never renormalized through. If the "
+            "defect is vetted, register it in "
+            "picaso_chem.KNOWN_TABLE_CORRECTIONS (see the catalogued "
+            "feh1.0_co0.55 entry for the pattern); otherwise replace the "
+            "reference table.")
+    corrections = [c for t in flat_tabs for c in t.corrections_applied]
 
     cert = dict(
         nodes=cell["nodes"], wf=round(cell["wf"], 6), wc=round(cell["wc"], 6),
         feh=round(cell["feh"], 6), co=round(cell["co"], 6),
+        # the full per-layer pre-normalization gas sums (v18.1: the summary
+        # stats alone overstated what was recorded)
+        gas_sum_layers=[round(float(v), 6) for v in pre_norm_sum],
         gas_sum_min=float(pre_norm_sum.min()),
         gas_sum_median=float(np.median(pre_norm_sum)),
         n_layers_below_warn=int(np.count_nonzero(pre_norm_sum < GAS_SUM_WARN)),
@@ -372,6 +444,7 @@ def evaluate(met_x_solar: float, co_ratio: float, T_prof: np.ndarray,
             float(np.nanmedian(realized_co[np.asarray(T_prof) >= CO_CHECK_T_K]))
             if np.any(np.asarray(T_prof) >= CO_CHECK_T_K) else None),
         suspect_cells_in_span=[list(c) for c in suspect_hit],
+        corrections_applied=corrections,
     )
     return SimpleNamespace(
         y=y, species=species_out,

@@ -109,3 +109,32 @@ def test_picaso_climate_mode_renders():
     at.selectbox(key="n0_wasp39b_tp").set_value("picaso_climate")
     at.run()
     assert not at.exception, at.exception
+
+
+def test_picaso_constrain_goal_renders():
+    # v18.1 regression: the constrain-goal Fisher multiselect crashed with
+    # StreamlitAPIException under the PICASO engine (default lnKzz not in
+    # the provider's menu) -- both switch orders must render cleanly.
+    at = _run_app()
+    at.radio(key="n0_goal").set_value("constrain")
+    at.run()
+    at.selectbox(key="n0_provider").set_value("picaso")
+    at.run()
+    assert not at.exception, at.exception
+
+    at2 = _run_app()
+    at2.selectbox(key="n0_provider").set_value("picaso")
+    at2.run()
+    at2.radio(key="n0_goal").set_value("constrain")
+    at2.run()
+    assert not at2.exception, at2.exception
+
+
+def test_picaso_detect_fisher_checkbox_renders():
+    # same defect on the detect goal's "Compute parameter constraints too"
+    at = _run_app()
+    at.selectbox(key="n0_provider").set_value("picaso")
+    at.run()
+    at.checkbox(key="n0_dofish").check()
+    at.run()
+    assert not at.exception, at.exception

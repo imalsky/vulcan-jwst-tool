@@ -96,9 +96,15 @@ Wakes from sleep skip the download (markers present).
 
 Space Settings -> add collaborators by HF username (they need free HF
 accounts; only the Space needs sharing, not the dataset repo -- data access
-uses your HF_TOKEN). Keep the Space private: the entrypoint disables
-Streamlit's XSRF/CORS protection to make uploads work behind the Spaces
-proxy, which is fine for an invited-user tool but not for a public one.
+uses your HF_TOKEN). PUBLIC-ACCESS POLICY (updated 2026-07-21): the Space
+was made deliberately public on 2026-07-20 (the intro gate addresses
+visitors). The entrypoint still disables Streamlit's XSRF/CORS protection
+(required for the T-P / noise-floor table uploads behind the Spaces
+proxy), so two mitigations apply: uploaded tables are parsed by the tool's
+own strict validators and stored content-addressed (never executed or
+templated), and `jwst_tool.runlimit` caps concurrent heavy subprocesses at
+2 per instance so visitors cannot pile solvers onto the hardware. If
+either mitigation is ever removed, make the Space private again.
 
 ## Updating code later
 

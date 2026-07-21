@@ -56,30 +56,90 @@ def test_climate_subset_refuses_outside_mode():
 
 # --- certificate revalidation on load ---------------------------------------
 
-def _write_cache(tmp_path, key, cert):
+def _good_cert(key="k1"):
+    return {"climate_key": key, "_climate_version": pcl._CLIMATE_VERSION,
+            "converged": True, "flux_toa_over_tidal": 1.5e-6,
+            "cvz_locs": [0, 60, 89, 0, 0, 0]}
+
+
+def _write_cache(tmp_path, key, cert, T=None):
     p = tmp_path / f"{key}.npz"
-    np.savez_compressed(p, pressure_bar=np.logspace(-6, 2, 10),
-                        temperature_K=np.linspace(900, 2800, 10),
+    P = np.logspace(-6, 2, 10)
+    if T is None:
+        T = 900.0 * (P / P[0]) ** 0.06     # gentle, in-envelope gradient
+    np.savez_compressed(p, pressure_bar=P, temperature_K=T,
                         dtdp=np.zeros(10), cert_json=json.dumps(cert),
                         provenance_json=json.dumps({}))
     return p
 
 
 def test_load_accepts_only_matching_certified_entries(tmp_path):
-    good = {"climate_key": "k1", "_climate_version": pcl._CLIMATE_VERSION,
-            "converged": True}
-    p = _write_cache(tmp_path, "k1", good)
+    p = _write_cache(tmp_path, "k1", _good_cert("k1"))
     assert pcl._load(p, "k1") is not None
     assert pcl._load(p, "OTHER") is None                  # key mismatch
-    stale = dict(good, _climate_version=pcl._CLIMATE_VERSION - 1)
+    stale = dict(_good_cert("k2"), _climate_version=pcl._CLIMATE_VERSION - 1)
     assert pcl._load(_write_cache(tmp_path, "k2", stale), "k2") is None
-    uncert = dict(good, converged=False)
+    uncert = dict(_good_cert("k3"), converged=False)
     assert pcl._load(_write_cache(tmp_path, "k3", uncert), "k3") is None
     assert pcl._load(tmp_path / "absent.npz", "k4") is None
     # unreadable/foreign file: recompute, never trust it
     bad = tmp_path / "k5.npz"
     bad.write_bytes(b"not an npz")
     assert pcl._load(bad, "k5") is None
+
+
+def test_load_revalidates_stored_gates(tmp_path):
+    # v18.1: loading re-runs every gate evaluable from the stored data --
+    # a cert that SAYS converged but carries a failing metric, or arrays
+    # that no longer pass the structural gates, must be treated as absent.
+    no_flux = {k: v for k, v in _good_cert("k6").items()
+               if k != "flux_toa_over_tidal"}
+    assert pcl._load(_write_cache(tmp_path, "k6", no_flux), "k6") is None
+    bad_flux = dict(_good_cert("k7"), flux_toa_over_tidal=0.5)
+    assert pcl._load(_write_cache(tmp_path, "k7", bad_flux), "k7") is None
+    conv_top = dict(_good_cert("k8"), cvz_locs=[0, 2, 89, 0, 0, 0])
+    assert pcl._load(_write_cache(tmp_path, "k8", conv_top), "k8") is None
+    P = np.logspace(-6, 2, 10)
+    runaway = 500.0 * (P / P[0]) ** 0.7                  # gradient breach
+    assert pcl._load(_write_cache(tmp_path, "k9", _good_cert("k9"),
+                                  T=runaway), "k9") is None
+    nan_T = np.full(10, 1200.0)
+    nan_T[4] = np.nan
+    assert pcl._load(_write_cache(tmp_path, "kA", _good_cert("kA"),
+                                  T=nan_T), "kA") is None
+
+
+def test_lock_file_is_never_unlinked(tmp_path, monkeypatch):
+    # v18.1 lifecycle: unlinking a flock'd path creates the two-inode
+    # double-lock race, so the lock file must persist across runs.
+    monkeypatch.setattr(pcl, "CLIMATE_CACHE", tmp_path)
+    P = np.logspace(np.log10(pcl.CLIMATE_P_SPAN_BAR[0]),
+                    np.log10(pcl.CLIMATE_P_SPAN_BAR[1]),
+                    pcl.CLIMATE_N_LEVELS)
+    T = 900.0 + 1900.0 * (np.log10(P) + 6.0) / 8.5
+    fake = dict(pressure=P, temperature=T, converged=True,
+                cvz_locs=[0, 60, 89, 0, 0, 0], _wall_s=0.1,
+                flux_balance={"flux_net": np.array([1e-4]),
+                              "tidal": np.array([9e4])})
+    calls = {"n": 0}
+
+    def fake_solve(cp, tint, log):
+        calls["n"] += 1
+        return dict(fake)
+
+    monkeypatch.setattr(pcl, "_solve", fake_solve)
+    cp = _cp()
+    clim = pcl.get_or_run(cp, lambda *a: None)
+    key = pcl.climate_key(cp)
+    lock = tmp_path / f"{key}.lock"
+    assert lock.is_file(), "lock file must persist after the solve"
+    meta = json.loads(lock.read_text())
+    assert meta["pid"] > 0
+    # second call: cache hit (no new solve), lock file still present
+    clim2 = pcl.get_or_run(cp, lambda *a: None)
+    assert calls["n"] == 1
+    assert np.array_equal(clim.T, clim2.T)
+    assert lock.is_file()
 
 
 # --- certification gates (pure logic; no solver) ----------------------------

@@ -1,0 +1,85 @@
+"""Cross-process limiter for heavy runs (v18.1, public-Space protection).
+
+The live Space is deliberately public, so any visitor can launch multi-minute
+forward/ETC/adjoint subprocesses. This caps the number running at once
+per instance with OS-level advisory locks; when every slot is busy the GUI
+declines the launch with a friendly message instead of queueing (cached
+results stay instant; there are no accounts and no fairness guarantees).
+
+Lifecycle contract (same as the climate cache lock, and for the same reason):
+slot files are opened and flock'd but NEVER unlinked -- a slot releases when
+its holder closes the fd or dies, and unlinking a path another process may
+still hold flock'd creates two simultaneous "exclusive" locks on different
+inodes. The pid/tag/start-time written into a slot file is observability
+metadata only.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import time
+from pathlib import Path
+
+from jwst_tool import instruments as _ins
+
+#: concurrent heavy subprocesses per instance (forward model, Pandeia ETC
+#: batch, adjoint diagnostics each hold ONE slot for their full duration)
+MAX_CONCURRENT = 2
+SLOT_DIR = Path(_ins.OUTPUT_DIR) / "run_slots"
+
+
+class Slot:
+    """A held run slot; ``release()`` exactly once when the run finishes
+    (the OS also releases it if the holding process dies)."""
+
+    def __init__(self, fh, index: int):
+        self._fh = fh
+        self.index = index
+
+    def release(self) -> None:
+        try:
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+        except (OSError, ValueError):
+            pass
+        try:
+            self._fh.close()
+        except OSError:
+            pass
+
+
+def acquire(tag: str = "run"):
+    """A :class:`Slot`, or ``None`` when all slots are busy. Never blocks."""
+    SLOT_DIR.mkdir(parents=True, exist_ok=True)
+    for i in range(MAX_CONCURRENT):
+        fh = open(SLOT_DIR / f"slot{i}.lock", "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            continue
+        fh.truncate(0)
+        fh.write(json.dumps({"pid": os.getpid(), "tag": str(tag),
+                             "t0": time.time()}))
+        fh.flush()
+        return Slot(fh, i)
+    return None
+
+
+def busy_count() -> int:
+    """How many slots are currently held (probe; racy by nature, display
+    only)."""
+    n = 0
+    for i in range(MAX_CONCURRENT):
+        p = SLOT_DIR / f"slot{i}.lock"
+        if not p.exists():
+            continue
+        fh = open(p, "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            n += 1
+        finally:
+            fh.close()
+    return n

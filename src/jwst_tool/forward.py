@@ -177,10 +177,13 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
 # feature, NH3 the cool (<~900 K) nitrogen chemistry.
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 18  # model_cache buster: bump whenever the physics or the
+_VERSION = 19  # model_cache buster: bump whenever the physics or the
                # canonical key set changes (invalidates all cached spectra).
                # Per-version history lives in notes.md. v18 = the PICASO
-               # equilibrium provider + picaso_climate T-P mode.
+               # equilibrium provider + picaso_climate T-P mode; v19 = the
+               # v18.1 review response (catalogued table correction +
+               # isolated-anomaly quarantine change affected picaso spectra;
+               # gas-masked npz ymix).
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
@@ -2551,20 +2554,35 @@ def run_model(params: dict, log=print) -> Path:
                 _j_left = (depth - dvals[-1]) / h
                 _j_right = (dvals[1] - depth) / h
                 _row_kink = _pck.kink_metric(_j_left, _j_right, jac[j])
-                _cell = _pck.bracketing_cells(cp["met_x_solar"],
-                                              cp["co_ratio"])
-                _row_cell = json.dumps({"param": name, "h": h,
-                                        "nodes": _cell["nodes"]})
+                # provenance covers BOTH cells the stencil traverses (v18.1:
+                # the baseline's bracketing alone under-recorded a node-
+                # centered stencil, which spans two cells by construction)
+                _m_lo, _c_lo = _pck.comp_step(cp["met_x_solar"],
+                                              cp["co_ratio"], name, -2.0 * h)
+                _m_hi, _c_hi = _pck.comp_step(cp["met_x_solar"],
+                                              cp["co_ratio"], name, +2.0 * h)
+                _row_cell = json.dumps({
+                    "param": name, "h": h,
+                    "nodes_minus2h": _pck.bracketing_cells(_m_lo,
+                                                           _c_lo)["nodes"],
+                    "nodes_plus2h": _pck.bracketing_cells(_m_hi,
+                                                          _c_hi)["nodes"]})
                 if _row_kink > _pck.FD_KINK_TOL:
                     raise RuntimeError(
                         f"composition Jacobian for {name} FAILED the node-"
                         f"kink gate: |J_right - J_left| / max|J_sym| = "
-                        f"{_row_kink:.3f} > {_pck.FD_KINK_TOL} across the "
-                        f"bracketing nodes {_cell['nodes']}. The one-sided "
-                        "table secants disagree materially, so no single "
-                        "derivative honestly summarizes this row. Move the "
-                        "baseline off the node (or accept the row's absence) "
-                        "-- an uncertified derivative is never reported.")
+                        f"{_row_kink:.3f} > {_pck.FD_KINK_TOL} (one-sided "
+                        f"secant scales: max|J_left| = "
+                        f"{float(np.max(np.abs(_j_left))):.3e}, "
+                        f"max|J_right| = "
+                        f"{float(np.max(np.abs(_j_right))):.3e}) across "
+                        f"{json.loads(_row_cell)['nodes_minus2h']} | "
+                        f"{json.loads(_row_cell)['nodes_plus2h']}. The "
+                        "one-sided table secants disagree materially, so no "
+                        "single derivative honestly summarizes this row. "
+                        "Move the baseline off the node (or accept the "
+                        "row's absence) -- an uncertified derivative is "
+                        "never reported.")
             fd_h.append(h)
             fd_err.append(err)
             row_method.append("fd-central")
@@ -2603,7 +2621,16 @@ def run_model(params: dict, log=print) -> Path:
 
     MODEL_CACHE.mkdir(parents=True, exist_ok=True)
     out = cache_path(params)
-    ymix_np = y_np / y_np.sum(axis=1, keepdims=True)
+    # npz ymix uses the SAME gas normalization the RT applies (v19):
+    # condensed-phase reservoir columns (*_l_s, incl. the picaso provider's
+    # graphite) are excluded -- the previously-saved all-column normalization
+    # silently disagreed with the spectra next to it.
+    _gas_np = np.ones(y_np.shape[1])
+    for _s, _i in chem.sidx.items():
+        if _s.endswith("_l_s"):
+            _gas_np[int(_i)] = 0.0
+    _y_gas_np = y_np * _gas_np[None, :]
+    ymix_np = _y_gas_np / _y_gas_np.sum(axis=1, keepdims=True)
     arrays = dict(
         wl_um=np.asarray(rt.wl_um, dtype=np.float64),
         depth=depth, depth_wo=depth_wo,

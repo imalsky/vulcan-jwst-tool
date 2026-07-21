@@ -35,6 +35,7 @@ from jwst_tool import adjoint_diag, datacheck, detect, fisher as fisher_mod, for
 from jwst_tool import noise as noise_mod
 from jwst_tool import instruments as ins
 from jwst_tool import planets
+from jwst_tool import runlimit
 
 # House figure style: recessive axes/grid, consistent typography, white face
 # (figures must download clean on any Streamlit theme). Data colors stay the
@@ -181,8 +182,29 @@ st.caption(f"**{ins.BACKEND_STATUS}**. Every result records the exact "
 # ---------------------------------------------------------------------------
 _STATUS_LABEL = {datacheck.OK: "installed", datacheck.MISSING: "MISSING",
                  datacheck.AUTO: "downloads on first use"}
-_data_report = datacheck.full_report(base_mols=forward.MOLECULES,
-                                     extra_mols=forward.EXTRA_MOLECULES)
+
+
+@st.cache_data(ttl=300, show_spinner="Checking installed data ...")
+def _cached_full_report(_nonce: int, _backend: str, _picaso_root: str):
+    # v18.1: the full report stats every external dataset -- including, when
+    # the PICASO tree is a remote Space volume, a ~2.5k-entry manifest pass
+    # -- so it must NOT run on every Streamlit rerun (every widget click).
+    # The TTL + the manual refresh button below bound its staleness; the
+    # backend + picaso-root args re-key the cache when the environment
+    # changes.
+    return datacheck.full_report(base_mols=forward.MOLECULES,
+                                 extra_mols=forward.EXTRA_MOLECULES)
+
+
+def _bump_data_nonce():
+    st.session_state["data_report_nonce"] = (
+        st.session_state.get("data_report_nonce", 0) + 1)
+
+
+_data_report = _cached_full_report(
+    st.session_state.get("data_report_nonce", 0),
+    ins.JWST_TOOL_BACKEND,
+    os.environ.get("JWST_TOOL_PICASO_REFDATA", ""))
 _missing_req = datacheck.missing_required(_data_report)
 if _missing_req:
     st.error(
@@ -213,6 +235,11 @@ with st.expander("Data status: what this machine has installed"
         f"results ({_c['noise_cache']['mb']} MB); safe to delete, rebuilt "
         "on demand. Console equivalent: `jwst-tool data` (add `--deep` to "
         "probe the Pandeia env's engine version).")
+    st.button("Refresh data status", on_click=_bump_data_nonce,
+              key="data_refresh_btn",
+              help="The status above is cached for 5 minutes (scanning "
+                   "every dataset is slow on remote volumes); refresh after "
+                   "installing data.")
 
 _PROG_RE = re.compile(r"\[fwd\] PROG ([0-9.]+) (.*)")
 _ADJ_PROG_RE = re.compile(r"\[adj\] PROG ([0-9.]+) (.*)")
@@ -564,12 +591,19 @@ with st.sidebar:
                 key=_k("rcb"),
                 help="A layer index on the 91-level climate grid (larger = "
                      "deeper). This is a MODEL ASSUMPTION, not just a solver "
-                     "seed: for strongly irradiated planets the converged "
-                     "deep profile depends on it (measured on WASP-39b "
-                     "defaults: rcb 60 vs 65 both converge but differ by up "
-                     "to ~340 K below 0.4 bar, with layers above the "
-                     "boundary agreeing to ~2 K -- the weakly constrained "
-                     "deep-adiabat degeneracy). Cache-keyed; the T_int "
+                     "seed. Measured on WASP-39b defaults (2026-07-21): the "
+                     "certification already REFUSES too-shallow guesses "
+                     "(rcb 45/50 fail the flux gate, 55 leaves the T "
+                     "window), and every certified deep guess (60-75) is "
+                     "Schwarzschild-consistent -- the deep-adiabat "
+                     "attachment is genuinely degenerate in a static RCE "
+                     "solve (T at 1 bar: 1820 K at rcb 60 vs ~1595 K at "
+                     "65-75). Observable consequence: a broadband "
+                     "transmission-depth shift of ~360-630 ppm between "
+                     "certified choices (largely absorbed by the reference-"
+                     "radius nuisance in forecasts) and REAL emission "
+                     "sensitivity in deep-probing windows (up to ~86% of "
+                     "Fp at specific wavelengths). Cache-keyed; the T_int "
                      "Fisher row differentiates at fixed rcb.")
             st.caption(
                 "PICASO radiative-convective equilibrium T-P, post-processed "
@@ -583,6 +617,17 @@ with st.sidebar:
                 "WASP-39b configuration; other planets/nodes are "
                 "convergence-gated at run time and should be treated as "
                 "experimental.")
+            if science_mode == "emission":
+                st.warning(
+                    "Emission + climate mode: the day-side flux probes the "
+                    "depths where the radiative-convective-boundary "
+                    "assumption genuinely matters -- certified rcb choices "
+                    "differ by up to ~86% of Fp in deep-probing windows "
+                    "(median ~0.05%; measured on WASP-39b defaults, "
+                    "2026-07-21). Treat deep-window emission results as "
+                    "conditional on the rcb setting; transmission is far "
+                    "less sensitive (a broadband shift the reference-radius "
+                    "nuisance absorbs).")
         elif tp_mode == "file":
             tp_file = st.radio(
                 "Profile source", [forward.TP_FILE_SHIPPED,
@@ -1241,10 +1286,17 @@ with st.sidebar:
                 "about 1 to 2 minutes. There is no MCMC and there are no "
                 "priors.")
             if goal == "constrain":
+                # defaults FILTERED by the live menu and the key carries the
+                # provider (v18.1): under picaso lnKzz is not an option, and
+                # Streamlit hard-raises on a default outside the options --
+                # an unfiltered default crashed every constrain-goal render
+                # after switching to the PICASO engine.
                 fisher_extra = st.multiselect(
                     "Jointly free parameters", avail_free,
-                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")],
-                    key=K(f"fx_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
+                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
+                             if p in avail_free],
+                    key=K(f"fx_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
+                          f"{int(bool(mie_condensate))}"),
                     format_func=lambda n: forward.PARAM_LABELS[n],
                     help="The goal parameter is always included. More free "
                          "parameters = a more honest (wider) forecast; each "
@@ -1261,8 +1313,10 @@ with st.sidebar:
                          "on).")
                 fisher_params = st.multiselect(
                     "Free parameters", avail_free,
-                    key=K(f"fp_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
-                    default=["lnZ", "dlnCO", "lnKzz"],
+                    key=K(f"fp_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
+                          f"{int(bool(mie_condensate))}"),
+                    default=[p for p in ("lnZ", "dlnCO", "lnKzz")
+                             if p in avail_free],
                     format_func=lambda n: forward.PARAM_LABELS[n],
                     ) if do_fisher else []
 
@@ -1490,6 +1544,25 @@ def compute():
     if not mode_keys:
         st.error("Select at least one instrument mode.")
         return None
+    # v18.1 public-instance protection: heavy subprocesses (forward + ETC)
+    # hold ONE concurrency slot for their whole duration; when every slot is
+    # busy the launch is declined instead of piling more solvers onto the
+    # shared hardware. Cached results never need a slot.
+    _slot = runlimit.acquire("forward+etc")
+    if _slot is None:
+        st.error(
+            f"This instance is already running {runlimit.MAX_CONCURRENT} "
+            "heavy calculations (it is shared, public hardware). Please try "
+            "again in a few minutes -- previously computed results stay "
+            "instant.")
+        return None
+    try:
+        return _compute_locked()
+    finally:
+        _slot.release()
+
+
+def _compute_locked():
 
     model = forward.load_result(params)
     if model is None:
@@ -1667,6 +1740,10 @@ if "picaso_cert_json" in model:
         + (f"; {len(_pcert['suspect_cells_in_span'])} known suspect table "
            "cell(s) inside the profile span (see docs/picaso_roadmap.md)"
            if _pcert.get("suspect_cells_in_span") else "")
+        + (f"; {len(_pcert['corrections_applied'])} catalogued table "
+           "correction(s) applied (content-guarded registry, "
+           "docs/picaso_roadmap.md)"
+           if _pcert.get("corrections_applied") else "")
         + ". Ions and electrons are counted in the gas total; graphite is "
           "excluded as a condensate.")
 if "climate_provenance_json" in model:
@@ -2256,46 +2333,60 @@ with st.expander("Which reactions and temperatures control a molecule?"):
             "the persistent JAX compile cache, so later runs skip straight "
             "to the solve.")
         if st.button("Run adjoint diagnostics", key=K("adjrun")):
-            with st.status("Running reverse-mode adjoint diagnostics …",
-                           expanded=True) as status:
-                # no prior: the first run on a machine compiles the step-VJP
-                # (hours on CPU) while later runs skip it, so any pre-run
-                # estimate would be wrong one way or the other. The
-                # remaining-time readout is purely measured.
-                bar = _TimedBar(text="starting …")
-                adjoint_diag.ADJOINT_CACHE.mkdir(parents=True, exist_ok=True)
-                _apf = (adjoint_diag.ADJOINT_CACHE /
-                        f"{adjoint_diag.adjoint_key(_cpj, adj_species)}"
-                        ".params.json")
-                _apf.write_text(json.dumps(_cpj))
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "jwst_tool.adjoint_diag",
-                     str(_apf), adj_species],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                box = st.empty()
-                lines = []
+            _adj_slot = runlimit.acquire("adjoint")
+            if _adj_slot is None:
+                st.error(
+                    f"This instance is already running "
+                    f"{runlimit.MAX_CONCURRENT} heavy calculations "
+                    "(shared, public hardware). Try again in a few "
+                    "minutes.")
+                st.stop()
+            try:
+                with st.status("Running reverse-mode adjoint diagnostics …",
+                               expanded=True) as status:
+                    # no prior: the first run on a machine compiles the step-VJP
+                    # (hours on CPU) while later runs skip it, so any pre-run
+                    # estimate would be wrong one way or the other. The
+                    # remaining-time readout is purely measured.
+                    bar = _TimedBar(text="starting …")
+                    adjoint_diag.ADJOINT_CACHE.mkdir(parents=True, exist_ok=True)
+                    _apf = (adjoint_diag.ADJOINT_CACHE /
+                            f"{adjoint_diag.adjoint_key(_cpj, adj_species)}"
+                            ".params.json")
+                    _apf.write_text(json.dumps(_cpj))
+                    proc = subprocess.Popen(
+                        [sys.executable, "-m", "jwst_tool.adjoint_diag",
+                         str(_apf), adj_species],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    box = st.empty()
+                    lines = []
 
-                def _adj_line(line):
-                    m = _ADJ_PROG_RE.match(line)
-                    if m:
-                        bar.update(min(1.0, float(m.group(1))), m.group(2))
+                    def _adj_line(line):
+                        m = _ADJ_PROG_RE.match(line)
+                        if m:
+                            bar.update(min(1.0, float(m.group(1))), m.group(2))
+                        else:
+                            lines.append(line)
+                            box.code("\n".join(lines[-10:]))
+                            bar.tick()
+
+                    _watch_proc(proc, _adj_line, bar.tick)
+                    proc.wait()
+                    if proc.returncode != 0:
+                        status.update(label="Adjoint diagnostics failed",
+                                      state="error")
+                        st.error("Adjoint diagnostics failed:\n\n```\n"
+                                 + "\n".join(lines[-25:]) + "\n```")
                     else:
-                        lines.append(line)
-                        box.code("\n".join(lines[-10:]))
-                        bar.tick()
-
-                _watch_proc(proc, _adj_line, bar.tick)
-                proc.wait()
-                if proc.returncode != 0:
-                    status.update(label="Adjoint diagnostics failed",
-                                  state="error")
-                    st.error("Adjoint diagnostics failed:\n\n```\n"
-                             + "\n".join(lines[-25:]) + "\n```")
-                else:
-                    bar.done()
-                    status.update(label="Adjoint diagnostics done",
-                                  state="complete")
-                    st.rerun()
+                        bar.done()
+                        status.update(label="Adjoint diagnostics done",
+                                      state="complete")
+                        st.rerun()
+            finally:
+                # release even on failure: this runs inside the
+                # long-lived Streamlit server, so a leaked slot
+                # would stay held until a server restart
+                _adj_slot.release()
     else:
         _trust = bool(adj["magnitudes_trusted"])
         st.caption(
