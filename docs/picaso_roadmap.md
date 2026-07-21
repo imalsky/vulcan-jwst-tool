@@ -57,7 +57,25 @@ findings behind its design decisions, and the features deliberately deferred
 - **No SO2 / S2 / S8** under the picaso provider: equilibrium sulfur sits in
   H2S / OCS. The WASP-39b photochemical-sulfur headline science stays
   VULCAN-only. The GUI removes SO2 from the menus; `canonical_params`
-  refuses it loudly.
+  refuses it loudly. Since v20 both equilibrium sulfur carriers ARE
+  modeled: H2S is in the picaso BASE RT set (it is the dominant
+  equilibrium S reservoir at 700-1500 K and part of picaso's own default
+  species set; measured max removed-molecule signal 1259 ppm on the W39b
+  10x-solar default) and OCS is an opt-in extra under BOTH engines
+  (nu3 ~4.85 um inside G395H/PRISM; 69 ppm max on the same default --
+  real but marginal, hence opt-in). The SNCHO network names the species
+  COS; the registry token maps to the table's OCS column via
+  `picaso_chem.VULCAN_TO_TABLE`.
+- **Species tabulated but spectrally invisible**: the Visscher tables
+  carry Na, K, TiO, VO, Fe, FeH, CrH, PH3, N2 (and more) -- all counted
+  in the mean molecular weight, none in the opacity. Na/K are doubly out
+  of scope (the RT native grid starts at 1 um, above both resonance
+  doublets, and exojax atomic lines + Allard wing profiles are a
+  project); PH3 has no line list on disk (HITRAN room-T entry would be
+  the unblock) and would need a provider-split extras menu; TiO/VO/FeH
+  and H- matter only above ~1600-2000 K photospheres, which the
+  ultra-hot warning already covers. N2 is spectrally inactive and
+  correctly mmw-only.
 - **C/O hard-capped at 1.10** by the Visscher grid (VULCAN handles 2.0
   structurally). Metallicity spans 0.1-100x solar ([M/H] in [-1, 2]).
 - **Composition derivatives are TWO-CELL INTERPOLANT SECANTS**, not local

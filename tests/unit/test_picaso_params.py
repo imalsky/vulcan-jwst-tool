@@ -44,7 +44,7 @@ def _fp(monkeypatch):
 
 def test_vulcan_defaults_carry_inert_picaso_keys():
     cp = forward.canonical_params(_p())
-    assert cp["version"] == 19
+    assert cp["version"] == 20
     assert cp["chem_provider"] == "vulcan"
     assert cp["picaso_version"] == ""
     assert cp["picaso_chemgrid_sha1"] == ""
@@ -132,7 +132,7 @@ def test_picaso_fisher_menu_and_envelope():
 
 def test_picaso_extras_accepted():
     cp = forward.canonical_params(_pp(extra_mols=["HCN", "NH3"]))
-    assert forward.active_molecules(cp) == ["H2O", "CO2", "CO", "CH4",
+    assert forward.active_molecules(cp) == ["H2O", "CO2", "CO", "CH4", "H2S",
                                             "HCN", "NH3"]
 
 

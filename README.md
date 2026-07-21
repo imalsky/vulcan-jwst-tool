@@ -15,7 +15,8 @@ radiative-convective climate T-P mode usable under EITHER engine (VULCAN
 kinetics can run on the PICASO climate profile). Both engines feed the
 identical RT, binning, noise, and Fisher machinery, so
 equilibrium-vs-kinetics is directly comparable. The PICASO engine has no
-photochemistry and therefore no SO2 (equilibrium sulfur is H2S/OCS), is
+photochemistry and therefore no SO2 (equilibrium sulfur is H2S -- in the
+base opacity set -- plus opt-in OCS), is
 capped at C/O 1.10 by its tables, and is finite-difference only; its
 reference data is selected by `JWST_TOOL_PICASO_REFDATA`. Scope, measured
 limits, and deferred features: `docs/picaso_roadmap.md`.

@@ -83,9 +83,19 @@ CK_NODES_AVAILABLE = tuple(
 assert len(CK_NODES_AVAILABLE) == 70
 
 #: RT molecules the provider supplies (NO SO2/S2/S8: equilibrium sulfur sits
-#: in H2S/OCS -- the W39b photochemical-sulfur science stays VULCAN-only)
-PICASO_MOLECULES = ["H2O", "CO2", "CO", "CH4"]
-PICASO_EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
+#: in H2S/OCS -- the W39b photochemical-sulfur science stays VULCAN-only).
+#: H2S is BASE here (v20): it is the dominant equilibrium sulfur reservoir at
+#: 700-1500 K (and in picaso's own default species set), and leaving it
+#: opt-in made the default eq-vs-kinetics comparison asymmetric on sulfur
+#: (the vulcan base carries SO2 while the picaso base carried no S at all).
+PICASO_MOLECULES = ["H2O", "CO2", "CO", "CH4", "H2S"]
+PICASO_EXTRA_MOLECULES = ["C2H2", "HCN", "NH3", "OCS"]
+
+#: registry vulcan-token -> table column, for species where the SNCHO
+#: network and the Visscher tables disagree on the name; the picaso chem
+#: adapter aliases sidx so the shared depth path's registry-token lookup
+#: works under both engines
+VULCAN_TO_TABLE = {"COS": "OCS"}
 
 #: table span (validated by the loader) and provider pressure policy: the
 #: tables start at 1e-6 bar, so the provider chemistry grid spans exactly

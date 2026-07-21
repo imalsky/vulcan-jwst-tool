@@ -36,6 +36,7 @@ from jwst_tool import noise as noise_mod
 from jwst_tool import instruments as ins
 from jwst_tool import planets
 from jwst_tool import runlimit
+from jwst_tool import picaso_chem
 
 # House figure style: recessive axes/grid, consistent typography, white face
 # (figures must download clean on any Streamlit theme). Data colors stay the
@@ -1067,8 +1068,9 @@ with st.sidebar:
 
     with st.expander("Opacity, scattering & clouds"):
         _base_set, _extra_set = ((forward.MOLECULES, forward.EXTRA_MOLECULES)
-                                 if not _pic else (["H2O", "CO2", "CO", "CH4"],
-                                                   forward.EXTRA_MOLECULES))
+                                 if not _pic else
+                                 (picaso_chem.PICASO_MOLECULES,
+                                  picaso_chem.PICASO_EXTRA_MOLECULES))
         st.caption(
             "RT opacity always includes the base set "
             f"**{' · '.join(_base_set)}** (solved on every run). The "
@@ -1081,20 +1083,22 @@ with st.sidebar:
         # live line-list availability for the CURRENT broadening choice (the
         # widget below; previous-run value via session_state, default "air")
         _mol_status = datacheck.molecule_linelist_status(
-            forward.EXTRA_MOLECULES,
+            list(_extra_set),
             broadening=st.session_state.get(K("broad"), "air"))
         _MOL_NOTE = {datacheck.OK: "opacity cached",
                      datacheck.AUTO: "downloads on first use",
                      datacheck.MISSING: "engine data missing"}
         extra_mols = st.multiselect(
-            "Extra RT molecules", forward.EXTRA_MOLECULES, default=[],
-            key=K("xmols"),
+            "Extra RT molecules", list(_extra_set), default=[],
+            key=K(f"xmols_{chem_provider}"),
             format_func=lambda m: f"{m}  ({_MOL_NOTE[_mol_status[m]]})",
             help="Added to the base opacity set (the chemistry always solves "
-                 "them). C2H2/HCN matter at high C/O, H2S at 3.8-4.6 µm, NH3 on "
-                 "cool (≲900 K) planets. Each entry shows whether its HITRAN "
-                 "line list is already cached locally or will be downloaded "
-                 "on first use (~10-15 s each, network required).")
+                 "them). C2H2/HCN matter at high C/O, H2S at 3.8-4.6 µm "
+                 "(already in the base set under PICASO), NH3 on cool "
+                 "(≲900 K) planets, and OCS is the second equilibrium "
+                 "sulfur carrier (~4.85 µm). Each entry shows whether its "
+                 "HITRAN line list is already cached locally or will be "
+                 "downloaded on first use (~10-15 s each, network required).")
         if science_mode == "emission":
             # canonical_params forces Rayleigh OFF in emission (the pure-
             # absorption day-side solver has no scattering channel) -- show

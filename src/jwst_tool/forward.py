@@ -88,7 +88,9 @@ retrieval framework uses):
         bot_flux      constant bottom-boundary rows [species, flux, vdep]
                       (flux in molecules cm^-2 s^-1, deposition velocity
                       vdep in cm s^-1)
-      extra_mols    opt-in RT molecules beyond the base 5 (C2H2/H2S/HCN/NH3)
+      extra_mols    opt-in RT molecules beyond the base set (C2H2/H2S/HCN/
+                    NH3/OCS; under picaso H2S is base and the extras are
+                    C2H2/HCN/NH3/OCS)
       rt_ptop_bar / rt_integration / rt_dit_res  (v15)
                     ExoJAX RT top pressure (band-saturation "wall" knob),
                     ArtTransPure chord-integration scheme (simpson/trapezoid),
@@ -175,9 +177,10 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # Opt-in RT additions: the SNCHO network already solves these; adding one costs a
 # premodit build (~10-15 s, HITRAN lines downloaded on first use) + one removed
 # spectrum. C2H2/HCN carry the high-C/O signal, H2S the 3.8-4.6 um reduced-sulfur
-# feature, NH3 the cool (<~900 K) nitrogen chemistry.
-EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3"]
-_VERSION = 19  # model_cache buster: bump whenever the physics or the
+# feature, NH3 the cool (<~900 K) nitrogen chemistry, OCS the second
+# equilibrium sulfur carrier (nu3 ~4.85 um; the SNCHO network token is COS).
+EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3", "OCS"]
+_VERSION = 20  # model_cache buster: bump whenever the physics or the
                # canonical key set changes (invalidates all cached spectra).
                # Per-version history lives in notes.md. v18 = the PICASO
                # equilibrium provider + picaso_climate T-P mode; v19 = the
@@ -1847,6 +1850,12 @@ def _assemble_chem_picaso(cp: dict, log, clim=None):
             if _need not in sidx:
                 raise RuntimeError(
                     f"picaso tables miss required species {_need}")
+        # registry-token aliases where SNCHO and the tables disagree on a
+        # species name (OCS: SNCHO "COS", table "OCS") -- the shared depth
+        # path looks RT molecules up by the registry's vulcan token
+        for _tok, _tab in pc.VULCAN_TO_TABLE.items():
+            if _tab in sidx:
+                sidx.setdefault(_tok, sidx[_tab])
         return SimpleNamespace(
             p_bar=p_bar, sidx=sidx,
             species_masses=np.asarray(state0.species_masses),
