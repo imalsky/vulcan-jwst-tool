@@ -462,23 +462,23 @@ with st.sidebar:
     st.markdown("### Forward model")
     chem_provider = st.selectbox(
         "Chemistry engine", ["vulcan", "picaso"], index=0, key=K("provider"),
-        format_func={"vulcan": "VULCAN-JAX kinetics (photochemistry; default)",
-                     "picaso": "PICASO equilibrium (no photochemistry / "
-                               "SO2; C/O ≤ 1.10)"}.get,
-        help="VULCAN-JAX solves the full photochemical-kinetics network "
-             "(transport, photolysis, quenching, SO2 and the other "
-             "disequilibrium products). PICASO supplies thermochemical-"
-             "EQUILIBRIUM abundances interpolated from the Visscher 2121 "
-             "grid: no kinetics, no transport, no photochemistry, and "
-             "therefore NO SO2/S2/S8 (equilibrium sulfur sits in H2S/OCS) "
-             "-- photochemical-sulfur science needs VULCAN. Both engines "
-             "feed the identical ExoJAX radiative transfer, binning, "
-             "Pandeia noise, and Fisher machinery, so results are directly "
-             "comparable (equilibrium vs kinetics is the science axis). "
-             "The PICASO provider is seconds per state instead of minutes, "
-             "is capped at C/O 1.10 by its tables, and its composition "
-             "derivatives are two-cell table secants guarded by a kink "
-             "gate; derivatives are finite-difference only.")
+        format_func={"vulcan": "VULCAN", "picaso": "PICASO"}.get,
+        help="Which model computes the atmosphere's chemical makeup.\n\n"
+             "**VULCAN** simulates the chemistry in motion: starlight "
+             "breaking molecules apart (photochemistry), winds mixing "
+             "layers, and reactions racing each other. That is how "
+             "out-of-equilibrium molecules like SO2 -- the WASP-39 b "
+             "headline detection -- appear. A run takes a few minutes.\n\n"
+             "**PICASO** assumes every reaction has fully settled "
+             "(chemical equilibrium) and reads the answer from "
+             "pre-computed tables, so a run takes seconds. The trade: no "
+             "photochemistry means no SO2, and its tables stop at "
+             "C/O = 1.10. Parameter constraints use finite differences "
+             "only.\n\n"
+             "Both engines feed the exact same radiative transfer, noise "
+             "model, and statistics, so switching engines shows you what "
+             "the disequilibrium physics does -- that comparison is the "
+             "point of having both.")
     _pic = chem_provider == "picaso"
     if _pic:
         st.session_state[K("jacm")] = "fd"   # tables are not differentiable
@@ -507,13 +507,12 @@ with st.sidebar:
              "result row is labeled with the method that produced it. "
              "The post-run adjoint diagnostics panel uses reverse-mode "
              "AD regardless of this choice.")
-    st.markdown("### PICASO equilibrium chemistry" if _pic
-                else "### VULCAN chemistry")
+    st.markdown("### PICASO chemistry" if _pic else "### VULCAN chemistry")
     if _pic:
-        st.caption("Inputs to the PICASO equilibrium provider (blended "
-                   "Visscher 2121 grid → equilibrium abundances on the "
-                   "chosen T-P). The T-P profile is shared: it also sets "
-                   "the ExoJAX radiative transfer below.")
+        st.caption("What goes into the PICASO equilibrium lookup: the "
+                   "temperature profile and the composition below. The "
+                   "same temperature profile also drives the ExoJAX "
+                   "radiative transfer.")
     else:
         st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward "
                    "model (composition + transport + photochemistry → "
@@ -562,72 +561,79 @@ with st.sidebar:
             tp_kwargs["tint_cl"] = st.number_input(
                 "Internal temperature T_int (K)", *forward.TINT_CL_RANGE,
                 forward.TINT_CL_DEFAULT, 10.0, key=_k("tintcl"),
-                help="The planet's interior heat flux, the one structure "
-                     "parameter of the climate solve (and its one Fisher "
-                     "row, computed by full climate re-solves). Strongly "
-                     "irradiated planets respond weakly to it above the "
-                     "radiative-convective boundary.")
+                help="How much heat leaks out of the planet's own interior, "
+                     "expressed as a temperature. It is the one adjustable "
+                     "structure parameter of the climate solve (and can be "
+                     "a constraint target, computed by re-running the full "
+                     "climate at nudged values). On strongly irradiated "
+                     "planets the star dominates, so the upper atmosphere "
+                     "barely notices T_int.")
             tp_kwargs["rfacv"] = st.selectbox(
                 "Day-night heat redistribution (rfacv)",
                 list(forward.RFACV_CHOICES), index=1, key=_k("rfacv"),
                 format_func={0.0: "0 -- no irradiation (isolated interior)",
                              0.5: "0.5 -- full redistribution (default)",
                              1.0: "1 -- dayside-only"}.get,
-                help="How the absorbed stellar flux is shared between "
-                     "hemispheres in the climate solve. The star parameters "
-                     "above set the irradiation, so they are model physics "
-                     "in this mode (cache-keyed).")
+                help="How the star's heat is shared around the planet: 0.5 "
+                     "means winds spread it evenly over both hemispheres "
+                     "(the usual choice), 1 means the day side keeps it "
+                     "all, 0 means no starlight at all (an isolated, "
+                     "self-heated object). The star settings above feed "
+                     "this, so in climate mode they are part of the model "
+                     "itself. Note the extremes can leave the modelable "
+                     "temperature range and refuse loudly.")
             tp_kwargs["tio_vo"] = st.checkbox(
                 "Include TiO/VO in climate opacity only", value=False,
                 key=_k("tiovo"),
-                help="Selects the correlated-k tables WITH TiO/VO opacity "
-                     "(appropriate for very hot atmospheres where they have "
-                     "not rained out; default off = the NoTiOVO tables). "
-                     "This affects ONLY the climate solve's opacity -- "
-                     "TiO/VO are NOT in the spectrum's RT molecule set.")
+                help="Titanium- and vanadium-oxide absorb strongly in very "
+                     "hot atmospheres; in cooler ones they rain out and "
+                     "vanish. Off (default) = tables without them, right "
+                     "for warm planets like WASP-39 b. This choice affects "
+                     "ONLY how the climate solver computes heating -- the "
+                     "final spectrum's molecule list never includes "
+                     "TiO/VO either way.")
             tp_kwargs["climate_rcb"] = st.number_input(
                 "Radiative-convective boundary guess (layer index)",
                 *forward.CLIMATE_RCB_RANGE, forward.CLIMATE_RCB_DEFAULT, 1,
                 key=_k("rcb"),
-                help="A layer index on the 91-level climate grid (larger = "
-                     "deeper). This is a MODEL ASSUMPTION, not just a solver "
-                     "seed. Measured on WASP-39b defaults (2026-07-21): the "
-                     "certification already REFUSES too-shallow guesses "
-                     "(rcb 45/50 fail the flux gate, 55 leaves the T "
-                     "window), and every certified deep guess (60-75) is "
-                     "Schwarzschild-consistent -- the deep-adiabat "
-                     "attachment is genuinely degenerate in a static RCE "
-                     "solve (T at 1 bar: 1820 K at rcb 60 vs ~1595 K at "
-                     "65-75). Observable consequence: a broadband "
-                     "transmission-depth shift of ~360-630 ppm between "
-                     "certified choices (largely absorbed by the reference-"
-                     "radius nuisance in forecasts) and REAL emission "
-                     "sensitivity in deep-probing windows (up to ~86% of "
-                     "Fp at specific wavelengths). Cache-keyed; the T_int "
-                     "Fisher row differentiates at fixed rcb.")
+                help="Where the atmosphere switches from radiating its heat "
+                     "away (upper layers) to churning like a boiling pot "
+                     "(deep layers), given as a layer number on the "
+                     "91-level climate grid; bigger = deeper. Honest "
+                     "caveat: this is an ASSUMPTION, not something the "
+                     "solver finds on its own. For a strongly irradiated "
+                     "planet several different choices all pass every "
+                     "physical check yet give deep temperatures differing "
+                     "by hundreds of K (too-shallow choices DO get caught "
+                     "and refused). The visible effect on a transit "
+                     "spectrum is mostly a uniform up-down shift that the "
+                     "analysis absorbs into the reference radius; day-side "
+                     "EMISSION at depth-probing wavelengths genuinely "
+                     "depends on it (the warning below appears in emission "
+                     "mode).")
             st.caption(
-                "PICASO radiative-convective equilibrium T-P, post-processed "
-                "with the selected chemistry engine and ExoJAX RT. The "
-                "coupling is ONE-WAY: the chemistry never feeds back into "
-                "the climate opacity, so this is not chemistry-radiative "
-                "self-consistency. Composition must sit exactly ON a "
-                "correlated-k node (the Composition menus switch to node "
-                "selectors). First solve ~1-2 min, then cached and shared "
-                "between both chemistry engines. Certified around the "
-                "WASP-39b configuration; other planets/nodes are "
-                "convergence-gated at run time and should be treated as "
-                "experimental.")
+                "PICASO computes a self-consistent temperature profile by "
+                "balancing starlight in against heat out (a radiative-"
+                "convective climate solve), and the selected chemistry "
+                "engine then runs on that profile. The information flows "
+                "one way: the chemistry you compute afterwards never feeds "
+                "back into the climate's heating. The first solve takes a "
+                "minute or two, then it is cached and shared by both "
+                "engines. Best tested around WASP-39 b; other planets are "
+                "checked at run time and refuse loudly if anything fails.")
             if science_mode == "emission":
                 st.warning(
-                    "Emission + climate mode: the day-side flux probes the "
-                    "depths where the radiative-convective-boundary "
-                    "assumption genuinely matters -- certified rcb choices "
-                    "differ by up to ~86% of Fp in deep-probing windows "
-                    "(median ~0.05%; measured on WASP-39b defaults, "
-                    "2026-07-21). Treat deep-window emission results as "
-                    "conditional on the rcb setting; transmission is far "
-                    "less sensitive (a broadband shift the reference-radius "
-                    "nuisance absorbs).")
+                    "Emission + climate mode: day-side light at some "
+                    "wavelengths comes from exactly the depths where the "
+                    "radiative-convective boundary assumption above "
+                    "matters. Different (all-valid) boundary choices can "
+                    "change the flux in those windows by tens of percent "
+                    "(measured up to ~86% at specific wavelengths on "
+                    "WASP-39 b, while the typical wavelength moves only "
+                    "~0.05%). Read deep-probing emission features as "
+                    "conditional on that setting. Transmission is far less "
+                    "affected -- there it is mostly a uniform shift the "
+                    "analysis absorbs into the reference radius.")
         elif tp_mode == "file":
             tp_file = st.radio(
                 "Profile source", [forward.TP_FILE_SHIPPED,
@@ -722,47 +728,51 @@ with st.sidebar:
             from jwst_tool import picaso_chem as pchem
             _feh_opts = [x for x in pchem.FEH_NODES if -1.0 <= x <= 2.0]
             _feh = st.selectbox(
-                "Metallicity node", _feh_opts,
+                "Metallicity", _feh_opts,
                 index=_feh_opts.index(1.0), key=K("metnode"),
                 format_func=lambda x: f"{10.0 ** x:g} × solar "
                                       f"([M/H] = {x:+.1f})",
-                help="Climate mode accepts only the shipped correlated-k "
-                     "metallicity nodes (the CK tables carry no composition "
-                     "interpolation).")
+                help="The climate solver's opacity tables exist only at "
+                     "these fixed metallicity values and cannot be blended "
+                     "between them, so climate mode offers exactly the "
+                     "shipped choices.")
             met = float(10.0 ** _feh)
             _co_opts = [c for c in pchem.CO_NODES
                         if (f"feh{_feh:.1f}_co{c:.2f}"
                             in pchem.CK_NODES_AVAILABLE)]
             co_ratio = st.selectbox(
-                "C/O node", _co_opts,
+                "C/O", _co_opts,
                 index=_co_opts.index(0.55) if 0.55 in _co_opts else 0,
                 key=K(f"conode_{_feh:.1f}"),
                 format_func=lambda c: f"{c:.2f}",
-                help="Shipped C/O nodes at this metallicity (the extreme "
-                     "metallicity nodes carry only the mid C/O columns). "
-                     "NOTE: at a node the C/O constraint row can refuse "
-                     "(the one-sided table secants differ there -- the "
-                     "measured node-kink gate); metallicity rows are fine.")
+                help="Same story as metallicity: only the shipped table "
+                     "values are available (the most extreme metallicities "
+                     "ship fewer C/O options). Heads-up: a C/O CONSTRAINT "
+                     "forecast at the 0.55 value will refuse, because the "
+                     "chemistry tables take a sharp turn exactly there and "
+                     "no trustworthy derivative exists; metallicity "
+                     "constraints are fine.")
         elif _pic:
             met = st.number_input(
                 "Metallicity (× solar)", *forward.PICASO_MET_RANGE, 10.0, 0.5,
                 format="%.2f", key=K("met_pic"),
-                help="Any value in [0.1, 100] × solar. Interpolated "
-                     "bilinearly (in log abundance) between the bracketing "
-                     "Visscher-grid nodes; the constraint row is a two-cell "
-                     "table secant, kink-gated at nodes.")
+                help="How enriched the atmosphere is in elements heavier "
+                     "than helium, from 0.1x to 100x the Sun's value. "
+                     "PICASO's tables are computed at fixed metallicity "
+                     "steps; values in between are smoothly interpolated.")
             co_ratio = st.number_input(
                 "C/O (carbon/oxygen number ratio)",
                 *forward.PICASO_CO_RANGE, 0.50, 0.01,
                 format="%.3f", key=K("co_pic"),
-                help="Hard-capped at 1.10 by the Visscher equilibrium grid "
-                     "(VULCAN handles up to 2.0). Default 0.50 sits "
-                     "MID-CELL, where the C/O constraint row is a clean "
-                     "single-cell secant; exactly ON a node (e.g. 0.55) the "
-                     "one-sided secants differ materially and the C/O row "
-                     "refuses (measured kink 1.5 at the 0.55 node on W39b "
-                     "defaults -- the table-resolution limit, stated not "
-                     "hidden).")
+                help="Carbon-to-oxygen ratio, capped at 1.10 by PICASO's "
+                     "tables (the VULCAN engine goes to 2.0). One honest "
+                     "quirk: the tables are computed at a handful of C/O "
+                     "values, and the chemistry takes a sharp turn right "
+                     "at the 0.55 table point -- so a C/O CONSTRAINT "
+                     "forecast requested exactly at 0.55 will refuse (the "
+                     "tool never reports a derivative it cannot trust). "
+                     "The default 0.50 sits between table points, where "
+                     "everything works cleanly.")
         else:
             # Composition is fully STRUCTURAL (v13, one path for every
             # value): metallicity scales the cfg's O/C/N/S abundances
@@ -802,11 +812,14 @@ with st.sidebar:
         # simply never offers them. Quench/lnKzz is a deferred feature
         # (docs/picaso_roadmap.md in the repo).
         st.caption(
-            "PICASO equilibrium provider: no transport, photochemistry, "
-            "condensation, or boundary conditions (equilibrium has none). "
-            "The quench approximation with an lnKzz constraint row is a "
-            "deferred feature; see docs/picaso_roadmap.md. Photochemical "
-            "sulfur (SO2) needs the VULCAN-JAX engine.")
+            "The PICASO engine assumes the chemistry has fully settled, so "
+            "the knobs for mixing, photochemistry, condensation, and "
+            "boundary conditions do not exist here -- in equilibrium, none "
+            "of them would change the answer. A planned update adds "
+            "'quenching' (a shortcut for the effect of mixing) together "
+            "with its Kzz constraint; the plan is in "
+            "docs/picaso_roadmap.md. If you want photochemical sulfur "
+            "(SO2), switch the chemistry engine to VULCAN.")
         kzz_mode, kzz_x = "const", 1.0
         kzz_const, kzz_kmax, kzz_plev, kzz_kdeep = 1.0e9, 0.0, 0.0, 0.0
         use_photo, sl_angle_deg, f_diurnal = False, 83.0, 1.0
@@ -1054,8 +1067,10 @@ with st.sidebar:
             "RT opacity always includes the base set "
             f"**{' · '.join(_base_set)}** (solved on every run). The "
             f"opt-in extras are **{' · '.join(_extra_set)}**. "
-            + ("The PICASO provider has NO SO2/S2/S8 (equilibrium sulfur "
-               "sits in H2S/OCS). " if _pic else "")
+            + ("No SO2 here: in settled (equilibrium) chemistry sulfur "
+               "hides in H2S and OCS instead -- SO2 only exists because "
+               "starlight keeps making it, which is the VULCAN engine's "
+               "territory. " if _pic else "")
             + "Adding more is currently in development.")
         # live line-list availability for the CURRENT broadening choice (the
         # widget below; previous-run value via session_state, default "air")
@@ -1566,7 +1581,9 @@ def _compute_locked():
 
     model = forward.load_result(params)
     if model is None:
-        with st.status("Running VULCAN-JAX + ExoJAX forward model locally …",
+        _engine_lbl = "PICASO" if chem_provider == "picaso" else "VULCAN-JAX"
+        with st.status(f"Running {_engine_lbl} + ExoJAX forward model "
+                       "locally …",
                        expanded=True) as status:
             # prior = the same rough pre-run estimate shown next to the Run
             # button; the bar's remaining time converges to the measured pace
@@ -1728,24 +1745,32 @@ if "conv_longdy" in model and np.asarray(model["conv_longdy"]).size:
 if "picaso_cert_json" in model:
     _pcert = json.loads(str(model["picaso_cert_json"]))
     st.caption(
-        "PICASO equilibrium certificate: blend nodes "
+        "PICASO equilibrium quality check (every item passed, or the run "
+        "would have refused): built from the table grid points "
         f"{_pcert['nodes'][0]} | {_pcert['nodes'][1]} "
-        f"(wf {_pcert['wf']:.3f}, wc {_pcert['wc']:.3f}); per-layer gas sum "
-        f"min {_pcert['gas_sum_min']:.4f} / median "
-        f"{_pcert['gas_sum_median']:.4f} before renormalization "
-        f"({_pcert['n_layers_below_warn']} layers below the "
-        f"{_pcert['gas_sum_warn']:g} flag)"
-        + (f"; realized hot-layer gas C/O {_pcert['realized_gas_co_hotT']:.3f}"
+        f"(weights {_pcert['wf']:.3f} / {_pcert['wc']:.3f}). Before "
+        "renormalizing, the listed gas species summed to "
+        f"{_pcert['gas_sum_min']:.4f} at worst / "
+        f"{_pcert['gas_sum_median']:.4f} typically "
+        "(the tables omit some minor species, so the sum is renormalized "
+        "per layer -- standard practice"
+        + (f"; {_pcert['n_layers_below_warn']} layer(s) fell below the "
+           f"{_pcert['gas_sum_warn']:g} attention flag" if
+           _pcert.get("n_layers_below_warn") else "")
+        + ")"
+        + (f". Hot-layer carbon-to-oxygen came out at "
+           f"{_pcert['realized_gas_co_hotT']:.3f}"
            if _pcert.get("realized_gas_co_hotT") is not None else "")
-        + (f"; {len(_pcert['suspect_cells_in_span'])} known suspect table "
-           "cell(s) inside the profile span (see docs/picaso_roadmap.md)"
-           if _pcert.get("suspect_cells_in_span") else "")
-        + (f"; {len(_pcert['corrections_applied'])} catalogued table "
-           "correction(s) applied (content-guarded registry, "
+        + (f". {len(_pcert['suspect_cells_in_span'])} known imperfect table "
+           "cell(s) sit in this profile's range (details: "
            "docs/picaso_roadmap.md)"
+           if _pcert.get("suspect_cells_in_span") else "")
+        + (f". {len(_pcert['corrections_applied'])} catalogued table "
+           "fix(es) were applied (only ever to defects vetted and listed "
+           "in docs/picaso_roadmap.md)"
            if _pcert.get("corrections_applied") else "")
-        + ". Ions and electrons are counted in the gas total; graphite is "
-          "excluded as a condensate.")
+        + ". Ions and electrons count toward the gas total; graphite is "
+          "treated as a solid, not a gas.")
 if "climate_provenance_json" in model:
     _clj = json.loads(str(model["climate_provenance_json"]))
     _clc = _clj.get("cert", {})
