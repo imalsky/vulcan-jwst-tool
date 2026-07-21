@@ -2259,17 +2259,21 @@ def run_model(params: dict, log=print) -> Path:
             emis_tau_min_wo[i] = float(_tau_i.min())
             _wl_i = float(rt.wl_um[int(np.argmin(_tau_i))])
             if emis_tau_min_wo[i] < 3.0:
-                raise RuntimeError(
-                    f"emission unreliable: with {mol} removed the RT column "
-                    f"bottom ({emis.art_pbtm_bar:g} bar) is optically THIN "
-                    f"at {_wl_i:.2f} um (min bottom tau = "
-                    f"{emis_tau_min_wo[i]:.2f} < 3). The removed-molecule "
-                    "flux there is silently underestimated (ArtEmisPure has "
-                    "no surface/interior source term), which would OVERSTATE "
-                    f"the {mol} detection contrast. This atmosphere is too "
-                    "transparent without that absorber for the shipped grid "
-                    "bottom; the corner is unsupported rather than wrong.")
-            if emis_tau_min_wo[i] < 10.0:
+                # PER-MOLECULE, not whole-run (v20): a see-through window at the
+                # grid bottom with THIS molecule removed makes only THIS
+                # molecule's emission detection unreliable (its removed-molecule
+                # flux is underestimated, OVERSTATING its contrast). Record it
+                # (saved as emis_tau_bottom_min_wo) and let detect refuse only
+                # this target -- the baseline emission spectrum, parameter
+                # constraints, and every OTHER molecule stay usable. Previously a
+                # whole-run RuntimeError, which blocked ALL emission on a planet
+                # like W39b just because H2O goes thin at ~1 um.
+                log(f"[fwd] NOTE: emission detection of {mol} is UNRELIABLE -- "
+                    f"with it removed the RT bottom ({emis.art_pbtm_bar:g} bar) "
+                    f"is optically thin at {_wl_i:.2f} um (min tau "
+                    f"{emis_tau_min_wo[i]:.2f} < 3); detect refuses this target. "
+                    "The spectrum and the other molecules are unaffected.")
+            elif emis_tau_min_wo[i] < 10.0:
                 log(f"[fwd] WARNING: min bottom optical depth "
                     f"{emis_tau_min_wo[i]:.1f} at {_wl_i:.2f} um (< 10) "
                     f"with {mol} removed: its detection contrast leans on "

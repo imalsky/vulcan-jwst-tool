@@ -334,6 +334,26 @@ def evaluate_mode(mode_key: str, mode_result: dict, model: dict, target_mol,
             f"{mols} -- re-run the forward model with it enabled (extra_mols)")
     depth_wo = (model["depth_wo"][mols.index(target_mol)][order]
                 if target_mol is not None else None)
+    # PER-TARGET emission reliability (v20): if THIS target's removed-molecule
+    # emission spectrum went optically thin at the RT column bottom (the forward
+    # model records it as emis_tau_bottom_min_wo, no longer whole-run-refuses),
+    # its full-minus-removed eclipse contrast is overstated (ArtEmisPure has no
+    # surface/interior source at the grid bottom). Refuse THIS target's
+    # detection; the spectrum, parameter constraints, and other molecules stay
+    # usable. Only in emission mode; transmission has no such term.
+    if (target_mol is not None
+            and str(model.get("science_mode", "transmission")) == "emission"
+            and "emis_tau_bottom_min_wo" in model):
+        _tau_wo = float(np.asarray(model["emis_tau_bottom_min_wo"])[
+            mols.index(target_mol)])
+        if _tau_wo < 3.0:
+            raise ValueError(
+                f"{target_mol} emission detection is not supported for this "
+                f"atmosphere: with {target_mol} removed, the emission RT column "
+                f"bottom is optically thin (min tau {_tau_wo:.2f} < 3), so its "
+                "eclipse detection contrast would be overstated. Detect a "
+                "molecule with deeper opacity (e.g. SO2/CO2), or use "
+                "transmission.")
 
     wl_pix = np.asarray(mode_result["wl"])
     flux_pix = np.asarray(mode_result["flux"])

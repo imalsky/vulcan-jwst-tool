@@ -743,6 +743,21 @@ with st.sidebar:
                    "steady-state abundances). The T-P profile is shared: it "
                    "also sets the ExoJAX radiative transfer below.")
 
+    # Vertical layers: the chemistry AND the ExoJAX RT share this one grid
+    # (art_nlayer is LOCKED to nz). Kept at the top of the chemistry controls,
+    # always visible, so it is not mistaken for the PICASO climate solve's OWN
+    # fixed 91-level internal grid (a separate thing -- see the RCB help).
+    nz = st.number_input(
+        "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
+        forward.NZ_DEFAULT, 10, key=K("nz_pic" if _pic else "nz"),
+        help="Number of pressure levels the chemistry AND the ExoJAX radiative "
+             "transfer share -- the RT grid is LOCKED to this count. More layers "
+             "resolve steep gradients at a slower run (~2 min at 100, ~2.5 at "
+             "150). This is the ONLY vertical-layer setting. If you pick the "
+             "PICASO radiative-convective climate T-P, that solver runs on its "
+             "OWN fixed 91-level internal grid and is re-gridded onto these "
+             "layers -- the 91 is unrelated to this number.")
+
     with st.expander("Atmosphere structure, T-P profile (shared with RT)"):
         _tp_opts = ["guillot", "file", "picaso_climate"]
         if st.session_state.get(_k("tp")) not in _tp_opts:
@@ -818,37 +833,31 @@ with st.sidebar:
                      "final spectrum's molecule list never includes "
                      "TiO/VO either way.")
             tp_kwargs["climate_rcb"] = st.number_input(
-                "Radiative-convective boundary guess (layer index)",
+                "Convective-zone seed (deep layer index)",
                 *forward.CLIMATE_RCB_RANGE, forward.CLIMATE_RCB_DEFAULT, 1,
                 key=_k("rcb"),
-                help="Where the atmosphere switches from radiating its heat "
-                     "away (upper layers) to churning like a boiling pot "
-                     "(deep layers), given as a layer number on the "
-                     "91-level climate grid; bigger = deeper. Honest "
-                     "caveat: this is an ASSUMPTION, not something the "
-                     "solver finds on its own. For a strongly irradiated "
-                     "planet several different choices all pass every "
-                     "physical check yet give deep temperatures differing "
-                     "by hundreds of K (too-shallow choices DO get caught "
-                     "and refused). The visible effect on a transit "
-                     "spectrum is mostly a uniform up-down shift that the "
-                     "analysis absorbs into the reference radius; day-side "
-                     "EMISSION at depth-probing wavelengths genuinely "
-                     "depends on it (the warning below appears in emission "
-                     "mode).")
+                help="A NUMERICAL SEED for PICASO's climate solver -- the "
+                     "initial guess for the deepest layer that starts "
+                     "convective -- as an index on the climate solve's OWN "
+                     "fixed 91-level grid. This is NOT the 'Vertical layers' "
+                     "setting at the top of this section (that is the "
+                     "chemistry+RT grid; the climate profile is re-gridded onto "
+                     "it). The default is DEEP (85): PICASO grows convective "
+                     "zones upward but cannot shrink one seeded too shallow, so "
+                     "a shallow seed imposes a spurious convective region (the "
+                     "~1 bar kink). Deep seeds should converge to the same "
+                     "profile; too-shallow seeds are caught and refused. Leave "
+                     "it at the default unless you are probing seed sensitivity.")
             if science_mode == "emission":
                 st.warning(
                     "Emission + climate mode: day-side light at some "
-                    "wavelengths comes from exactly the depths where the "
-                    "radiative-convective boundary assumption above "
-                    "matters. Different (all-valid) boundary choices can "
-                    "change the flux in those windows by tens of percent "
-                    "(measured up to ~86% at specific wavelengths on "
-                    "WASP-39 b, while the typical wavelength moves only "
-                    "~0.05%). Read deep-probing emission features as "
-                    "conditional on that setting. Transmission is far less "
-                    "affected -- there it is mostly a uniform shift the "
-                    "analysis absorbs into the reference radius.")
+                    "wavelengths comes from the deep layers the convective-zone "
+                    "seed sets. With the deep default the profile should be "
+                    "seed-independent, but that is not yet certified per case, "
+                    "so read deep-probing emission features as conditional on "
+                    "the seed. Transmission is far less affected (mostly a "
+                    "uniform shift the analysis absorbs into the reference "
+                    "radius).")
         elif tp_mode == "file":
             tp_file = st.radio(
                 "Profile source", [forward.TP_FILE_SHIPPED,
@@ -1037,15 +1046,7 @@ with st.sidebar:
         use_photo, sl_angle_deg, f_diurnal = False, 83.0, 1.0
         use_moldiff = use_vm_mol = use_condense = use_settling = False
         diff_esc, top_flux, bot_flux = [], [], []
-        with st.expander("Numerical grid (layers)"):
-            nz = st.number_input(
-                "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
-                forward.NZ_DEFAULT, 10, key=K("nz_pic"),
-                help="Levels of the PICASO engine's pressure grid "
-                     "(1e-6 bar down to the chemistry bottom); the ExoJAX "
-                     "RT grid is locked to the same count. The equilibrium "
-                     "lookup stays fast at any layer count.")
-            yconv_cri = forward.YCONV_DEFAULT   # no iterative solver: inert
+        yconv_cri = forward.YCONV_DEFAULT   # equilibrium: no iterative solver
     else:
         with st.expander("Vertical mixing (K_zz)"):
             _kzz_opts = ["const", "Pfunc", "JM16"]
@@ -1145,16 +1146,10 @@ with st.sidebar:
                      "heavy species in the upper atmosphere. Requires molecular "
                      "diffusion.")
 
-        with st.expander("Numerical grid (layers & convergence)"):
-            st.caption("Grid resolution and solver tolerance, same physics, finer "
-                       "grids (this replaced the old fast/high fidelity switch).")
-            nz = st.number_input(
-                "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
-                forward.NZ_DEFAULT, 10, key=K("nz"),
-                help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
-                     "grid is LOCKED to the same count. More layers resolve steep "
-                     "photochemical gradients. Roughly 2 min at 100 layers, "
-                     "2.5 min at 150 (other settings at defaults).")
+        with st.expander("Convergence tolerance"):
+            st.caption("Steady-state solver tolerance (same physics, finer "
+                       "convergence). Vertical layers are set at the top of "
+                       "this section.")
             yconv_cri = st.number_input(
                 "Convergence tolerance (yconv)",
                 1.0e-4, 1.0e-2, forward.YCONV_DEFAULT, 1.0e-4,
@@ -1814,6 +1809,26 @@ _ev = ("eclipse" if str(_cpj.get("science_mode", "transmission")) == "emission"
        else "transit")
 _tt_col = f"{_ev}s → target"
 co_eval = float(_cpj.get("co_ratio", forward.CO_BASELINE))
+
+# Staleness guard: results persist in session_state across sidebar edits, so the
+# spectrum shown can be from DIFFERENT settings than the sidebar now reads --
+# most visibly the transmission/emission GEOMETRY (and a failed run, e.g. an
+# emission corner that refuses, leaves the previous result on screen). Say so
+# loudly instead of silently showing a transmission spectrum under an "emission"
+# sidebar.
+try:
+    _shown_stale = forward.params_key(params) != forward.params_key(_cpj)
+except (ValueError, RuntimeError):
+    _shown_stale = True   # the current sidebar settings do not even validate
+if _shown_stale:
+    _shown_sci = str(_cpj.get("science_mode", "transmission"))
+    _geom = (f" The sidebar geometry is now **{science_mode}**, but this "
+             f"spectrum is **{_shown_sci}**." if science_mode != _shown_sci
+             else "")
+    st.warning(
+        "This spectrum is from your previous run; the sidebar has changed since "
+        f"(or that run failed).{_geom} Press **Run** at the top to recompute "
+        "with the current settings.")
 
 for k, err in out["failed"]:
     first = str(err).strip().splitlines()[-1] if "Traceback" in str(err) else \
