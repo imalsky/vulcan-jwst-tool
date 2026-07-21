@@ -55,8 +55,16 @@ def acquire(tag: str = "run"):
         fh = open(SLOT_DIR / f"slot{i}.lock", "a+")
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as exc:
             fh.close()
+            import errno as _errno
+            if exc.errno not in (_errno.EAGAIN, _errno.EACCES,
+                                 _errno.EWOULDBLOCK):
+                raise RuntimeError(
+                    f"run-slot lock failed on {SLOT_DIR} with {exc!r}: "
+                    "this filesystem does not support flock. Point "
+                    "JWST_TOOL_OUTPUT_DIR at a filesystem with working "
+                    "advisory locks.") from exc
             continue
         fh.truncate(0)
         fh.write(json.dumps({"pid": os.getpid(), "tag": str(tag),

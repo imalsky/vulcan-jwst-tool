@@ -320,8 +320,13 @@ def _solve(cp: dict, tint: float, log) -> dict:
     cl.inputs_climate(temp_guess=guess, pressure=p_levels, rfaci=1,
                       rcb_guess=int(cp["climate_rcb"]),
                       rfacv=float(cp["rfacv"]))
+    log("[fwd] climate: solving (iteration lines stream below; the first "
+        "solve on a machine also compiles, which can add minutes) ...")
+    # verbose=True: picaso prints one line per iteration to stdout, which
+    # the GUI console shows -- without it the solve is silent for minutes
+    # and reads as a hang (2026-07-21 Space report)
     out = cl.climate(opa, save_all_profiles=False, with_spec=False,
-                     verbose=False)
+                     verbose=True)
     out["_wall_s"] = time.time() - t0
     return out
 
@@ -348,6 +353,7 @@ def get_or_run(cp: dict, log, tint_override: float | None = None):
     # its own; a live holder is waited on, never broken.
     lf = open(lock_path, "a+")
     t_wait0 = time.time()
+    t_last_note = 0.0
     got_lock = False
     try:
         while True:
@@ -355,7 +361,27 @@ def get_or_run(cp: dict, log, tint_override: float | None = None):
                 fcntl.flock(lf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 got_lock = True
                 break
-            except OSError:
+            except OSError as exc:
+                # ONLY contention means "wait" -- any other errno (e.g. an
+                # unsupported-flock filesystem on a mounted volume) must
+                # raise loudly, never silently poll for an hour looking
+                # like a hang (2026-07-21 Space report)
+                import errno as _errno
+                if exc.errno not in (_errno.EAGAIN, _errno.EACCES,
+                                     _errno.EWOULDBLOCK):
+                    raise RuntimeError(
+                        f"climate cache lock failed on {lock_path} with "
+                        f"{exc!r} -- this filesystem does not support "
+                        "flock (common on some network volumes). The cache "
+                        "directory must live on a filesystem with working "
+                        "advisory locks; set JWST_TOOL_OUTPUT_DIR "
+                        "accordingly.") from exc
+                if time.time() - t_last_note > 30.0:
+                    t_last_note = time.time()
+                    log(f"[fwd] climate: waiting for a concurrent solve of "
+                        f"this exact configuration "
+                        f"({time.time() - t_wait0:.0f}s; it will be reused "
+                        "when it finishes)")
                 if time.time() - t_wait0 > LOCK_TIMEOUT_S:
                     try:
                         meta = json.loads(lock_path.read_text() or "{}")

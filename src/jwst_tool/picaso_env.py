@@ -146,7 +146,7 @@ def chem_node_path(node: str, root: Path | None = None) -> Path:
 # Content fingerprints (memoized; disk-cached keyed by stat signature)
 # ---------------------------------------------------------------------------
 
-_MEMO: dict[str, dict] = {}
+_MEMO: dict[str, object] = {}
 
 
 def _stat_signature(paths: list[Path]) -> str:
@@ -182,9 +182,16 @@ def _cached_content_sha1(kind: str, paths: list[Path]) -> str:
     The disk cache maps ``kind`` -> {"sig": stat signature, "sha1": hash};
     a mismatched signature re-hashes. Writes are atomic (tmp + replace).
     """
-    sig = _stat_signature(paths)
+    import time as _time
     memo = _MEMO.get(kind)
+    # within one process, re-verify the stat signature at most once per
+    # minute: each verification stats every file, which is seconds per call
+    # on a remote Space volume (2026-07-21 hang report)
+    if memo is not None and _time.time() - memo.get("checked_at", 0.0) < 60.0:
+        return memo["sha1"]
+    sig = _stat_signature(paths)
     if memo is not None and memo["sig"] == sig:
+        memo["checked_at"] = _time.time()
         return memo["sha1"]
     cache_file = _fingerprint_cache_file()
     disk: dict = {}
@@ -201,7 +208,8 @@ def _cached_content_sha1(kind: str, paths: list[Path]) -> str:
         tmp = cache_file.with_suffix(".json.tmp.%d" % os.getpid())
         tmp.write_text(json.dumps(disk, indent=1, sort_keys=True))
         os.replace(tmp, cache_file)
-    _MEMO[kind] = entry
+    import time as _time2
+    _MEMO[kind] = dict(entry, checked_at=_time2.time())
     return entry["sha1"]
 
 
@@ -258,11 +266,18 @@ def climate_refdata_fingerprint(node: str, tio_vo: bool) -> str:
     # name+size MANIFEST (not a content hash, and deliberately no mtime --
     # mtimes change on every copy/re-upload; a swapped file changes its
     # size-name pair in practice): documented as a manifest, never claimed
-    # as a content fingerprint (v18.1).
-    h_st = hashlib.sha1()
-    for p in sorted(ck04.rglob("*.fits")):
-        h_st.update(f"{p.name}\0{p.stat().st_size}\n".encode())
-    stellar_manifest = h_st.hexdigest()
+    # as a content fingerprint (v18.1). Computed ONCE per process: the
+    # rglob is hundreds of stat calls, which on a remote Space volume costs
+    # seconds PER CALL -- and this runs inside canonical_params on every
+    # GUI rerun in climate mode (2026-07-21 hang report).
+    _st_key = str(ck04)
+    stellar_manifest = _MEMO.get("stellar:" + _st_key)
+    if stellar_manifest is None:
+        h_st = hashlib.sha1()
+        for p in sorted(ck04.rglob("*.fits")):
+            h_st.update(f"{p.name}\0{p.stat().st_size}\n".encode())
+        stellar_manifest = h_st.hexdigest()
+        _MEMO["stellar:" + _st_key] = stellar_manifest
     kind = f"climate:{node}:{'tiovo' if tio_vo else 'notiovo'}"
     content = _cached_content_sha1(kind, content_files)
     h = hashlib.sha1((content + stellar_manifest).encode())

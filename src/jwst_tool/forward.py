@@ -2719,6 +2719,11 @@ def run_model(params: dict, log=print) -> Path:
 
 def main():
     params = json.load(open(sys.argv[1]))
+    # line-buffer stdout: the GUI pipes this process, which makes Python
+    # BLOCK-buffer prints from libraries (picaso's climate iteration lines
+    # would sit invisible in the buffer while the GUI shows nothing)
+    import sys as _sys
+    _sys.stdout.reconfigure(line_buffering=True)
     # vulcan_jax's legacy IO creates RELATIVE output/ + plot/ directories in
     # the process CWD (legacy_io.py) -- junk wherever the app was launched
     # from. Run the subprocess from a dedicated scratch cwd instead (the
