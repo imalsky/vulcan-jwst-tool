@@ -813,7 +813,15 @@ def canonical_params(params: dict) -> dict:
         # composition, the upstream-VULCAN way. One path for every value,
         # including C-rich (> 1); a corner with no certified steady state
         # errors loudly (longdy gate), it never returns a wrong spectrum.
-        "co_ratio": round(float(params.get("co_ratio", CO_BASELINE)), 6),
+        # C/O default is provider/mode-aware (v18.1 review, finding 21): the
+        # climate CK tables only exist at exact nodes (0.55 is the 10x-solar
+        # default node -- a bare climate request must not refuse its own
+        # default), and the picaso provider defaults MID-CELL (0.50), where
+        # the C/O constraint stencil stays inside one table cell.
+        "co_ratio": round(float(params.get(
+            "co_ratio",
+            0.55 if tp_mode == "picaso_climate"
+            else (0.50 if provider == "picaso" else CO_BASELINE))), 6),
         "kzz_mode": str(params.get("kzz_mode", "const")),
         "kzz_x": round(float(params.get("kzz_x", 1.0)), 4),
         "kzz_const": round(float(params.get("kzz_const", 1.0e9)), 1),
@@ -1081,6 +1089,22 @@ def canonical_params(params: dict) -> dict:
         cp["picaso_ck_node"] = _node
         cp["picaso_climate_sha1"] = str(
             _picaso_climate_fingerprint(_node, cp["tio_vo"]))
+        if provider == "picaso" and "dlnCO" in cp["fisher_params"]:
+            # v18.1 review finding 20: climate composition is exact-node
+            # only, so the picaso C/O stencil ALWAYS straddles a table kink
+            # -- the node-kink gate would fire mid-run after the expensive
+            # climate + opacity builds (measured 1.52 at the 0.55 node).
+            # Refuse at the API instead of shipping a poisoned default.
+            raise ValueError(
+                "a C/O (dlnCO) constraint row is unavailable under the "
+                "PICASO engine in climate mode: climate composition sits "
+                "exactly ON a chemistry-table node, where the one-sided "
+                "table slopes disagree and no trustworthy derivative "
+                "exists (the run would refuse mid-way; measured at the "
+                "C/O = 0.55 node). Constrain C/O with the PICASO engine "
+                "under an analytic T-P at a mid-cell value (default 0.50), "
+                "or with the VULCAN engine (its own chemistry "
+                "differentiates fine at any C/O).")
         if "Tint_cl" in cp["fisher_params"]:
             _h2 = 2.0 * FD_STEPS["Tint_cl"]
             if not (TINT_CL_RANGE[0] + _h2 <= cp["tint_cl"]
@@ -1240,12 +1264,18 @@ def canonical_params(params: dict) -> dict:
     if not cp["use_photo"]:            # photolysis knobs are inert without photo
         cp["sl_angle_deg"] = 0.0
         cp["f_diurnal"] = 1.0
-        # The UV spectrum and orbital distance are consumed ONLY by the
-        # photolysis flux (sflux_file / orbit_radius): normalize them to the
-        # system defaults so two photo-off runs differing only in UV inputs
-        # cannot recompute identical physics under different keys (v17).
+        # The UV spectrum is consumed ONLY by the photolysis flux
+        # (sflux_file): normalize it to the system default so two photo-off
+        # runs differing only in UV inputs cannot recompute identical physics
+        # under different keys (v17). The orbital distance USED to be in the
+        # same boat, but since v18 the picaso_climate solve consumes
+        # orbit_au for the stellar irradiation (climate_subset cache-keys on
+        # it) -- normalizing it there silently discarded a user's semi-major
+        # axis and ran the climate at the planet default (2026-07-21 review,
+        # finding 26). Same carve-out the star identity already has.
         cp["sflux"] = str(sysd["sflux"])
-        cp["orbit_au"] = round(float(sysd["orbit_au"]), 5)
+        if tp_mode != "picaso_climate":
+            cp["orbit_au"] = round(float(sysd["orbit_au"]), 5)
     if not cp["use_moldiff"]:          # upwind vm_mol is inert without moldiff
         cp["use_vm_mol"] = False       # (engine gates use_vm on both); keep the
                                        # key from fragmenting the cache

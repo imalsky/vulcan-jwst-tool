@@ -84,8 +84,11 @@ findings behind its design decisions, and the features deliberately deferred
 - **Climate composition is EXACT-CK-NODE only**: the correlated-k tables
   carry no composition interpolation, so climate mode accepts only shipped
   nodes (extreme metallicities +-1.5/+-2.0 ship only C/O 0.27-0.82).
-  Consequence: at a node, the dlnCO Fisher row can hard-error (see above) --
-  climate-mode C/O constraints are a known v1 gap.
+  Consequence: under the PICASO engine, climate-mode C/O (dlnCO)
+  constraint rows are REFUSED at the API (v18.1 GUI review): exact-node
+  composition means the stencil always straddles a table kink, so the
+  mid-run kink-gate failure was guaranteed. The GUI does not offer the row
+  there; the VULCAN engine constrains C/O in climate mode normally.
 - **One-way coupling**: climate T-P is solved with PICASO equilibrium CK
   opacities, then post-processed with either engine's chemistry and ExoJax
   RT. The chemistry NEVER feeds back into the climate opacity. This is not
@@ -265,3 +268,27 @@ reproduction or inspection before fixing):
 
 The upstream-reportable items are drafted in `docs/upstream_report_picaso.md`
 (not posted anywhere without explicit approval).
+
+### v18.1 follow-up (GUI review, 2026-07-21)
+
+A 4-dimension multi-agent review of the rendered GUI (layout, text,
+defaults, promised-vs-actual behavior; 31 confirmed findings) produced two
+behavior fixes on top of the text pass:
+
+- **orbit_au is no longer normalized away in climate mode**: the photo-off
+  normalization treated the semi-major axis as photolysis-only (true
+  pre-v18), silently running every picaso-engine climate at the planet's
+  default orbit. It now gets the same climate-mode carve-out as the star
+  identity; sflux stays normalized (genuinely photolysis-only).
+- **Mode-aware C/O defaults**: bare API calls now default C/O to 0.55 in
+  climate mode (the node -- a bare climate request no longer refuses its
+  own default) and 0.50 under the picaso engine (mid-cell), with
+  CO_BASELINE unchanged for VULCAN.
+- dlnCO under picaso + climate is refused at the API (above), and the GUI
+  menus exclude it there.
+- The remaining findings were GUI truthfulness fixes: engine-aware and
+  observable-aware captions everywhere (run status, RT section, main
+  header, intro), inert widgets now disabled with reasons (stellar UV
+  under PICASO; Rayleigh + transit-chord in emission), engine-aware
+  Fisher timing text, plain-language certificate captions, clean node
+  labels, and event-word (transit/eclipse) consistency in the results.

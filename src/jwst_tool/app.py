@@ -117,10 +117,13 @@ exposure-time-calculator forecast for JWST exoplanet spectra), but instead
 of an assumed input spectrum it computes one live, for exactly the
 atmosphere you configure:
 
-1. **Chemistry**: steady-state photochemical kinetics with
-   [VULCAN](https://github.com/exoclime/VULCAN), run through its JAX port
-   VULCAN-JAX. A solve that cannot pass the convergence gate errors loudly
-   instead of returning a wrong spectrum.
+1. **Chemistry**: your choice of two engines -- steady-state photochemical
+   kinetics with [VULCAN](https://github.com/exoclime/VULCAN) (run through
+   its JAX port VULCAN-JAX), or PICASO chemical-equilibrium tables (fast,
+   no photochemistry, so no SO2). A solve that cannot pass its quality
+   gate errors loudly instead of returning a wrong spectrum. PICASO can
+   also supply a self-consistent climate temperature profile for either
+   engine.
 2. **Spectrum**: ExoJAX radiative transfer, either the transit depth or the
    dayside eclipse depth against a PHOENIX stellar model.
 3. **Noise**: the real Pandeia 2026.2 ETC engine per instrument mode, with
@@ -165,8 +168,8 @@ _intro_gate()
 
 st.title("JWST instrument selector")
 st.caption(
-    "VULCAN-JAX photochemistry → ExoJAX spectrum (transmission or eclipse "
-    "emission) → Pandeia ETC noise. "
+    "Chemistry (VULCAN-JAX photochemistry or PICASO equilibrium) → ExoJAX "
+    "spectrum (transmission or eclipse emission) → Pandeia ETC noise. "
     "Pick a planet and a science goal, run the live forward model, and see "
     "which instrument mode achieves it best. Uncertainties are a **Pandeia "
     "instrument-model forecast** with an optional PandExo-style minimum noise "
@@ -371,6 +374,14 @@ def K(name: str) -> str:
     return f"n{_NONCE}_{name}"
 
 
+# The chemistry-engine choice, read EARLY from session state so widgets that
+# render before the engine selectbox (the stellar-UV selector in Planet &
+# star) can adapt. Streamlit updates widget state before the rerun executes,
+# so this matches the selectbox that renders later in the same run; on the
+# very first render it is the default (VULCAN).
+_pic_hint = st.session_state.get(K("provider"), "vulcan") == "picaso"
+
+
 with st.sidebar:
     st.markdown("### Planet & star")
     planet_key = st.selectbox(
@@ -430,11 +441,14 @@ with st.sidebar:
                              format_func=lambda f: (
                                  planets.SFLUX_CHOICES[f]
                                  + ("" if _uv_ok.get(f) else "  [FILE MISSING]")),
-                             key=_k("sflux"),
+                             key=_k("sflux"), disabled=_pic_hint,
                              help="Shipped VULCAN spectra, pick the nearest "
                                   "spectral type. Drives photolysis (SO2, CH4 …). "
                                   "A [FILE MISSING] entry means a broken "
                                   "vulcan-jax install; the run would refuse it.")
+        if _pic_hint:
+            st.caption("UV spectrum unused: the PICASO engine has no "
+                       "photolysis, so this selection has no effect there.")
 
     teq = float(pdef["teq_k"])
     st.divider()
@@ -471,7 +485,9 @@ with st.sidebar:
              "headline detection -- appear. A run takes a few minutes.\n\n"
              "**PICASO** assumes every reaction has fully settled "
              "(chemical equilibrium) and reads the answer from "
-             "pre-computed tables, so a run takes seconds. The trade: no "
+             "pre-computed tables -- the chemistry itself takes seconds, "
+             "and a full run about a minute (the radiative transfer "
+             "dominates). The trade: no "
              "photochemistry means no SO2, and its tables stop at "
              "C/O = 1.10. Parameter constraints use finite differences "
              "only.\n\n"
@@ -507,6 +523,11 @@ with st.sidebar:
              "result row is labeled with the method that produced it. "
              "The post-run adjoint diagnostics panel uses reverse-mode "
              "AD regardless of this choice.")
+    if _pic:
+        st.caption("Locked to finite differences: PICASO's chemistry is "
+                   "table lookups, and there is no way to carry an exact "
+                   "derivative through a table the way AD does through "
+                   "VULCAN's equations.")
     st.markdown("### PICASO chemistry" if _pic else "### VULCAN chemistry")
     if _pic:
         st.caption("What goes into the PICASO equilibrium lookup: the "
@@ -534,10 +555,12 @@ with st.sidebar:
                          "picaso_climate":
                              "PICASO radiative-convective (climate solve)"}.get,
             help="Sets the temperature the chemistry AND the radiative "
-                 "transfer see. Explicit profiles only: isothermal, Guillot, "
-                 "or an explicit tabulated table you choose (a GCM profile "
-                 "is never silently substituted; the tabulated table also "
-                 "sets the hydrostatic grid and the equilibrium "
+                 "transfer see. Four choices: isothermal, Guillot, an "
+                 "explicit tabulated table you provide, or a PICASO "
+                 "radiative-convective climate solve that computes the "
+                 "profile self-consistently from the stellar irradiation "
+                 "(a GCM profile is never silently substituted; a tabulated "
+                 "table also sets the hydrostatic grid and the equilibrium "
                  "initialization).")
         tp_kwargs = {}
         tp_file, tp_file_path, tp_file_ok = "", None, True
@@ -552,7 +575,10 @@ with st.sidebar:
                 "T_irr (K)", 800.0, 2500.0, tirr0, 20.0, key=_k("tirr"),
                 help="≈ √2 × equilibrium temperature.")
             tp_kwargs["Tint"] = st.number_input(
-                "T_int (K)", 50.0, 500.0, 100.0, 25.0, key=_k("tint"))
+                "T_int (K)", 50.0, 500.0, 100.0, 25.0, key=_k("tint"),
+                help="Heat escaping the planet's own interior. (The PICASO "
+                     "climate mode's equivalent knob defaults to 200 K; "
+                     "the two are separate settings.)")
             tp_kwargs["log_kappa"] = st.number_input(
                 "log₁₀ κ_IR (cm²/g)", -4.0, 0.0, -2.3, 0.1, key=_k("lk"))
             tp_kwargs["log_gamma"] = st.number_input(
@@ -580,8 +606,9 @@ with st.sidebar:
                      "all, 0 means no starlight at all (an isolated, "
                      "self-heated object). The star settings above feed "
                      "this, so in climate mode they are part of the model "
-                     "itself. Note the extremes can leave the modelable "
-                     "temperature range and refuse loudly.")
+                     "itself. Note: at the extreme settings the profile "
+                     "can leave the modelable temperature range, and the "
+                     "run then refuses loudly.")
             tp_kwargs["tio_vo"] = st.checkbox(
                 "Include TiO/VO in climate opacity only", value=False,
                 key=_k("tiovo"),
@@ -730,7 +757,7 @@ with st.sidebar:
             _feh = st.selectbox(
                 "Metallicity", _feh_opts,
                 index=_feh_opts.index(1.0), key=K("metnode"),
-                format_func=lambda x: f"{10.0 ** x:g} × solar "
+                format_func=lambda x: f"{10.0 ** x:.3g} × solar "
                                       f"([M/H] = {x:+.1f})",
                 help="The climate solver's opacity tables exist only at "
                      "these fixed metallicity values and cannot be blended "
@@ -745,13 +772,19 @@ with st.sidebar:
                 index=_co_opts.index(0.55) if 0.55 in _co_opts else 0,
                 key=K(f"conode_{_feh:.1f}"),
                 format_func=lambda c: f"{c:.2f}",
-                help="Same story as metallicity: only the shipped table "
-                     "values are available (the most extreme metallicities "
-                     "ship fewer C/O options). Heads-up: a C/O CONSTRAINT "
-                     "forecast at the 0.55 value will refuse, because the "
-                     "chemistry tables take a sharp turn exactly there and "
-                     "no trustworthy derivative exists; metallicity "
-                     "constraints are fine.")
+                help=("Same story as metallicity: only the shipped table "
+                      "values are available (the most extreme "
+                      "metallicities ship fewer C/O options)."
+                      + (" With the PICASO engine, C/O is not offered as a "
+                         "constraint parameter in climate mode -- the "
+                         "chemistry tables kink exactly at these values, "
+                         "so no trustworthy C/O derivative exists here; "
+                         "metallicity constraints are fine, and the "
+                         "VULCAN engine constrains C/O normally."
+                         if _pic else
+                         " The VULCAN engine computes its own chemistry, "
+                         "so all constraint parameters work normally at "
+                         "any of these values.")))
         elif _pic:
             met = st.number_input(
                 "Metallicity (× solar)", *forward.PICASO_MET_RANGE, 10.0, 0.5,
@@ -829,10 +862,10 @@ with st.sidebar:
             nz = st.number_input(
                 "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
                 forward.NZ_DEFAULT, 10, key=K("nz_pic"),
-                help="Levels of the provider's pressure grid (1e-6 bar down "
-                     "to the chemistry bottom); the ExoJAX RT grid is locked "
-                     "to the same count. Equilibrium states are seconds at "
-                     "any count.")
+                help="Levels of the PICASO engine's pressure grid "
+                     "(1e-6 bar down to the chemistry bottom); the ExoJAX "
+                     "RT grid is locked to the same count. The equilibrium "
+                     "lookup stays fast at any layer count.")
             yconv_cri = forward.YCONV_DEFAULT   # no iterative solver: inert
     else:
         with st.expander("Vertical mixing (K_zz)"):
@@ -1055,9 +1088,11 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
-    st.caption("Turns the VULCAN abundances (at the same T-P) into the "
-               "transmission spectrum. Opacity set, scattering, clouds, and "
-               "line broadening.")
+    st.caption(f"Turns the {'PICASO' if _pic else 'VULCAN'} abundances (at "
+               f"the same T-P) into the "
+               f"{'eclipse emission' if science_mode == 'emission' else 'transmission'} "
+               "spectrum. Opacity set, scattering, clouds, and line "
+               "broadening.")
 
     with st.expander("Opacity, scattering & clouds"):
         _base_set, _extra_set = ((forward.MOLECULES, forward.EXTRA_MOLECULES)
@@ -1089,13 +1124,23 @@ with st.sidebar:
                  "cool (≲900 K) planets. Each entry shows whether its HITRAN "
                  "line list is already cached locally or will be downloaded "
                  "on first use (~10-15 s each, network required).")
+        if science_mode == "emission":
+            # canonical_params forces Rayleigh OFF in emission (the pure-
+            # absorption day-side solver has no scattering channel) -- show
+            # the forced state instead of a checked-but-ignored box (v18.1
+            # review)
+            st.session_state[K("rayl")] = False
         use_rayleigh = st.checkbox(
             "H₂/He Rayleigh scattering", value=True, key=K("rayl"),
+            disabled=(science_mode == "emission"),
             help="Zero-free-parameter known physics; matters shortward of "
-                 "~1.5 µm (the SOSS blue end). Leave ON except for comparisons.")
+                 "~1.5 µm (the SOSS blue end). Leave ON except for "
+                 "comparisons. In EMISSION mode this is off and locked: the "
+                 "day-side flux solver is pure absorption with no "
+                 "scattering channel.")
         cloud_on = st.checkbox(
             "Power-law cloud/haze opacity", value=False, key=K("cloud"),
-            help="ExoJax power-law retrieval cloud, uniformly mixed: "
+            help="ExoJAX power-law retrieval cloud, uniformly mixed: "
                  "κ(ν) = κ₀·(ν/ν₀)^α per gram of atmosphere (no cloud-top "
                  "pressure or particle microphysics). With the deck on, its "
                  "two parameters can be FREED in the Fisher forecast "
@@ -1119,7 +1164,7 @@ with st.sidebar:
         mie_condensate = st.selectbox(
             "Mie condensate cloud", _mie_opts, index=0, key=K("miec"),
             format_func=lambda c: "off" if not c else c,
-            help="A physically-grounded condensate cloud (exojax "
+            help="A physically-grounded condensate cloud (ExoJAX "
                  "PdbCloud/OpaMie): a column-uniform lognormal size "
                  "distribution with real refractive-index optics. Each "
                  "condensate needs a one-time Mie grid (python "
@@ -1184,24 +1229,31 @@ with st.sidebar:
             1.0e-9, 1.0e-6, 1.0e-8, 1.0e-9,
             format="%.1e", key=K("rtptop"),
             help="Where the RT column ends, any value in [1e-9, 1e-6] bar "
-                 "(1e-8 is the default; 1e-7 is the chemistry top). "
-                 "Above VULCAN's 1e-7 bar "
-                 "chemistry top the topmost abundances and temperature are "
-                 "held constant (a standard transmission-modeling "
-                 "convention, not chemistry). Too low a top saturates "
+                 "(1e-8 is the default; the chemistry grid tops out at "
+                 "1e-7 bar under the VULCAN engine and 1e-6 bar under "
+                 "PICASO). Above the chemistry top the topmost abundances "
+                 "and temperature are held constant (a standard "
+                 "transmission-modeling convention, not chemistry). Too "
+                 "low a top saturates "
                  "strong bands (CO2 4.3, CO 4.7 µm) into a flat wall: on "
                  "WASP-39b ~4.8% of the 4.2-5.2 µm band saturates at 1e-6 "
                  "bar vs 0.1% at the 1e-8 default.")
+        if science_mode == "emission":
+            # canonical_params pins simpson in emission (no transit chord
+            # exists there) -- show the pinned state, not a live-looking
+            # choice that is silently ignored (v18.1 review)
+            st.session_state[K("rtint")] = "simpson"
         rt_integration = st.selectbox(
             "Transit chord integration", ["simpson", "trapezoid"], index=0,
-            key=K("rtint"),
+            key=K("rtint"), disabled=(science_mode == "emission"),
             format_func={"simpson": "Simpson (ExoJAX default)",
                          "trapezoid": "Trapezoid"}.get,
             help="Numerical scheme for the transit chord integral in ExoJAX "
                  "ArtTransPure. Simpson is higher order; trapezoid is the "
                  "conservative comparison choice. The difference is a "
                  "grid-convergence diagnostic: if it moves your answer, "
-                 "raise the layer count.")
+                 "raise the layer count. Locked in EMISSION mode: the "
+                 "day-side flux has no transit chord.")
         rt_dit_res = st.number_input(
             "Line-wing (broadening) grid resolution",
             0.1, 1.0, 1.0, 0.1, format="%.1f", key=K("rtdit"),
@@ -1212,8 +1264,17 @@ with st.sidebar:
                  "value every validated result here used, 0.2 is ExoJAX's "
                  "own default.")
 
-    avail_free = ((["lnZ", "dlnCO"] if _pic else forward.CHEM_PARAM_NAMES)
-                  + forward.TP_PARAM_NAMES[tp_mode])
+    # Freeable parameters per engine/mode. Under PICASO + climate, C/O
+    # (dlnCO) is NOT offered: climate composition sits exactly on a
+    # chemistry-table node where no trustworthy C/O derivative exists
+    # (canonical_params refuses it too -- the menu just spares the user the
+    # error).
+    if _pic:
+        _chem_free = (["lnZ"] if tp_mode == "picaso_climate"
+                      else ["lnZ", "dlnCO"])
+    else:
+        _chem_free = list(forward.CHEM_PARAM_NAMES)
+    avail_free = _chem_free + forward.TP_PARAM_NAMES[tp_mode]
     if cloud_on:                        # v16: cloud-deck marginalization
         avail_free = avail_free + list(forward.CLOUD_FISHER_PARAMS)
     if mie_condensate:                  # v16: Mie-deck marginalization
@@ -1259,7 +1320,8 @@ with st.sidebar:
             target_mol = None
             goal_param = st.selectbox(
                 "Constrain parameter", avail_free,
-                key=K(f"gp_{tp_mode}_{int(cloud_on)}_{int(bool(mie_condensate))}"),
+                key=K(f"gp_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
+                      f"{int(bool(mie_condensate))}"),
                 format_func=lambda n: forward.PARAM_LABELS[n],
                 help="Constraint is marginalized over the other free parameters "
                      "(Fisher forecast section) and a reference-radius nuisance.")
@@ -1291,15 +1353,23 @@ with st.sidebar:
             st.caption(
                 "Expected 1σ constraints on atmosphere parameters from "
                 "this observation, a linearized retrieval (Cramér-Rao "
-                "bound) built from the spectrum's parameter derivatives "
-                "using the **differentiation method selected at the top** "
-                "of the sidebar. With finite differences, a composition "
-                "row re-solves the chemistry four times from scratch and "
-                "takes about 6 to 8 minutes, and a Kzz or temperature row "
-                "adds four cold solves at 3 to 5 minutes each run. With "
-                "AD, each row is one warm-started derivative and takes "
-                "about 1 to 2 minutes. There is no MCMC and there are no "
-                "priors.")
+                "bound) built from the spectrum's parameter derivatives"
+                + (" via finite differences of the equilibrium tables. "
+                   "Under PICASO each composition or temperature row is a "
+                   "handful of fast table lookups plus the radiative "
+                   "transfer -- well under a minute; a climate T_int row "
+                   "re-runs the climate a few times and takes several "
+                   "minutes. There is no MCMC and there are no priors."
+                   if _pic else
+                   " using the **differentiation method selected at the "
+                   "top** of the sidebar. With finite differences, a "
+                   "composition row re-solves the chemistry four times "
+                   "from scratch and takes about 6 to 8 minutes, and a "
+                   "Kzz or temperature row adds four cold solves at about "
+                   "1 minute each (3 to 5 minutes per row). With AD, each "
+                   "row is one warm-started derivative and takes about 1 "
+                   "to 2 minutes. There is no MCMC and there are no "
+                   "priors."))
             if goal == "constrain":
                 # defaults FILTERED by the live menu and the key carries the
                 # provider (v18.1): under picaso lnKzz is not an option, and
@@ -1321,11 +1391,17 @@ with st.sidebar:
                 do_fisher = st.checkbox(
                     "Compute parameter constraints too", value=False,
                     key=K("dofish"),
-                    help="Adds Jacobian rows by the method selected at the "
-                         "top: FD ~6-8 min per composition parameter and "
-                         "~3-5 min per Kzz/T parameter (photochemistry on "
-                         "or off); AD ~1-2 min per row (photochemistry "
-                         "on).")
+                    help=("Adds constraint rows. Under the PICASO engine "
+                          "each row is a handful of fast table lookups "
+                          "plus the radiative transfer -- well under a "
+                          "minute per parameter (a climate T_int row is "
+                          "the exception: it re-runs the climate a few "
+                          "times, several minutes)." if _pic else
+                          "Adds Jacobian rows by the method selected at "
+                          "the top: FD ~6-8 min per composition parameter "
+                          "and ~3-5 min per Kzz/T parameter "
+                          "(photochemistry on or off); AD ~1-2 min per "
+                          "row (photochemistry on)."))
                 fisher_params = st.multiselect(
                     "Free parameters", avail_free,
                     key=K(f"fp_{chem_provider}_{tp_mode}_{int(cloud_on)}_"
@@ -1737,8 +1813,10 @@ if out.get("provenance"):
 if "conv_longdy" in model and np.asarray(model["conv_longdy"]).size:
     _gate = float(np.asarray(model["conv_gate"], float)[0])
     st.caption(
-        "Chemistry convergence certificate: " + "; ".join(
-            f"{s}: longdy {l:.3g} < gate {_gate:g} ({int(a)} accepted steps)"
+        "Chemistry convergence check (every stage passed, or the run "
+        "would have refused): " + "; ".join(
+            f"{s}: residual {l:.3g} below the {_gate:g} threshold "
+            f"({int(a)} solver steps)"
             for s, a, l in zip(model["conv_stages"], model["conv_accept"],
                                np.asarray(model["conv_longdy"], float)))
         + ".")
@@ -1774,14 +1852,20 @@ if "picaso_cert_json" in model:
 if "climate_provenance_json" in model:
     _clj = json.loads(str(model["climate_provenance_json"]))
     _clc = _clj.get("cert", {})
+    _cvz = [int(x) for x in (_clc.get("cvz_locs") or []) if int(x) > 0]
+    _cvz_top = _cvz[0] if _cvz else "?"
     st.caption(
-        "Climate certificate: converged, TOA flux metric "
-        f"{_clc.get('flux_toa_over_tidal', float('nan')):.2e}, "
-        f"dlnT/dlnP in [{_clc.get('grad_min', float('nan')):.2f}, "
-        f"{_clc.get('grad_max', float('nan')):.2f}], convective zone "
-        f"{_clc.get('cvz_locs')}. One-way coupling (chemistry does not feed "
-        "back into the climate opacity); the deep profile depends on the "
-        "rcb assumption (widget help has the measured sensitivity).")
+        "Climate quality check (passed): energy balanced at the top of "
+        "the atmosphere to "
+        f"{_clc.get('flux_toa_over_tidal', float('nan')):.1e} of the "
+        "internal heat flux; temperature-gradient range "
+        f"[{_clc.get('grad_min', float('nan')):.2f}, "
+        f"{_clc.get('grad_max', float('nan')):.2f}] (dlnT/dlnP); "
+        f"convective from layer {_cvz_top} down"
+        ". The chemistry runs on this profile afterwards and never feeds "
+        "back into the climate's heating. Reminder: the deep profile "
+        "depends on the radiative-convective boundary setting (its widget "
+        "help has the measured sensitivity).")
 
 fisher_names = ([str(x) for x in model["jac_names"][:-1]]
                 if "jac_names" in model else [])
@@ -1818,7 +1902,7 @@ if goal_r == "detect":
         else:
             _lim = f"{tt['sig_inf']:.1f}σ"
             st.error(verdict + "  Missing the target, and NO number of "
-                     f"transits reaches it ({_never_reason(_scen, _lim)}). "
+                     f"{_ev}s reaches it ({_never_reason(_scen, _lim)}). "
                      "Lower the floor, choose other modes, or relax the "
                      "target.")
     else:
@@ -1873,18 +1957,20 @@ else:
             _win = ("" if tt.get("n_last") is None
                     or tt["n_last"] >= detect.N_TRANSITS_CAP else
                     f" Correlated-scenario window: past {tt['n_last']} "
-                    "transits the target is missed again.")
-            st.error(verdict + f"  Missing the target, {tt['n']} transits of "
+                    f"{_ev}s the target is missed again.")
+            st.error(verdict + f"  Missing the target, {tt['n']} {_ev}s of "
                      f"{ins.MODES[bk]['label']} would reach it (floor-aware "
                      "estimate)." + _win)
         else:
             _lim = f"±{tsig * tt['sig_inf']:.3g}{usp} at {tsig:g}σ"
             st.error(verdict + "  Missing the target, and NO number of "
-                     f"transits reaches it ({_never_reason(_scen, _lim)}). "
+                     f"{_ev}s reaches it ({_never_reason(_scen, _lim)}). "
                      "Lower the floor, combine modes, or relax the target.")
 
 # --- spectrum figure -------------------------------------------------------
-st.subheader("Simulated transmission spectrum")
+st.subheader("Simulated eclipse emission spectrum"
+             if str(_cpj.get("science_mode", "transmission")) == "emission"
+             else "Simulated transmission spectrum")
 wl = model["wl_um"]
 order = np.argsort(wl)
 wl_s, d_s = wl[order], model["depth"][order] * 1e6
@@ -2148,7 +2234,7 @@ if goal_r == "detect":
         "is the Pandeia photon+detector noise for in/out-of-transit "
         "integrations (× the optional sensitivity factor, default 1.0), with "
         "the minimum floor applied as a hard maximum on the final bins "
-        "(PandExo convention). 'transits → target' averages down the random "
+        f"(PandExo convention). '{_tt_col}' averages down the random "
         "term only, the floor is a lower bound at every N, so it can "
         "honestly read 'never'. Groups are chosen and verified against "
         "Pandeia's measured saturation. Because T, clouds, and the other "
@@ -2297,7 +2383,7 @@ if fisher_names and "jac" in model:
             "elemental set from Tsai et al. 2023).\n"
             f"- σ is evaluated at the {_ev} count you set. Only the "
             "photon/detector term averages down with more transits; the "
-            "systematic floor does not, use the 'transits → target' column, "
+            f"systematic floor does not, use the '{_tt_col}' column, "
             "not a 1/√N extrapolation."
         )
 elif out.get("fisher_names"):

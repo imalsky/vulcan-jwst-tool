@@ -209,3 +209,49 @@ def test_fast_path_never_imports_picaso():
     forward.canonical_params(_p())
     assert "picaso" not in sys.modules
     assert "jax" not in sys.modules
+
+
+# --- v18.1 GUI-review behavior fixes ----------------------------------------
+
+def test_orbit_kept_under_climate_mode_despite_photo_off():
+    # review finding 26: the climate solve consumes orbit_au (stellar
+    # irradiation), so the photo-off normalization must not overwrite it
+    cp = forward.canonical_params(_pc(chem_provider="picaso",
+                                      orbit_au=0.1))
+    assert cp["use_photo"] is False
+    assert cp["orbit_au"] == 0.1               # kept: climate physics
+    # outside climate mode the photolysis-only normalization still applies
+    cp2 = forward.canonical_params(_pp(orbit_au=0.1))
+    assert cp2["orbit_au"] == 0.04828          # normalized to the system value
+    # and two climate requests differing only in orbit fragment the key
+    assert (forward.params_key(_pc(chem_provider="picaso", orbit_au=0.1))
+            != forward.params_key(_pc(chem_provider="picaso")))
+
+
+def test_co_default_is_mode_aware():
+    # review finding 21: a bare climate request must not refuse its own
+    # default; the picaso provider defaults mid-cell
+    cp = forward.canonical_params(dict(planet="wasp39b",
+                                       tp_mode="picaso_climate"))
+    assert cp["co_ratio"] == 0.55              # the 10x-solar node
+    cp2 = forward.canonical_params(dict(planet="wasp39b",
+                                        chem_provider="picaso",
+                                        tp_mode="isothermal", T_iso=900.0))
+    assert cp2["co_ratio"] == 0.50             # mid-cell
+    cp3 = forward.canonical_params(_p())
+    assert cp3["co_ratio"] == round(forward.CO_BASELINE, 6)
+
+
+def test_dlnco_refused_under_picaso_climate():
+    # review finding 20: exact-node climate composition means the picaso
+    # C/O stencil always straddles a table kink -- refuse at the API,
+    # never mid-run
+    with pytest.raises(ValueError, match="unavailable under the PICASO"):
+        forward.canonical_params(_pc(chem_provider="picaso",
+                                     fisher_params=["dlnCO"]))
+    # fine under the VULCAN engine (its own chemistry differentiates)
+    cp = forward.canonical_params(_pc(fisher_params=["dlnCO"]))
+    assert cp["fisher_params"] == ["dlnCO"]
+    # and fine under picaso OUTSIDE climate mode at the mid-cell default
+    cp2 = forward.canonical_params(_pp(fisher_params=["dlnCO"]))
+    assert cp2["fisher_params"] == ["dlnCO"]
