@@ -74,6 +74,14 @@ def main() -> int:
               "Run `jwst-tool data` for the full data-availability report.",
               file=sys.stderr)
 
+    if not os.environ.get("JWST_TOOL_PICASO_REFDATA", "").strip():
+        print("jwst-tool: JWST_TOOL_PICASO_REFDATA is not set -- the opt-in "
+              "PICASO forward-model provider and the PICASO climate T-P mode "
+              "will refuse to run (the VULCAN-JAX provider is unaffected). "
+              "Point it at a PICASO v4.0 reference tree to enable them; "
+              "`jwst-tool data` reports each required piece.",
+              file=sys.stderr)
+
     app = Path(__file__).parent / "app.py"
     cmd = [sys.executable, "-m", "streamlit", "run", str(app)] + sys.argv[1:]
     return subprocess.call(cmd, env=os.environ.copy())

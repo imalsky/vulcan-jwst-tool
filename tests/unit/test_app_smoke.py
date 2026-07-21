@@ -90,3 +90,22 @@ def test_results_render_with_synthetic_run():
     dl_labels = {b.label for b in at.get("download_button")}
     assert {"Figure (PNG)", "Binned points (CSV)", "Native model (CSV)",
             "Values (CSV)", "Mode details (CSV)"} <= dl_labels
+
+
+def test_picaso_provider_renders(monkeypatch):
+    # v18: switching the forward-model engine to PICASO must render (the
+    # kinetics sections collapse to the provider caption; composition swaps
+    # to the picaso ranges; the detect menu loses SO2). Works with or
+    # without the reference tree: canonical_params failures surface through
+    # the params_error caption, never an exception.
+    at = _run_app()
+    at.selectbox(key="n0_provider").set_value("picaso")
+    at.run()
+    assert not at.exception, at.exception
+
+
+def test_picaso_climate_mode_renders():
+    at = _run_app()
+    at.selectbox(key="n0_wasp39b_tp").set_value("picaso_climate")
+    at.run()
+    assert not at.exception, at.exception

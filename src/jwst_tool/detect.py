@@ -67,7 +67,7 @@ N_TRANSITS_CAP = 500
 # very signal being scored. Must track forward.TP_PARAM_NAMES +
 # forward.CLOUD_FISHER_PARAMS + forward.MIE_FISHER_PARAMS.
 _NUISANCE_JAC = frozenset(
-    {"T_iso", "Tirr", "Tint", "log_kappa", "log_gamma", "lnR0",
+    {"T_iso", "Tirr", "Tint", "Tint_cl", "log_kappa", "log_gamma", "lnR0",
      "log_kappa_cloud", "alpha_cloud",
      "mie_log_rg", "mie_sigmag", "mie_log_mmr"})
 

@@ -9,6 +9,17 @@ thermal emission (secondary-eclipse depth Fp/Fs x (Rp/Rs)^2, with a
 PHOENIX stellar SED for Fs). Import name `jwst_tool`, console script
 `jwst-tool`.
 
+Since v18 a second forward-model engine is available: PICASO 4
+thermochemical-equilibrium chemistry (Visscher grid), plus a PICASO
+radiative-convective climate T-P mode usable under EITHER engine (VULCAN
+kinetics can run on the PICASO climate profile). Both engines feed the
+identical RT, binning, noise, and Fisher machinery, so
+equilibrium-vs-kinetics is directly comparable. The PICASO engine has no
+photochemistry and therefore no SO2 (equilibrium sulfur is H2S/OCS), is
+capped at C/O 1.10 by its tables, and is finite-difference only; its
+reference data is selected by `JWST_TOOL_PICASO_REFDATA`. Scope, measured
+limits, and deferred features: `docs/picaso_roadmap.md`.
+
 ## Installation
 
 1. Install from TestPyPI. The sibling packages resolve automatically:
@@ -132,9 +143,15 @@ src/jwst_tool/
 ├── instruments.py     mode registry and path roots
 ├── datacheck.py       data-availability detection
 ├── planets.py         planet registry
+├── picaso_env.py      PICASO refdata bootstrap + content fingerprints
+├── picaso_chem.py     PICASO equilibrium provider (blended Visscher grid)
+├── picaso_climate.py  PICASO radiative-convective climate runner + cache
 └── cli.py             console entry point
 tests/unit/            numpy-only suite: python -m pytest tests -q
+tests/live/            env-gated live validation (JWST_TOOL_RUN_PICASO_LIVE)
 tests/parity/          PandExo parity harness and report
+tests/parity_picaso/   PICASO-native RT vs ExoJax parity (offline)
+docs/picaso_roadmap.md PICASO scope, measured limits, deferred features
 ```
 
 ## Science goals

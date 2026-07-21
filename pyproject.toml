@@ -51,6 +51,10 @@ Repository = "https://github.com/imalsky/vulcan-jwst-tool"
 # streamlit floor: app.py uses the width="stretch" API on st.button/st.pyplot/
 # st.dataframe, introduced for those widgets by 1.49.0 (2025-08-26).
 gui = ["streamlit>=1.49", "pandas"]
+# Opt-in PICASO equilibrium provider + climate T-P mode (v18). The reference
+# tree is separate user-supplied science data (JWST_TOOL_PICASO_REFDATA;
+# `jwst-tool data` reports each piece; docs/picaso_roadmap.md has the scope).
+picaso = ["picaso==4.0.1"]
 dev = ["ruff>=0.11", "build>=1.2", "twine>=5"]
 
 [project.scripts]

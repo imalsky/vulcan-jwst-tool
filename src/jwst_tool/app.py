@@ -306,6 +306,7 @@ def _watch_proc(proc, on_line, on_tick, tick_s: float = 1.0) -> None:
 # default target precision per parameter (DISPLAY units: dex / K / absolute C/O)
 _TARGET_DEFAULT = {"lnZ": 0.10, "dlnCO": 0.05, "lnKzz": 0.30,
                    "T_iso": 50.0, "Tirr": 50.0, "Tint": 50.0,
+                   "Tint_cl": 50.0,
                    "log_kappa": 0.30, "log_gamma": 0.30,
                    "log_kappa_cloud": 0.30, "alpha_cloud": 0.50,
                    "mie_log_rg": 0.30, "mie_sigmag": 0.20,
@@ -431,9 +432,33 @@ with st.sidebar:
     # vocabulary changes with the geometry.
     _evw = "eclipse" if science_mode == "emission" else "transit"
     st.divider()
+    st.markdown("### Forward model")
+    chem_provider = st.selectbox(
+        "Chemistry engine", ["vulcan", "picaso"], index=0, key=K("provider"),
+        format_func={"vulcan": "VULCAN-JAX kinetics (photochemistry; default)",
+                     "picaso": "PICASO equilibrium (no photochemistry / "
+                               "SO2; C/O ≤ 1.10)"}.get,
+        help="VULCAN-JAX solves the full photochemical-kinetics network "
+             "(transport, photolysis, quenching, SO2 and the other "
+             "disequilibrium products). PICASO supplies thermochemical-"
+             "EQUILIBRIUM abundances interpolated from the Visscher 2121 "
+             "grid: no kinetics, no transport, no photochemistry, and "
+             "therefore NO SO2/S2/S8 (equilibrium sulfur sits in H2S/OCS) "
+             "-- photochemical-sulfur science needs VULCAN. Both engines "
+             "feed the identical ExoJAX radiative transfer, binning, "
+             "Pandeia noise, and Fisher machinery, so results are directly "
+             "comparable (equilibrium vs kinetics is the science axis). "
+             "The PICASO provider is seconds per state instead of minutes, "
+             "is capped at C/O 1.10 by its tables, and its composition "
+             "derivatives are two-cell table secants guarded by a kink "
+             "gate; derivatives are finite-difference only.")
+    _pic = chem_provider == "picaso"
+    if _pic:
+        st.session_state[K("jacm")] = "fd"   # tables are not differentiable
     st.markdown("### Differentiation method")
     jac_method = st.selectbox(
         "How derivatives are computed", ["fd", "ad"], index=0, key=K("jacm"),
+        disabled=_pic,
         format_func={"fd": "Finite differences (default)",
                      "ad": "Automatic differentiation (forward-mode)"}.get,
         help="This choice applies wherever the tool needs the derivative "
@@ -455,15 +480,23 @@ with st.sidebar:
              "result row is labeled with the method that produced it. "
              "The post-run adjoint diagnostics panel uses reverse-mode "
              "AD regardless of this choice.")
-    st.markdown("### VULCAN chemistry")
-    st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward model "
-               "(composition + transport + photochemistry → steady-state "
-               "abundances). The T-P profile is shared: it also sets the "
-               "ExoJAX radiative transfer below.")
+    st.markdown("### PICASO equilibrium chemistry" if _pic
+                else "### VULCAN chemistry")
+    if _pic:
+        st.caption("Inputs to the PICASO equilibrium provider (blended "
+                   "Visscher 2121 grid → equilibrium abundances on the "
+                   "chosen T-P). The T-P profile is shared: it also sets "
+                   "the ExoJAX radiative transfer below.")
+    else:
+        st.caption("Inputs to the VULCAN-JAX photochemical-kinetics forward "
+                   "model (composition + transport + photochemistry → "
+                   "steady-state abundances). The T-P profile is shared: it "
+                   "also sets the ExoJAX radiative transfer below.")
 
     with st.expander("Atmosphere structure, T-P profile (shared with RT)"):
-        _tp_opts = (["guillot", "file"] if science_mode == "emission"
-                    else ["isothermal", "guillot", "file"])
+        _tp_opts = (["guillot", "file", "picaso_climate"]
+                    if science_mode == "emission"
+                    else ["isothermal", "guillot", "file", "picaso_climate"])
         if st.session_state.get(_k("tp")) not in _tp_opts:
             st.session_state[_k("tp")] = _tp_opts[0]
         tp_mode = st.selectbox(
@@ -471,7 +504,9 @@ with st.sidebar:
             key=_k("tp"),
             format_func={"isothermal": "Isothermal",
                          "guillot": "Guillot (2010)",
-                         "file": "Tabulated table (T-P, optional Kzz)"}.get,
+                         "file": "Tabulated table (T-P, optional Kzz)",
+                         "picaso_climate":
+                             "PICASO radiative-convective (climate solve)"}.get,
             help="Sets the temperature the chemistry AND the radiative "
                  "transfer see. Explicit profiles only: isothermal, Guillot, "
                  "or an explicit tabulated table you choose (a GCM profile "
@@ -496,7 +531,59 @@ with st.sidebar:
                 "log₁₀ κ_IR (cm²/g)", -4.0, 0.0, -2.3, 0.1, key=_k("lk"))
             tp_kwargs["log_gamma"] = st.number_input(
                 "log₁₀ γ (κ_vis/κ_IR)", -2.0, 0.3, -1.0, 0.05, key=_k("lg"))
-        else:
+        elif tp_mode == "picaso_climate":
+            tp_kwargs["tint_cl"] = st.number_input(
+                "Internal temperature T_int (K)", *forward.TINT_CL_RANGE,
+                forward.TINT_CL_DEFAULT, 10.0, key=_k("tintcl"),
+                help="The planet's interior heat flux, the one structure "
+                     "parameter of the climate solve (and its one Fisher "
+                     "row, computed by full climate re-solves). Strongly "
+                     "irradiated planets respond weakly to it above the "
+                     "radiative-convective boundary.")
+            tp_kwargs["rfacv"] = st.selectbox(
+                "Day-night heat redistribution (rfacv)",
+                list(forward.RFACV_CHOICES), index=1, key=_k("rfacv"),
+                format_func={0.0: "0 -- no irradiation (isolated interior)",
+                             0.5: "0.5 -- full redistribution (default)",
+                             1.0: "1 -- dayside-only"}.get,
+                help="How the absorbed stellar flux is shared between "
+                     "hemispheres in the climate solve. The star parameters "
+                     "above set the irradiation, so they are model physics "
+                     "in this mode (cache-keyed).")
+            tp_kwargs["tio_vo"] = st.checkbox(
+                "Include TiO/VO in climate opacity only", value=False,
+                key=_k("tiovo"),
+                help="Selects the correlated-k tables WITH TiO/VO opacity "
+                     "(appropriate for very hot atmospheres where they have "
+                     "not rained out; default off = the NoTiOVO tables). "
+                     "This affects ONLY the climate solve's opacity -- "
+                     "TiO/VO are NOT in the spectrum's RT molecule set.")
+            tp_kwargs["climate_rcb"] = st.number_input(
+                "Radiative-convective boundary guess (layer index)",
+                *forward.CLIMATE_RCB_RANGE, forward.CLIMATE_RCB_DEFAULT, 1,
+                key=_k("rcb"),
+                help="A layer index on the 91-level climate grid (larger = "
+                     "deeper). This is a MODEL ASSUMPTION, not just a solver "
+                     "seed: for strongly irradiated planets the converged "
+                     "deep profile depends on it (measured on WASP-39b "
+                     "defaults: rcb 60 vs 65 both converge but differ by up "
+                     "to ~340 K below 0.4 bar, with layers above the "
+                     "boundary agreeing to ~2 K -- the weakly constrained "
+                     "deep-adiabat degeneracy). Cache-keyed; the T_int "
+                     "Fisher row differentiates at fixed rcb.")
+            st.caption(
+                "PICASO radiative-convective equilibrium T-P, post-processed "
+                "with the selected chemistry engine and ExoJAX RT. The "
+                "coupling is ONE-WAY: the chemistry never feeds back into "
+                "the climate opacity, so this is not chemistry-radiative "
+                "self-consistency. Composition must sit exactly ON a "
+                "correlated-k node (the Composition menus switch to node "
+                "selectors). First solve ~1-2 min, then cached and shared "
+                "between both chemistry engines. Certified around the "
+                "WASP-39b configuration; other planets/nodes are "
+                "convergence-gated at run time and should be treated as "
+                "experimental.")
+        elif tp_mode == "file":
             tp_file = st.radio(
                 "Profile source", [forward.TP_FILE_SHIPPED,
                                    forward.TP_FILE_UPLOAD],
@@ -581,253 +668,332 @@ with st.sidebar:
                 "the reported sigmas are optimistic.")
 
     with st.expander("Composition"):
-        # Composition is fully STRUCTURAL (v13, one path for every value):
-        # metallicity scales the cfg's O/C/N/S abundances together, C/O then
-        # sets C_H = co * O_H, and FastChem re-initializes at exactly that
-        # composition -- the upstream-VULCAN workflow. No perturbative knob,
-        # no fixed-O validity ceiling: C-rich (> 1) is the same code path.
-        # A corner with no certified steady state errors loudly (longdy
-        # gate); it can never return a wrong spectrum.
-        met = st.number_input(
-            "Metallicity (× solar)", 0.1, 100.0, 10.0, 0.5,
-            format="%.2f", key=K("met"),
-            help="Any value in [0.1, 100] × solar. Scales the network's "
-                 "O/C/N/S abundances together (He "
-                 "fixed); every value is a full FastChem re-initialization. "
-                 "Reported in dex ([M/H]) by the constraint forecast. Far "
-                 "corners (0.1x, 100x on cold profiles) may fail the "
-                 "convergence gate loudly.")
-        co_ratio = st.number_input(
-            "C/O (carbon/oxygen number ratio)",
-            0.10, 2.00, float(forward.CO_BASELINE), 0.05,
-            format="%.3f", key=K("co"),
-            help="Any value in [0.1, 2.0]. Total carbon/oxygen number ratio "
-                 "N_C/N_O: sets C_H = C/O × "
-                 "O_H at the metallicity-scaled oxygen, then the network "
-                 "re-initializes. The default 0.549 is the network's "
-                 "WASP-39b elemental set (Tsai et al. 2023). Carbon-rich "
-                 "values (> 1) work "
-                 "too, but near C/O = 1 solves slow down and derivatives "
-                 "are ill-conditioned: constrain C/O per side, not across "
-                 "it.")
-
-    with st.expander("Vertical mixing (K_zz)"):
-        _kzz_opts = ["const", "Pfunc", "JM16"]
-        # tabulated Kzz needs the tabulated T-P table (its Kzz column)
-        _kzz_file_ok = tp_mode == "file"
-        if _kzz_file_ok:
-            _kzz_opts.append("file")
-        elif st.session_state.get(_k("kzzmode")) == "file":
-            st.session_state[_k("kzzmode")] = "const"
-        kzz_mode = st.selectbox(
-            "K_zz profile", _kzz_opts, index=0, key=_k("kzzmode"),
-            format_func={"const": "Constant",
-                         "Pfunc": "Power law in P (Pfunc)",
-                         "JM16": "Moses-type P^-0.5 (JM16)",
-                         "file": "Tabulated (Kzz column of the T-P table)"}.get,
-            help="Eddy-diffusion profile. Constant is the validated "
-                 "baseline; Pfunc rises as P^-0.4 above a chosen level; "
-                 "JM16 rises as P^-0.5 above 300 mbar with a deep floor; "
-                 "'Tabulated' uses the Kzz column of the tp_mode='file' "
-                 "table (only offered in file mode). The Fisher lnKzz row "
-                 "is a multiplicative scale of the WHOLE profile in every "
-                 "mode.")
-        kzz_const = kzz_kmax = kzz_plev = kzz_kdeep = 0.0
-        kzz_x = 1.0
-        if kzz_mode == "const":
-            log_kzz = st.number_input(
-                "log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
-                key=_k("kzz"),
-                help="Constant eddy-diffusion coefficient: "
-                     "stronger mixing quenches photochemical "
-                     "gradients.")
-            kzz_const = 10.0 ** log_kzz
-        elif kzz_mode == "Pfunc":
-            kzz_kmax = 10.0 ** st.number_input(
-                "log₁₀ deep K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
-                key=_k("kzkmax"),
-                help="Deep-atmosphere Kzz; above the transition level the "
-                     "profile rises as (P_lev/P)^0.4.")
-            kzz_plev = 10.0 ** st.number_input(
-                "log₁₀ transition level (bar)", -5.0, 2.0, -1.0, 0.25,
-                key=_k("kzplev"),
-                help="Pressure above which Kzz starts rising (VULCAN "
-                     "Pfunc K_p_lev).")
-        elif kzz_mode == "JM16":
-            kzz_kdeep = 10.0 ** st.number_input(
-                "log₁₀ deep-floor K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
-                key=_k("kzkdeep"),
-                help="Deep floor of the Moses-type profile "
-                     "Kzz = max(K_deep, 1e5 (300 mbar/P)^0.5).")
+        if tp_mode == "picaso_climate":
+            # EXACT-CK-NODE selectors: the climate correlated-k tables are
+            # per-node files with no composition interpolation, so climate
+            # mode only accepts compositions sitting exactly on a node
+            # (canonical_params is the hard guard; these menus simply can't
+            # produce anything else).
+            from jwst_tool import picaso_chem as pchem
+            _feh_opts = [x for x in pchem.FEH_NODES if -1.0 <= x <= 2.0]
+            _feh = st.selectbox(
+                "Metallicity node", _feh_opts,
+                index=_feh_opts.index(1.0), key=K("metnode"),
+                format_func=lambda x: f"{10.0 ** x:g} × solar "
+                                      f"([M/H] = {x:+.1f})",
+                help="Climate mode accepts only the shipped correlated-k "
+                     "metallicity nodes (the CK tables carry no composition "
+                     "interpolation).")
+            met = float(10.0 ** _feh)
+            _co_opts = [c for c in pchem.CO_NODES
+                        if (f"feh{_feh:.1f}_co{c:.2f}"
+                            in pchem.CK_NODES_AVAILABLE)]
+            co_ratio = st.selectbox(
+                "C/O node", _co_opts,
+                index=_co_opts.index(0.55) if 0.55 in _co_opts else 0,
+                key=K(f"conode_{_feh:.1f}"),
+                format_func=lambda c: f"{c:.2f}",
+                help="Shipped C/O nodes at this metallicity (the extreme "
+                     "metallicity nodes carry only the mid C/O columns). "
+                     "NOTE: at a node the C/O constraint row can refuse "
+                     "(the one-sided table secants differ there -- the "
+                     "measured node-kink gate); metallicity rows are fine.")
+        elif _pic:
+            met = st.number_input(
+                "Metallicity (× solar)", *forward.PICASO_MET_RANGE, 10.0, 0.5,
+                format="%.2f", key=K("met_pic"),
+                help="Any value in [0.1, 100] × solar. Interpolated "
+                     "bilinearly (in log abundance) between the bracketing "
+                     "Visscher-grid nodes; the constraint row is a two-cell "
+                     "table secant, kink-gated at nodes.")
+            co_ratio = st.number_input(
+                "C/O (carbon/oxygen number ratio)",
+                *forward.PICASO_CO_RANGE, 0.50, 0.01,
+                format="%.3f", key=K("co_pic"),
+                help="Hard-capped at 1.10 by the Visscher equilibrium grid "
+                     "(VULCAN handles up to 2.0). Default 0.50 sits "
+                     "MID-CELL, where the C/O constraint row is a clean "
+                     "single-cell secant; exactly ON a node (e.g. 0.55) the "
+                     "one-sided secants differ materially and the C/O row "
+                     "refuses (measured kink 1.5 at the 0.55 node on W39b "
+                     "defaults -- the table-resolution limit, stated not "
+                     "hidden).")
         else:
-            st.caption("Kzz is read from the Kzz column of the uploaded "
-                       "array / selected table (rejected loudly if it has "
-                       "no Kzz column).")
-        if kzz_mode != "const":
-            kzz_x = 10.0 ** st.number_input(
-                "log₁₀ K_zz scale factor", -1.0, 1.0, 0.0, 0.05,
-                key=_k("kzzx"),
-                help="Multiplies the whole profile (the same on-graph "
-                     "direction the Fisher lnKzz row uses); 0 = the profile "
-                     "as specified.")
+            # Composition is fully STRUCTURAL (v13, one path for every
+            # value): metallicity scales the cfg's O/C/N/S abundances
+            # together, C/O then sets C_H = co * O_H, and FastChem
+            # re-initializes at exactly that composition -- the
+            # upstream-VULCAN workflow. No perturbative knob, no fixed-O
+            # validity ceiling: C-rich (> 1) is the same code path. A corner
+            # with no certified steady state errors loudly (longdy gate); it
+            # can never return a wrong spectrum.
+            met = st.number_input(
+                "Metallicity (× solar)", 0.1, 100.0, 10.0, 0.5,
+                format="%.2f", key=K("met"),
+                help="Any value in [0.1, 100] × solar. Scales the network's "
+                     "O/C/N/S abundances together (He "
+                     "fixed); every value is a full FastChem re-initialization. "
+                     "Reported in dex ([M/H]) by the constraint forecast. Far "
+                     "corners (0.1x, 100x on cold profiles) may fail the "
+                     "convergence gate loudly.")
+            co_ratio = st.number_input(
+                "C/O (carbon/oxygen number ratio)",
+                0.10, 2.00, float(forward.CO_BASELINE), 0.05,
+                format="%.3f", key=K("co"),
+                help="Any value in [0.1, 2.0]. Total carbon/oxygen number ratio "
+                     "N_C/N_O: sets C_H = C/O × "
+                     "O_H at the metallicity-scaled oxygen, then the network "
+                     "re-initializes. The default 0.549 is the network's "
+                     "WASP-39b elemental set (Tsai et al. 2023). Carbon-rich "
+                     "values (> 1) work "
+                     "too, but near C/O = 1 solves slow down and derivatives "
+                     "are ill-conditioned: constrain C/O per side, not across "
+                     "it.")
 
-    with st.expander("Photochemistry & transport"):
-        if jac_method == "ad":
-            st.session_state[K("photo")] = True   # AD needs photolysis ON
-        use_photo = st.checkbox(
-            "Photochemistry (UV photolysis)", value=True, key=K("photo"),
-            disabled=(jac_method == "ad"),
-            help="Off = thermochemistry + transport only (no photolysis "
-                 "products such as SO2). Detection and the default "
-                 "finite-difference Fisher forecast work either way; the AD "
-                 "differentiation method requires photolysis ON (its "
-                 "validated tangent regime), so this is locked while AD is "
-                 "selected.")
-        sl_angle_deg = st.number_input(
-            "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
-            disabled=not use_photo,
-            help="Slant path of the stellar UV. 83° = terminator slant "
-                 "(Tsai et al. 2023 W39b); smaller angles = more direct "
-                 "illumination.")
-        f_diurnal = st.number_input(
-            "Diurnal photolysis factor", 0.1, 1.0, 1.0, 0.05, key=K("fdiur"),
-            disabled=not use_photo,
-            help="Multiplies every photolysis rate. 1.0 = permanent dayside "
-                 "(tidally locked); 0.5 mimics day-night averaging.")
-        use_moldiff = st.checkbox(
-            "Molecular diffusion", value=True, key=K("moldiff"),
-            help="Species-dependent molecular diffusion competing with Kzz "
-                 "(sets the homopause; matters high up).")
-        use_vm_mol = st.checkbox(
-            "Upwind molecular-diffusion advection (vm_mol)", value=False,
-            key=K("vmmol"), disabled=not use_moldiff,
-            help="Adds the advective settling flux with upwind differencing, "
-                 "refreshed in-loop (the hybrid vm_mol scheme; VULCAN-JAX's "
-                 "own default since 2026-07-14). OFF reproduces this tool's "
-                 "validated baseline chemistry; ON is the newer scheme, not "
-                 "yet re-baselined for these forecasts, and mainly moves "
-                 "heavy species in the upper atmosphere. Requires molecular "
-                 "diffusion.")
+    if _pic:
+        # Equilibrium provider: the kinetics sections (mixing,
+        # photochemistry, condensation, boundary conditions) do not
+        # exist -- canonical_params refuses explicit requests, the GUI
+        # simply never offers them. Quench/lnKzz is a deferred feature
+        # (docs/picaso_roadmap.md in the repo).
+        st.caption(
+            "PICASO equilibrium provider: no transport, photochemistry, "
+            "condensation, or boundary conditions (equilibrium has none). "
+            "The quench approximation with an lnKzz constraint row is a "
+            "deferred feature; see docs/picaso_roadmap.md. Photochemical "
+            "sulfur (SO2) needs the VULCAN-JAX engine.")
+        kzz_mode, kzz_x = "const", 1.0
+        kzz_const, kzz_kmax, kzz_plev, kzz_kdeep = 1.0e9, 0.0, 0.0, 0.0
+        use_photo, sl_angle_deg, f_diurnal = False, 83.0, 1.0
+        use_moldiff = use_vm_mol = use_condense = use_settling = False
+        diff_esc, top_flux, bot_flux = [], [], []
+        with st.expander("Numerical grid (layers)"):
+            nz = st.number_input(
+                "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
+                forward.NZ_DEFAULT, 10, key=K("nz_pic"),
+                help="Levels of the provider's pressure grid (1e-6 bar down "
+                     "to the chemistry bottom); the ExoJAX RT grid is locked "
+                     "to the same count. Equilibrium states are seconds at "
+                     "any count.")
+            yconv_cri = forward.YCONV_DEFAULT   # no iterative solver: inert
+    else:
+        with st.expander("Vertical mixing (K_zz)"):
+            _kzz_opts = ["const", "Pfunc", "JM16"]
+            # tabulated Kzz needs the tabulated T-P table (its Kzz column)
+            _kzz_file_ok = tp_mode == "file"
+            if _kzz_file_ok:
+                _kzz_opts.append("file")
+            elif st.session_state.get(_k("kzzmode")) == "file":
+                st.session_state[_k("kzzmode")] = "const"
+            kzz_mode = st.selectbox(
+                "K_zz profile", _kzz_opts, index=0, key=_k("kzzmode"),
+                format_func={"const": "Constant",
+                             "Pfunc": "Power law in P (Pfunc)",
+                             "JM16": "Moses-type P^-0.5 (JM16)",
+                             "file": "Tabulated (Kzz column of the T-P table)"}.get,
+                help="Eddy-diffusion profile. Constant is the validated "
+                     "baseline; Pfunc rises as P^-0.4 above a chosen level; "
+                     "JM16 rises as P^-0.5 above 300 mbar with a deep floor; "
+                     "'Tabulated' uses the Kzz column of the tp_mode='file' "
+                     "table (only offered in file mode). The Fisher lnKzz row "
+                     "is a multiplicative scale of the WHOLE profile in every "
+                     "mode.")
+            kzz_const = kzz_kmax = kzz_plev = kzz_kdeep = 0.0
+            kzz_x = 1.0
+            if kzz_mode == "const":
+                log_kzz = st.number_input(
+                    "log₁₀ K_zz (cm²/s)", 6.0, 12.0, 9.0, 0.25,
+                    key=_k("kzz"),
+                    help="Constant eddy-diffusion coefficient: "
+                         "stronger mixing quenches photochemical "
+                         "gradients.")
+                kzz_const = 10.0 ** log_kzz
+            elif kzz_mode == "Pfunc":
+                kzz_kmax = 10.0 ** st.number_input(
+                    "log₁₀ deep K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
+                    key=_k("kzkmax"),
+                    help="Deep-atmosphere Kzz; above the transition level the "
+                         "profile rises as (P_lev/P)^0.4.")
+                kzz_plev = 10.0 ** st.number_input(
+                    "log₁₀ transition level (bar)", -5.0, 2.0, -1.0, 0.25,
+                    key=_k("kzplev"),
+                    help="Pressure above which Kzz starts rising (VULCAN "
+                         "Pfunc K_p_lev).")
+            elif kzz_mode == "JM16":
+                kzz_kdeep = 10.0 ** st.number_input(
+                    "log₁₀ deep-floor K_zz (cm²/s)", 4.0, 11.0, 5.0, 0.25,
+                    key=_k("kzkdeep"),
+                    help="Deep floor of the Moses-type profile "
+                         "Kzz = max(K_deep, 1e5 (300 mbar/P)^0.5).")
+            else:
+                st.caption("Kzz is read from the Kzz column of the uploaded "
+                           "array / selected table (rejected loudly if it has "
+                           "no Kzz column).")
+            if kzz_mode != "const":
+                kzz_x = 10.0 ** st.number_input(
+                    "log₁₀ K_zz scale factor", -1.0, 1.0, 0.0, 0.05,
+                    key=_k("kzzx"),
+                    help="Multiplies the whole profile (the same on-graph "
+                         "direction the Fisher lnKzz row uses); 0 = the profile "
+                         "as specified.")
 
-    with st.expander("Numerical grid (layers & convergence)"):
-        st.caption("Grid resolution and solver tolerance, same physics, finer "
-                   "grids (this replaced the old fast/high fidelity switch).")
-        nz = st.number_input(
-            "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
-            forward.NZ_DEFAULT, 10, key=K("nz"),
-            help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
-                 "grid is LOCKED to the same count. More layers resolve steep "
-                 "photochemical gradients. Roughly 2 min at 100 layers, "
-                 "2.5 min at 150 (other settings at defaults).")
-        yconv_cri = st.number_input(
-            "Convergence tolerance (yconv)",
-            1.0e-4, 1.0e-2, forward.YCONV_DEFAULT, 1.0e-4,
-            format="%.1e", key=K("yconv"),
-            help="Steady-state convergence criterion, any value in "
-                 "[1e-4, 1e-2]. 1e-2 is the VULCAN master "
-                 "default; 1e-3 (with more layers) is the validated strict tier "
-                 "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
-                 "runtime. A solve that cannot reach the tolerance errors "
-                 "loudly instead of returning an unconverged spectrum.")
+        with st.expander("Photochemistry & transport"):
+            if jac_method == "ad":
+                st.session_state[K("photo")] = True   # AD needs photolysis ON
+            use_photo = st.checkbox(
+                "Photochemistry (UV photolysis)", value=True, key=K("photo"),
+                disabled=(jac_method == "ad"),
+                help="Off = thermochemistry + transport only (no photolysis "
+                     "products such as SO2). Detection and the default "
+                     "finite-difference Fisher forecast work either way; the AD "
+                     "differentiation method requires photolysis ON (its "
+                     "validated tangent regime), so this is locked while AD is "
+                     "selected.")
+            sl_angle_deg = st.number_input(
+                "Photolysis zenith angle (°)", 0.0, 89.0, 83.0, 1.0, key=K("sza"),
+                disabled=not use_photo,
+                help="Slant path of the stellar UV. 83° = terminator slant "
+                     "(Tsai et al. 2023 W39b); smaller angles = more direct "
+                     "illumination.")
+            f_diurnal = st.number_input(
+                "Diurnal photolysis factor", 0.1, 1.0, 1.0, 0.05, key=K("fdiur"),
+                disabled=not use_photo,
+                help="Multiplies every photolysis rate. 1.0 = permanent dayside "
+                     "(tidally locked); 0.5 mimics day-night averaging.")
+            use_moldiff = st.checkbox(
+                "Molecular diffusion", value=True, key=K("moldiff"),
+                help="Species-dependent molecular diffusion competing with Kzz "
+                     "(sets the homopause; matters high up).")
+            use_vm_mol = st.checkbox(
+                "Upwind molecular-diffusion advection (vm_mol)", value=False,
+                key=K("vmmol"), disabled=not use_moldiff,
+                help="Adds the advective settling flux with upwind differencing, "
+                     "refreshed in-loop (the hybrid vm_mol scheme; VULCAN-JAX's "
+                     "own default since 2026-07-14). OFF reproduces this tool's "
+                     "validated baseline chemistry; ON is the newer scheme, not "
+                     "yet re-baselined for these forecasts, and mainly moves "
+                     "heavy species in the upper atmosphere. Requires molecular "
+                     "diffusion.")
 
-    with st.expander("Condensation (detection-only)"):
-        _conden_allowed = use_photo and use_moldiff and jac_method == "fd"
-        if not _conden_allowed:
-            st.session_state[K("conden")] = False
-        use_condense = st.checkbox(
-            "S8 condensation (sulfur rainout)", value=False, key=K("conden"),
-            disabled=not _conden_allowed,
-            help="Sulfur rainout with the standard VULCAN treatment. The "
-                 "solver runs a condensation window, pins S8 and its "
-                 "condensate across the whole column, and then converges "
-                 "the remaining chemistry under the usual certification "
-                 "gate. This is a forward-model option for detection "
-                 "goals only. It cannot support parameter constraints, "
-                 "because the pinned reservoir depends on the solver's "
-                 "step history rather than on the input parameters alone, "
-                 "so no derivative through it is trustworthy. One warning "
-                 "applies. If the column is too hot to condense, the pin "
-                 "still freezes sulfur at an arbitrary early value instead "
-                 "of reducing to the no-condensation result. Use this only "
-                 "for planets cool enough aloft for sulfur to condense.")
-        if not _conden_allowed:
+        with st.expander("Numerical grid (layers & convergence)"):
+            st.caption("Grid resolution and solver tolerance, same physics, finer "
+                       "grids (this replaced the old fast/high fidelity switch).")
+            nz = st.number_input(
+                "Vertical layers (chemistry + RT)", *forward.NZ_RANGE,
+                forward.NZ_DEFAULT, 10, key=K("nz"),
+                help="VULCAN photochemistry layers; the ExoJAX radiative-transfer "
+                     "grid is LOCKED to the same count. More layers resolve steep "
+                     "photochemical gradients. Roughly 2 min at 100 layers, "
+                     "2.5 min at 150 (other settings at defaults).")
+            yconv_cri = st.number_input(
+                "Convergence tolerance (yconv)",
+                1.0e-4, 1.0e-2, forward.YCONV_DEFAULT, 1.0e-4,
+                format="%.1e", key=K("yconv"),
+                help="Steady-state convergence criterion, any value in "
+                     "[1e-4, 1e-2]. 1e-2 is the VULCAN master "
+                     "default; 1e-3 (with more layers) is the validated strict tier "
+                     "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
+                     "runtime. A solve that cannot reach the tolerance errors "
+                     "loudly instead of returning an unconverged spectrum.")
+
+        with st.expander("Condensation (detection-only)"):
+            _conden_allowed = use_photo and use_moldiff and jac_method == "fd"
+            if not _conden_allowed:
+                st.session_state[K("conden")] = False
+            use_condense = st.checkbox(
+                "S8 condensation (sulfur rainout)", value=False, key=K("conden"),
+                disabled=not _conden_allowed,
+                help="Sulfur rainout with the standard VULCAN treatment. The "
+                     "solver runs a condensation window, pins S8 and its "
+                     "condensate across the whole column, and then converges "
+                     "the remaining chemistry under the usual certification "
+                     "gate. This is a forward-model option for detection "
+                     "goals only. It cannot support parameter constraints, "
+                     "because the pinned reservoir depends on the solver's "
+                     "step history rather than on the input parameters alone, "
+                     "so no derivative through it is trustworthy. One warning "
+                     "applies. If the column is too hot to condense, the pin "
+                     "still freezes sulfur at an arbitrary early value instead "
+                     "of reducing to the no-condensation result. Use this only "
+                     "for planets cool enough aloft for sulfur to condense.")
+            if not _conden_allowed:
+                st.caption(
+                    "Condensation needs photochemistry and molecular diffusion "
+                    "switched on, and the finite-difference method selected at "
+                    "the top. A cold column without photochemistry never "
+                    "reaches a certifiable steady state. The condensation "
+                    "growth rate comes from the molecular-diffusion "
+                    "coefficient. Selecting AD means you want derivatives, "
+                    "which condensation cannot provide.")
+            use_condense = bool(use_condense and _conden_allowed)
             st.caption(
-                "Condensation needs photochemistry and molecular diffusion "
-                "switched on, and the finite-difference method selected at "
-                "the top. A cold column without photochemistry never "
-                "reaches a certifiable steady state. The condensation "
-                "growth rate comes from the molecular-diffusion "
-                "coefficient. Selecting AD means you want derivatives, "
-                "which condensation cannot provide.")
-        use_condense = bool(use_condense and _conden_allowed)
-        st.caption(
-            "If you need aerosol opacity in a constraint forecast, use the "
-            "ExoJAX cloud deck in the radiative-transfer section instead.")
+                "If you need aerosol opacity in a constraint forecast, use the "
+                "ExoJAX cloud deck in the radiative-transfer section instead.")
 
-    with st.expander("Boundary conditions & escape (advanced)"):
-        st.caption(
-            "Upstream VULCAN boundary-condition machinery, all OFF by "
-            "default (the validated baseline: closed column, no escape, no "
-            "settling). Negligible for a typical hot Jupiter; these exist "
-            "for escape, surface-flux, and settling studies. Every entry is "
-            "cache-keyed.")
-        _settle_ok = use_moldiff and not use_condense
-        if not _settle_ok:
-            st.session_state[K("settle")] = False
-        use_settling = st.checkbox(
-            "Gravitational settling", value=False, key=K("settle"),
-            disabled=not _settle_ok,
-            help="Adds the particle settling velocity to the transport "
-                 "operator. Needs molecular diffusion; refused together "
-                 "with condensation (the certified S8 recipe pins settling "
-                 "off).")
-        if not _settle_ok:
-            st.caption("Settling needs molecular diffusion ON and "
-                       "condensation OFF.")
-        if not use_moldiff:            # escape flux ~ TOA Dzz; zero without moldiff
-            st.session_state[K("descape")] = []
-        diff_esc = st.multiselect(
-            "Diffusion-limited escape at the top of atmosphere",
-            list(forward.DIFF_ESC_CHOICES), default=[], key=K("descape"),
-            disabled=not use_moldiff,
-            help="Applies the classic diffusion-limited escape flux at the "
-                 "TOA for the selected light species (H, H2, He). Needs "
-                 "molecular diffusion (the escape flux is proportional to the "
-                 "top-of-atmosphere Kzz-diffusion coefficient).")
-        if not use_moldiff:
-            st.caption("Escape needs molecular diffusion ON.")
-        top_lines = st.text_area(
-            "Top-boundary fluxes", value="", key=K("topflux"),
-            placeholder="H2O 1.0e8",
-            help="One species per line: 'SPECIES FLUX', flux in molecules "
-                 "cm^-2 s^-1 (negative = outflux to space). Species must "
-                 "exist in the SNCHO network; unknown names are refused "
-                 "loudly at run time, never silently ignored.")
-        bot_lines = st.text_area(
-            "Bottom-boundary fluxes + deposition", value="", key=K("botflux"),
-            placeholder="SO2 1.0e9 0.1",
-            help="One species per line: 'SPECIES FLUX VDEP' (VDEP optional, "
-                 "default 0), flux in molecules cm^-2 s^-1 (positive = "
-                 "outgassing), deposition velocity in cm/s (surface sink).")
+        with st.expander("Boundary conditions & escape (advanced)"):
+            st.caption(
+                "Upstream VULCAN boundary-condition machinery, all OFF by "
+                "default (the validated baseline: closed column, no escape, no "
+                "settling). Negligible for a typical hot Jupiter; these exist "
+                "for escape, surface-flux, and settling studies. Every entry is "
+                "cache-keyed.")
+            _settle_ok = use_moldiff and not use_condense
+            if not _settle_ok:
+                st.session_state[K("settle")] = False
+            use_settling = st.checkbox(
+                "Gravitational settling", value=False, key=K("settle"),
+                disabled=not _settle_ok,
+                help="Adds the particle settling velocity to the transport "
+                     "operator. Needs molecular diffusion; refused together "
+                     "with condensation (the certified S8 recipe pins settling "
+                     "off).")
+            if not _settle_ok:
+                st.caption("Settling needs molecular diffusion ON and "
+                           "condensation OFF.")
+            if not use_moldiff:            # escape flux ~ TOA Dzz; zero without moldiff
+                st.session_state[K("descape")] = []
+            diff_esc = st.multiselect(
+                "Diffusion-limited escape at the top of atmosphere",
+                list(forward.DIFF_ESC_CHOICES), default=[], key=K("descape"),
+                disabled=not use_moldiff,
+                help="Applies the classic diffusion-limited escape flux at the "
+                     "TOA for the selected light species (H, H2, He). Needs "
+                     "molecular diffusion (the escape flux is proportional to the "
+                     "top-of-atmosphere Kzz-diffusion coefficient).")
+            if not use_moldiff:
+                st.caption("Escape needs molecular diffusion ON.")
+            top_lines = st.text_area(
+                "Top-boundary fluxes", value="", key=K("topflux"),
+                placeholder="H2O 1.0e8",
+                help="One species per line: 'SPECIES FLUX', flux in molecules "
+                     "cm^-2 s^-1 (negative = outflux to space). Species must "
+                     "exist in the SNCHO network; unknown names are refused "
+                     "loudly at run time, never silently ignored.")
+            bot_lines = st.text_area(
+                "Bottom-boundary fluxes + deposition", value="", key=K("botflux"),
+                placeholder="SO2 1.0e9 0.1",
+                help="One species per line: 'SPECIES FLUX VDEP' (VDEP optional, "
+                     "default 0), flux in molecules cm^-2 s^-1 (positive = "
+                     "outgassing), deposition velocity in cm/s (surface sink).")
 
-        def _parse_bc_lines(text: str, kind: str) -> list:
-            rows = []
-            for ln in (text or "").splitlines():
-                tok = ln.split()
-                if not tok or tok[0].startswith("#"):
-                    continue
-                if kind == "bot" and len(tok) == 2:
-                    tok = tok + ["0.0"]
-                rows.append(tok)
-            return rows
+            def _parse_bc_lines(text: str, kind: str) -> list:
+                rows = []
+                for ln in (text or "").splitlines():
+                    tok = ln.split()
+                    if not tok or tok[0].startswith("#"):
+                        continue
+                    if kind == "bot" and len(tok) == 2:
+                        tok = tok + ["0.0"]
+                    rows.append(tok)
+                return rows
 
-        top_flux = _parse_bc_lines(top_lines, "top")
-        bot_flux = _parse_bc_lines(bot_lines, "bot")
-        try:                              # immediate loud feedback on typos
-            forward._canon_bc_entries(top_flux, kind="top")
-            forward._canon_bc_entries(bot_flux, kind="bot")
-        except ValueError as e:
-            st.error(f"Boundary-condition entry rejected: {e}")
+            top_flux = _parse_bc_lines(top_lines, "top")
+            bot_flux = _parse_bc_lines(bot_lines, "bot")
+            try:                              # immediate loud feedback on typos
+                forward._canon_bc_entries(top_flux, kind="top")
+                forward._canon_bc_entries(bot_flux, kind="bot")
+            except ValueError as e:
+                st.error(f"Boundary-condition entry rejected: {e}")
 
     st.divider()
     st.markdown("### ExoJAX radiative transfer")
@@ -836,11 +1002,16 @@ with st.sidebar:
                "line broadening.")
 
     with st.expander("Opacity, scattering & clouds"):
+        _base_set, _extra_set = ((forward.MOLECULES, forward.EXTRA_MOLECULES)
+                                 if not _pic else (["H2O", "CO2", "CO", "CH4"],
+                                                   forward.EXTRA_MOLECULES))
         st.caption(
             "RT opacity always includes the base set "
-            f"**{' · '.join(forward.MOLECULES)}** (solved on every run). The "
-            f"opt-in extras are **{' · '.join(forward.EXTRA_MOLECULES)}**. "
-            "Adding more is currently in development.")
+            f"**{' · '.join(_base_set)}** (solved on every run). The "
+            f"opt-in extras are **{' · '.join(_extra_set)}**. "
+            + ("The PICASO provider has NO SO2/S2/S8 (equilibrium sulfur "
+               "sits in H2S/OCS). " if _pic else "")
+            + "Adding more is currently in development.")
         # live line-list availability for the CURRENT broadening choice (the
         # widget below; previous-run value via session_state, default "air")
         _mol_status = datacheck.molecule_linelist_status(
@@ -981,13 +1152,14 @@ with st.sidebar:
                  "value every validated result here used, 0.2 is ExoJAX's "
                  "own default.")
 
-    avail_free = forward.CHEM_PARAM_NAMES + forward.TP_PARAM_NAMES[tp_mode]
+    avail_free = ((["lnZ", "dlnCO"] if _pic else forward.CHEM_PARAM_NAMES)
+                  + forward.TP_PARAM_NAMES[tp_mode])
     if cloud_on:                        # v16: cloud-deck marginalization
         avail_free = avail_free + list(forward.CLOUD_FISHER_PARAMS)
     if mie_condensate:                  # v16: Mie-deck marginalization
         avail_free = avail_free + list(forward.MIE_FISHER_PARAMS)
-    mol_options = forward.MOLECULES + [m for m in forward.EXTRA_MOLECULES
-                                       if m in extra_mols]
+    mol_options = forward.active_molecules(
+        {"chem_provider": chem_provider, "extra_mols": extra_mols})
 
     st.divider()
     st.markdown("### Science goal")
@@ -1016,9 +1188,13 @@ with st.sidebar:
                 "note above).")
         goal_param, target_prec = None, None
         if goal == "detect":
-            target_mol = st.selectbox("Detect molecule", mol_options,
-                                      index=mol_options.index("SO2"),
-                                      key=K("mol_" + "_".join(sorted(extra_mols))))
+            # SO2 is the headline W39b science under VULCAN; the equilibrium
+            # provider has no SO2, so its default detection target is H2O
+            _mol_default = "SO2" if "SO2" in mol_options else "H2O"
+            target_mol = st.selectbox(
+                "Detect molecule", mol_options,
+                index=mol_options.index(_mol_default),
+                key=K(f"mol_{chem_provider}_" + "_".join(sorted(extra_mols))))
         else:
             target_mol = None
             goal_param = st.selectbox(
@@ -1212,6 +1388,7 @@ with st.sidebar:
               help="Back to the defaults (also clears the current results).")
 
 params = dict(planet=planet_key, science_mode=science_mode,
+              chem_provider=chem_provider,
               star_teff=teff, star_logg=logg, star_feh=feh,
               nz=nz, nu_pts=nu_pts, yconv_cri=yconv_cri,
               rp_rjup=rp, gs_cgs=g_ms2 * 100.0, rstar_rsun=rstar,
@@ -1249,36 +1426,48 @@ if tp_mode == "file" and not tp_file_ok and params_error is None:
     params_error = "file-mode T-P selected but no valid table is loaded"
 
 # rough runtime hint keyed off the resolution knobs (old fast ~1.8, high ~2.8 min)
-base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
-if yconv_cri <= 1.5e-3:              # strict convergence costs extra iterations
-    base_min += 0.5
-base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
+if _pic:
+    # equilibrium states are seconds; the RT/opacity build dominates
+    base_min = 0.6 + 0.25 * len(extra_mols)
+else:
+    base_min = 0.8 + 0.010 * nz + 0.00005 * (nu_pts - forward.NU_PTS_DEFAULT)
+    if yconv_cri <= 1.5e-3:          # strict convergence costs extra iterations
+        base_min += 0.5
+    base_min += 0.25 * len(extra_mols)   # opa build + removed spectrum per extra
 if rt_dit_res < 1.0:                 # finer broadening grid = slower opa builds
     base_min += 0.3 * (5 + len(extra_mols))
 # cool columns (<~900 K) converge much more slowly (a W107b run took ~5 min)
 t_char = {"isothermal": tp_kwargs.get("T_iso", 1100.0),
           "guillot": tp_kwargs.get("Tirr", 1560.0) / np.sqrt(2.0),
-          "file": float(teq)}.get(tp_mode, 1100.0)
-if t_char < 900.0:
+          "file": float(teq),
+          "picaso_climate": float(teq)}.get(tp_mode, 1100.0)
+if t_char < 900.0 and not _pic:
     base_min += 2.5
+if tp_mode == "picaso_climate":      # climate solve (cached after the first)
+    base_min += 1.5
 # condensing solves carry the window + pin + stricter gate overhead
 if use_condense:
     base_min += 1.5
 # Jacobian rows: fd = 4 re-init build+solve cycles per composition row and
-# 4 cold solves per Kzz/T-P row; the cloud AND Mie deck rows are RT-only
-# (~seconds), so they cost the same cheap weight as _make_progress gives them;
-# ad = ~1 warm jvp per solve row
-_solve_min = max(1.0, base_min * 0.5)
+# 4 cold solves per Kzz/T-P row (picaso: 4 fast table re-evaluations; the RT
+# call dominates); Tint_cl = 4 full climate re-solves; the cloud AND Mie deck
+# rows are RT-only (~seconds); ad = ~1 warm jvp per solve row
+_solve_min = (0.15 if _pic else max(1.0, base_min * 0.5))
 _rt_only = set(forward.CLOUD_FISHER_PARAMS) | set(forward.MIE_FISHER_PARAMS)
 n_cloud_rows = sum(1 for n in fisher_params if n in _rt_only)
-_solve_rows = [n for n in fisher_params if n not in _rt_only]
+_solve_rows = [n for n in fisher_params
+               if n not in _rt_only and n != "Tint_cl"]
+_tint_min = 0.0
+if "Tint_cl" in fisher_params:
+    _tint_min = 4 * (1.3 + (_solve_min if _pic else _solve_min + 0.8))
 if jac_method == "ad":
     fd_min = len(_solve_rows) * 1.7 * _solve_min + 0.2 * n_cloud_rows
 else:
     n_fd_comp = sum(1 for n in _solve_rows if n in forward.FD_COMP_PARAMS)
     n_fd_theta = len(_solve_rows) - n_fd_comp
-    fd_min = (n_fd_comp * 4 * (_solve_min + 0.8)
+    fd_min = (n_fd_comp * 4 * (_solve_min + (0.0 if _pic else 0.8))
               + n_fd_theta * 4 * _solve_min + 0.2 * n_cloud_rows)
+fd_min += _tint_min
 native_r = int(round(nu_pts * 2950 / 8000 / 50) * 50)
 grid_lbl = f"{nz}-layer, native R≈{native_r}"
 est = "instant (cached)" if cached else (
@@ -1451,8 +1640,10 @@ if out.get("provenance"):
         f"(refdata {_pv['refdata_version']}), worker v{_pv['worker_version']} "
         ",  recorded in every noise cache.")
 
-# chemistry convergence certificate (v11+): the runner's own longdy per gated
-# stage -- every value shown passed the gate, or run_model would have raised
+# chemistry certificate, provider-aware (v18): the VULCAN runner's own
+# longdy per gated stage, or the PICASO provider's blend/normalization
+# certificate -- everything shown passed its gate, or run_model would have
+# raised
 if "conv_longdy" in model and np.asarray(model["conv_longdy"]).size:
     _gate = float(np.asarray(model["conv_gate"], float)[0])
     st.caption(
@@ -1461,6 +1652,34 @@ if "conv_longdy" in model and np.asarray(model["conv_longdy"]).size:
             for s, a, l in zip(model["conv_stages"], model["conv_accept"],
                                np.asarray(model["conv_longdy"], float)))
         + ".")
+if "picaso_cert_json" in model:
+    _pcert = json.loads(str(model["picaso_cert_json"]))
+    st.caption(
+        "PICASO equilibrium certificate: blend nodes "
+        f"{_pcert['nodes'][0]} | {_pcert['nodes'][1]} "
+        f"(wf {_pcert['wf']:.3f}, wc {_pcert['wc']:.3f}); per-layer gas sum "
+        f"min {_pcert['gas_sum_min']:.4f} / median "
+        f"{_pcert['gas_sum_median']:.4f} before renormalization "
+        f"({_pcert['n_layers_below_warn']} layers below the "
+        f"{_pcert['gas_sum_warn']:g} flag)"
+        + (f"; realized hot-layer gas C/O {_pcert['realized_gas_co_hotT']:.3f}"
+           if _pcert.get("realized_gas_co_hotT") is not None else "")
+        + (f"; {len(_pcert['suspect_cells_in_span'])} known suspect table "
+           "cell(s) inside the profile span (see docs/picaso_roadmap.md)"
+           if _pcert.get("suspect_cells_in_span") else "")
+        + ". Ions and electrons are counted in the gas total; graphite is "
+          "excluded as a condensate.")
+if "climate_provenance_json" in model:
+    _clj = json.loads(str(model["climate_provenance_json"]))
+    _clc = _clj.get("cert", {})
+    st.caption(
+        "Climate certificate: converged, TOA flux metric "
+        f"{_clc.get('flux_toa_over_tidal', float('nan')):.2e}, "
+        f"dlnT/dlnP in [{_clc.get('grad_min', float('nan')):.2f}, "
+        f"{_clc.get('grad_max', float('nan')):.2f}], convective zone "
+        f"{_clc.get('cvz_locs')}. One-way coupling (chemistry does not feed "
+        "back into the climate opacity); the deep profile depends on the "
+        "rcb assumption (widget help has the measured sensitivity).")
 
 fisher_names = ([str(x) for x in model["jac_names"][:-1]]
                 if "jac_names" in model else [])
@@ -2009,6 +2228,14 @@ with st.expander("Which reactions and temperatures control a molecule?"):
         key=K("adjsp"),
         help="L = log10 VMR of this molecule at its peak-abundance layer "
              "inside the transit photosphere (1e-5 to 0.1 bar).")
+    if _cpj.get("chem_provider") == "picaso":
+        st.info(
+            "Adjoint diagnostics are a VULCAN-JAX kinetics feature "
+            "(reverse-mode AD through the steady-state solver: dL/d ln k "
+            "over every reaction, dL/dT per layer). The PICASO equilibrium "
+            "provider has no reaction network to differentiate. Re-run with "
+            "the VULCAN engine to use this panel.")
+        st.stop()
     if _cpj.get("use_condense"):
         st.info(
             "Adjoint diagnostics are unavailable for this model: it was run "

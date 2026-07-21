@@ -38,6 +38,19 @@ if [ -d /srv/hub-data/jwst-data ]; then
     # (radis mkdirs its tempdir inside exojax_linelists at import).
     chmod -R u+wX "$STATE/retrieval-data"
     ln -sfn "$STATE/retrieval-data" /srv/vulcan/vulcan-retrieval/data
+    # PICASO provider + climate reference tree (v18): a pure READ consumer
+    # -- measured 2026-07-20: a full chemeq + climate solve runs against a
+    # chmod a-w tree, picaso never writes into refdata -- so it serves
+    # straight from the read-only mount. Absent tree = the provider refuses
+    # loudly and the GUI data panel shows the missing pieces; the VULCAN
+    # engine is unaffected.
+    if [ -d /srv/hub-data/picaso-reference ]; then
+        export JWST_TOOL_PICASO_REFDATA=/srv/hub-data/picaso-reference
+        echo "[entrypoint] PICASO reference tree found (provider enabled)"
+    else
+        echo "[entrypoint] NOTE: no picaso-reference in the dataset volume;" \
+             "the PICASO provider/climate mode will refuse until it lands"
+    fi
 else
     if [ ! -d /data ]; then
         echo "ERROR: no dataset volume at /srv/hub-data and no storage at" >&2

@@ -19,8 +19,19 @@ from packaging.requirements import Requirement
 
 # Roots: the three local packages' dependencies get walked, plus the gui
 # extra (streamlit/pandas) and the Space bootstrap's huggingface_hub.
+# v18: picaso + the runtime imports its metadata does NOT declare (measured
+# by the 2026-07-20 import trace: synphot/stsynphot/virga/bokeh/xarray and
+# friends are imported at picaso.justdoit import time but only partially
+# declared) -- the trace is the authority, the walker fills in versions.
 ROOTS = ["vulcan-jwst-tool", "vulcan-retrieval", "vulcan-jax",
-         "streamlit", "pandas", "huggingface_hub", "matplotlib"]
+         "streamlit", "pandas", "huggingface_hub", "matplotlib",
+         "picaso", "synphot", "stsynphot", "virga-exo", "bokeh", "xarray",
+         "photutils", "pooch", "sortedcontainers", "cloudpickle",
+         "Bottleneck", "cftime", "crc32c", "defusedxml", "miepython",
+         "platformdirs", "setuptools", "threadpoolctl", "zstandard",
+         "xyzservices"]
+# (jaraco.collections/jaraco.text are setuptools-vendored, not standalone
+# distributions -- pinning setuptools covers them)
 # Local editables: present in the closure but installed from the repo
 # checkouts by the Dockerfile, never from PyPI.
 LOCAL = {"vulcan-jwst-tool", "vulcan-retrieval", "vulcan-jax"}

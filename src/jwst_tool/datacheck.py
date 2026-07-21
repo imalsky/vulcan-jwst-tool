@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -409,6 +410,125 @@ def check_synphot_cdbs(cdbs: str | Path = None) -> list[Item]:
     return items
 
 
+def check_picaso_data() -> list[Item]:
+    """PICASO provider + climate reference data (opt-in feature, all
+    ``required=False``): the tree selected by ``JWST_TOOL_PICASO_REFDATA``.
+
+    Light checks only (stat/listdir; picaso itself is never imported here --
+    the installed dist version comes from package metadata).
+    """
+    from jwst_tool import picaso_env as pe
+
+    items = []
+    # the installed package (metadata only, no import)
+    try:
+        ver = pe.picaso_version()
+        items.append(Item(
+            key="picaso:package", label="picaso package",
+            status=OK, required=False, detail=f"picaso {ver} installed"))
+    except RuntimeError as exc:
+        items.append(Item(
+            key="picaso:package", label="picaso package",
+            status=MISSING, required=False, detail=str(exc),
+            remedy="pip install picaso==4.0.1"))
+    # the reference tree root
+    try:
+        root = pe.refdata_root()
+    except RuntimeError as exc:
+        items.append(Item(
+            key="picaso:refdata", label="PICASO reference tree",
+            status=MISSING, required=False, detail=str(exc),
+            remedy=f"export {pe.ENV_VAR}=<picaso v4.0 reference root>"))
+        return items
+    items.append(Item(
+        key="picaso:refdata", label="PICASO reference tree",
+        status=OK, required=False, detail=_found(root)))
+
+    grid = sorted((root / pe.CHEM_GRID_REL).glob("sonora_2121grid_*.txt"))
+    ok = len(grid) == pe.CHEM_GRID_N_FILES
+    items.append(Item(
+        key="picaso:chemgrid", label="Visscher 2121 equilibrium grid (13x6)",
+        status=OK if ok else MISSING, required=False,
+        detail=(f"{len(grid)} node files under {root / pe.CHEM_GRID_REL} "
+                f"(expected {pe.CHEM_GRID_N_FILES})"),
+        remedy="" if ok else "Restore the complete visscher_grid_2121 "
+               "directory from the PICASO v4.0 reference release."))
+
+    pw = sorted((root / pe.PREWEIGHTED_REL).glob("sonora_2121grid_*.hdf5"))
+    n_tiovo = sum(1 for p in pw if "_NoTiOVO" not in p.name)
+    ok = len(pw) == pe.PREWEIGHTED_N_FILES
+    items.append(Item(
+        key="picaso:preweighted",
+        label="Preweighted climate CK tables (70 nodes x 2 variants)",
+        status=OK if ok else MISSING, required=False,
+        detail=(f"{len(pw)} tables ({n_tiovo} TiO/VO + "
+                f"{len(pw) - n_tiovo} NoTiOVO) under "
+                f"{root / pe.PREWEIGHTED_REL}; extreme [M/H] nodes "
+                "(+-1.5, +-2.0) ship only the mid C/O columns"),
+        remedy="" if ok else "Restore opacities/preweighted from the PICASO "
+               "v4.0 reference release (Zenodo)."))
+
+    for rel, label in (
+            (pe.CONTINUUM_REL, "CK continuum DB (preweighted method)"),
+            (pe.CLIMATE_INPUTS_REL + "/ck_cx_cont_opacities_661.db",
+             "CK continuum DB (661 grid)"),
+            (pe.CLIMATE_INPUTS_REL + "/specific_heat_p_adiabat_grad.json",
+             "Adiabat / specific-heat table"),
+            (pe.CLIMATE_INPUTS_REL + "/wvno_661", "661-bin wavenumber grid"),
+            ("version.md", "Reference-tree version file"),
+            ("config.json", "Reference-tree config")):
+        p = root / rel
+        items.append(Item(
+            key=f"picaso:{Path(rel).name}", label=label,
+            status=OK if p.is_file() else MISSING, required=False,
+            detail=_found(p) if p.is_file() else f"absent: {p}",
+            remedy="" if p.is_file() else
+            "Restore this file from the PICASO v4.0 reference release."))
+
+    ck04 = root / pe.STELLAR_TRDS_REL / "grid" / "ck04models"
+    items.append(Item(
+        key="picaso:stellar", label="Castelli-Kurucz stellar grid (climate star)",
+        status=OK if ck04.is_dir() else MISSING, required=False,
+        detail=_found(ck04) if ck04.is_dir() else f"absent: {ck04}",
+        remedy="" if ck04.is_dir() else
+        "Restore stellar_grids/grp/redcat/trds/grid/ck04models."))
+
+    nat = root / pe.NATIVE_OPACITY_REL
+    items.append(Item(
+        key="picaso:native-opacity",
+        label="Native-RT opacity DB (parity script ONLY, optional)",
+        status=OK if nat.is_file() else MISSING, required=False,
+        detail=(f"found: {nat} ({nat.stat().st_size / 2**30:.1f} GB)"
+                if nat.is_file() else f"absent: {nat}"),
+        remedy="" if nat.is_file() else
+        "Only tests/parity_picaso needs it; the production provider does "
+        "not. Zenodo 10.5281/zenodo.14861730."))
+
+    manifest = root / "manifest.json"
+    if manifest.is_file():
+        try:
+            entries = json.loads(manifest.read_text())["files"]
+            bad = [rel for rel, size in entries.items()
+                   if not (root / rel).is_file()
+                   or (root / rel).stat().st_size != int(size)]
+            items.append(Item(
+                key="picaso:manifest", label="Deployed-data manifest check",
+                status=OK if not bad else MISSING, required=False,
+                detail=(f"all {len(entries)} manifest entries match"
+                        if not bad else
+                        f"{len(bad)} mismatched entries, e.g. {bad[:3]}"),
+                remedy="" if not bad else
+                "The mounted dataset does not match its manifest: re-sync "
+                "the dataset repo / restart the Space."))
+        except (OSError, ValueError, KeyError) as exc:
+            items.append(Item(
+                key="picaso:manifest", label="Deployed-data manifest check",
+                status=MISSING, required=False,
+                detail=f"unreadable manifest.json: {exc!r}",
+                remedy="Re-upload manifest.json to the dataset repo."))
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Generated caches (informational)
 # ---------------------------------------------------------------------------
@@ -447,6 +567,7 @@ def full_report(base_mols: list[str] = None, extra_mols: list[str] = None,
         f"Pandeia noise backend ({ins.JWST_TOOL_BACKEND})":
             check_pandeia_backend(),
         "Star normalization data (synphot CDBS)": check_synphot_cdbs(),
+        "PICASO provider data (opt-in)": check_picaso_data(),
     }
     for name, items in sections.items():
         for it in items:
