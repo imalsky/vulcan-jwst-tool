@@ -2108,12 +2108,29 @@ with col2:
     st.caption(f"As modeled ({cpj.get('tp_mode', '?')} mode). Dotted lines: "
                "the [320, 2980] K opacity window, profiles outside it are "
                "rejected, never clipped.")
-    if float(np.max(model["T"])) > 2000.0:
-        st.warning(
-            "This profile exceeds 2000 K. Ultra-hot opacity sources are "
-            "not modeled (no H- continuum, no Na/K/Fe atomic lines, no "
-            "TiO/VO/FeH), so spectra and forecasts up here overstate "
-            "molecular detectability.")
+    _p_arr = np.asarray(model["p_bar"], dtype=float)
+    _T_arr = np.asarray(model["T"], dtype=float)
+    if cpj.get("science_mode") == "emission":
+        if float(_T_arr.max()) > 2000.0:
+            st.warning(
+                f"Layers hotter than 2000 K are present (deepest "
+                f"{_T_arr.max():.0f} K). Eclipse spectra can probe them "
+                "through opacity windows, and the ultra-hot opacity "
+                "sources (H- continuum, Na/K/Fe atomic lines, TiO/VO/FeH) "
+                "are not modeled, so fluxes and forecasts in those "
+                "windows are uncertain.")
+    else:
+        # transmission probes p <~ 0.1 bar (the tool's photosphere
+        # convention); a hot deep adiabat below that is invisible to the
+        # chord geometry and must not trip the ultra-hot warning
+        _probe = _p_arr <= 0.1
+        if _probe.any() and float(_T_arr[_probe].max()) > 2000.0:
+            st.warning(
+                "The transmission photosphere (p <= 0.1 bar) exceeds "
+                "2000 K. Ultra-hot opacity sources are not modeled (no "
+                "H- continuum, no Na/K/Fe atomic lines, no TiO/VO/FeH), "
+                "so spectra and forecasts up here overstate molecular "
+                "detectability.")
     _tp_df = pd.DataFrame({"p_bar": np.asarray(model["p_bar"], dtype=float),
                            "T_K": np.asarray(model["T"], dtype=float)})
     _t1, _t2 = st.columns(2)

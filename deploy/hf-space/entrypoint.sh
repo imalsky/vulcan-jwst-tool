@@ -18,6 +18,12 @@ rm -f /data/.rwtest 2>/dev/null || true
 mkdir -p "$STATE/output" "$STATE/retrieval-output" "$STATE/home" "$STATE/cwd"
 export JWST_TOOL_OUTPUT_DIR="$STATE/output"
 export HOME="$STATE/home"
+# Persist numba-compiled kernels across restarts/rebuilds: 67/75 of
+# picaso's jit kernels declare cache=True, and the compile is a large
+# share of the first climate solve's minutes. Stale entries (picaso or
+# python upgrades) miss harmlessly via numba's own code hashing.
+mkdir -p "$STATE/numba_cache"
+export NUMBA_CACHE_DIR="$STATE/numba_cache"
 ln -sfn "$STATE/retrieval-output" /srv/vulcan/vulcan-retrieval/output
 
 if [ -d /srv/hub-data/jwst-data ]; then
@@ -86,6 +92,14 @@ cd "$STATE/cwd"
 # first visitor pays it behind a spinner. The GUI serves the disk-cached
 # report the moment it exists.
 (python -c "from jwst_tool import datacheck; datacheck.warm_report_cache()"     >/dev/null 2>&1 &)
+
+# Pre-solve the DEFAULT climate configuration in the background so the
+# first visitor gets a cache hit instead of a multi-minute solve (also
+# compiles + persists the numba kernels). Idempotent: instant no-op when
+# the /data volume already holds it. Log kept for diagnosis, never /dev/null.
+if [ -n "${JWST_TOOL_PICASO_REFDATA:-}" ]; then
+    (python -c "from jwst_tool import picaso_climate; picaso_climate.warm_default()"         >"$STATE/output/climate_warm.log" 2>&1 &)
+fi
 
 # CORS/XSRF off: required for uploads (T-P tables, noise-floor tables) to
 # work behind the Spaces proxy.

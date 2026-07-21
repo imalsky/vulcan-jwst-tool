@@ -443,3 +443,29 @@ def get_or_run(cp: dict, log, tint_override: float | None = None):
         lf.close()
         # the lock FILE stays: unlinking a path whose inode another process
         # may still flock creates two simultaneous "exclusive" locks
+
+
+def warm_default() -> None:
+    """Pre-solve the GUI's default climate configuration (Space boot warmer).
+
+    Idempotent: a cache hit returns in milliseconds, so booting an instance
+    whose /data volume already holds the solve costs nothing. Takes a run
+    slot so warming never starves visitors; when the instance is already
+    busy it skips and says so (the first visitor then pays the solve, as
+    before). The solve also compiles picaso's numba kernels, which
+    NUMBA_CACHE_DIR persists for the forward subprocesses.
+    """
+    from jwst_tool import forward, runlimit
+    cp = forward.canonical_params({"tp_mode": "picaso_climate"})
+    slot = runlimit.acquire("climate-warm")
+    if slot is None:
+        print("[warm] all run slots busy; skipping the climate pre-solve",
+              flush=True)
+        return
+    try:
+        clim = get_or_run(cp, lambda m: print(m, flush=True))
+        print(f"[warm] default climate solve cached ({clim.key}, "
+              f"{float(clim.cert['flux_toa_over_tidal']):.1e} TOA metric)",
+              flush=True)
+    finally:
+        slot.release()
