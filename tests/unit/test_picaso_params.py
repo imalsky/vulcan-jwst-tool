@@ -44,7 +44,7 @@ def _fp(monkeypatch):
 
 def test_vulcan_defaults_carry_inert_picaso_keys():
     cp = forward.canonical_params(_p())
-    assert cp["version"] == 21
+    assert cp["version"] == 22  # v22 = corrected sflux-epseri normalization
     assert cp["chem_provider"] == "vulcan"
     assert cp["picaso_version"] == ""
     assert cp["picaso_chemgrid_sha1"] == ""

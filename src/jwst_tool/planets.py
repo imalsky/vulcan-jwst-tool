@@ -2,9 +2,11 @@
 
 Pure data, importable by the light GUI path (no jax/vulcan/exojax imports).
 
-Every planet runs on the SAME validated machinery: the WASP-39b SNCHO photo
-network + 10x-solar FastChem baseline (the import-locked network), with the
-planet identity injected through the existing hooks --
+Every planet runs on the SAME W39b-validated machinery: the WASP-39b SNCHO
+photo network + 10x-solar FastChem baseline (the import-locked network), with
+the planet identity injected through the existing hooks. Shared code path, not
+per-planet validation -- the committed parity/live evidence is W39b-centered
+(docs/audit_decisions_2026-07-21.md) --
 
     chemistry : cfg_overrides {Mp, Rp, r_star, orbit_radius, sflux_file, ...}
                 (VULCAN derives gs = G*Mp/Rp^2; gs_cgs is converted to Mp at the

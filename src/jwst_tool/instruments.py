@@ -76,9 +76,13 @@ NOISE_CACHE = OUTPUT_DIR / "noise_cache"
 #
 # BACKEND SELECTION (JWST_TOOL_BACKEND, 2026-07-13): DEFAULT is "current" --
 # pandeia.engine 2026.2 + pandeia_data-2026.2-jwst, the STScI JWST 5.1 release,
-# the pair validated mode-by-mode against current PandExo (tests/parity/). This
-# is what a new user gets, so proposal-planning output is current-ETC by
-# default. "legacy" selects the pinned pandeia 3.0 + pandeia_data-3.0rc3 pair,
+# the pair validated mode-by-mode against PandExo (tests/parity/; PandExo
+# itself pins engine 2026.2). "current" is the backend TOKEN, not a currency
+# claim: STScI's supported Cycle 6 release moved to 2026.7 on 2026-07-16, so
+# 2026.2 output is one calibration release behind the live ETC until the full
+# engine/refdata/PSF tuple is upgraded and parity is regenerated
+# (docs/audit_decisions_2026-07-21.md). "legacy" selects the pinned pandeia
+# 3.0 + pandeia_data-3.0rc3 pair,
 # retained ONLY as an explicit reproducibility backend. Every result records the
 # exact engine/refdata versions in "__provenance__", and the versions are in
 # every cache key (switching backends self-invalidates caches). "current"'s
@@ -93,15 +97,17 @@ _BACKENDS = {
         python="/opt/homebrew/Caskroom/miniforge/base/envs/pandeia_2026/bin/python",
         refdata=str(DATA_DIR / "pandeia_data-2026.2-jwst"),
         psf=str(DATA_DIR / "pandeia_psfs-2026.2-jwst"),
-        status="Pandeia 2026.2 / pandeia_data-2026.2-jwst (current STScI JWST "
-               "5.1 release; validated vs PandExo in tests/parity/)"),
+        status="Pandeia 2026.2 / pandeia_data-2026.2-jwst (STScI JWST 5.1 "
+               "release, validated vs PandExo in tests/parity/; STScI's "
+               "supported Cycle 6 release is now 2026.7 -- forecasts here "
+               "are one calibration release behind the live ETC)"),
     "legacy": dict(
         python="/opt/homebrew/Caskroom/miniforge/base/envs/picaso_base/bin/python",
         refdata="/Users/imalsky/Documents/Important_Docs/JWST_CYCLE5/picaso_ian/data/pandeia_data-3.0rc3",
         psf="",
         status="LEGACY Pandeia 3.0 / pandeia_data-3.0rc3 (pinned reproducibility "
-               "backend; older than the current STScI ETC -- set "
-               "JWST_TOOL_BACKEND=current for current-ETC output)"),
+               "backend; several releases behind the STScI ETC -- set "
+               "JWST_TOOL_BACKEND=current for the 2026.2 backend)"),
 }
 JWST_TOOL_BACKEND = os.environ.get("JWST_TOOL_BACKEND", "current").lower()
 if JWST_TOOL_BACKEND not in _BACKENDS:

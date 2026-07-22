@@ -399,10 +399,11 @@ with st.sidebar:
         "Planet", list(planets.PLANETS) + ["custom"], key=K("planet"),
         format_func=lambda k: planets.PLANETS[k]["label"] if k in planets.PLANETS
         else "Custom planet …",
-        help="Every planet runs the same validated chemistry+RT machinery; the "
-             "system identity (gravity, radii, star, orbit, UV spectrum) is "
-             "swapped in. The T-P profile is set below (Guillot, table, or "
-             "climate).")
+        help="Every planet runs the same chemistry+RT machinery (validated on "
+             "WASP-39 b; other planets share the code path, not per-planet "
+             "validation); the system identity (gravity, radii, star, orbit, "
+             "UV spectrum) is swapped in. The T-P profile is set below "
+             "(Guillot, table, or climate).")
     pdef = planets.PLANETS.get(planet_key, planets.CUSTOM_DEFAULTS)
     st.caption(pdef["note"] if planet_key in planets.PLANETS
                else "Starts from WASP-39 b values, edit everything below.")
@@ -1154,11 +1155,15 @@ with st.sidebar:
                 "Convergence tolerance (yconv)",
                 1.0e-4, 1.0e-2, forward.YCONV_DEFAULT, 1.0e-4,
                 format="%.1e", key=K("yconv"),
-                help="Steady-state convergence criterion, any value in "
-                     "[1e-4, 1e-2]. 1e-2 is the VULCAN master "
-                     "default; 1e-3 (with more layers) is the validated strict tier "
-                     "for final mid-IR numbers. Tighter than 1e-3 mostly buys "
-                     "runtime. A solve that cannot reach the tolerance errors "
+                help="Strict-branch steady-state criterion, any value in "
+                     "[1e-4, 1e-2]. 1e-2 is the VULCAN master default; 1e-3 "
+                     "(with more layers) is the strict tier for final mid-IR "
+                     "numbers. Note the solver also accepts via VULCAN's "
+                     "loose branch (residual < 0.1 with a near-zero slope and "
+                     "settled photolysis flux), so this value is NOT a "
+                     "guaranteed bound on the certified residual -- the "
+                     "results panel reports the actual residual and the gate "
+                     "that certified it. A run failing certification errors "
                      "loudly instead of returning an unconverged spectrum.")
 
         with st.expander("Condensation (detection-only)"):
@@ -1375,14 +1380,16 @@ with st.sidebar:
             "Line broadening perturber", ["air", "h2he"], index=0,
             key=K("broad"),
             format_func=lambda b: (
-                "air (HITRAN terrestrial widths, validated default)"
+                "air (HITRAN terrestrial widths, default)"
                 if b == "air" else
                 f"H2/He blend (planetary; {_h2he_cached}/{len(_h2he_mols)} "
                 "line-list caches present)"),
-            help="'air' = HITRAN terrestrial widths (validated default); "
-                 "'h2he' = planetary H₂/He blend, first use downloads "
-                 "separate line-list caches, and molecules with no H₂/He "
-                 "coverage raise loudly instead of silently falling back.")
+            help="'air' = HITRAN terrestrial widths (the default every "
+                 "committed result used; a documented approximation for an "
+                 "H2/He envelope); 'h2he' = planetary H₂/He blend, first use "
+                 "downloads separate line-list caches, and molecules with no "
+                 "H₂/He coverage raise loudly instead of silently falling "
+                 "back.")
         nu_pts = st.number_input(
             "Native spectral sampling (nu_pts)", *forward.NU_PTS_RANGE,
             forward.NU_PTS_DEFAULT, 500, key=K("nupts"),

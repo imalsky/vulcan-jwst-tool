@@ -11,9 +11,11 @@ Two faces:
   lines drive the GUI progress bar.
 
 Planets: every system in ``planets.PLANETS`` (plus "custom") runs on the same
-validated W39b SNCHO machinery -- the planet identity (gravity, radius, star,
-orbit, UV spectrum) is injected via cfg_overrides for the chemistry and via
-profile rp_cm/gs_cgs/rstar_cm for the RT. EVERY planet (including WASP-39b)
+W39b-validated SNCHO machinery -- SHARED CODE PATH, not per-planet validation
+(the committed parity/live evidence is W39b-centered; see
+docs/audit_decisions_2026-07-21.md) -- with the planet identity (gravity,
+radius, star, orbit, UV spectrum) injected via cfg_overrides for the chemistry
+and via profile rp_cm/gs_cgs/rstar_cm for the RT. EVERY planet (including WASP-39b)
 gets an isothermal structural baseline at a representative temperature; the
 requested T-P profile is evaluated on-graph and drives the chemistry AND the
 RT. The WASP-39b GCM T-P/Kzz special cases were REMOVED (2026-07-13): no
@@ -28,7 +30,7 @@ Numerical resolution (was the GUI "fidelity" switch, now three explicit knobs):
     Defaults reproduce the old "fast" tier (nz=100, nu_pts=4000, yconv 1e-2);
     the validated ceiling is the old "high" tier (nz=150, nu_pts=8000, yconv 1e-3).
 
-Atmosphere-structure knobs (all consumed by the same validated pipeline hooks the
+Atmosphere-structure knobs (all consumed by the same pipeline hooks the
 retrieval framework uses):
 
     T-P profile (tp_mode) -- explicit profiles only:
@@ -179,13 +181,16 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # feature, NH3 the cool (<~900 K) nitrogen chemistry, OCS the second
 # equilibrium sulfur carrier (nu3 ~4.85 um; the SNCHO network token is COS).
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3", "OCS"]
-_VERSION = 21  # model_cache buster: bump whenever the physics or the
+_VERSION = 22  # model_cache buster: bump whenever the physics or the
                # canonical key set changes (invalidates all cached spectra).
                # Per-version history lives in notes.md. v18 = the PICASO
                # equilibrium provider + picaso_climate T-P mode; v19 = the
                # v18.1 review response (catalogued table correction +
                # isolated-anomaly quarantine change affected picaso spectra;
-               # gas-masked npz ymix).
+               # gas-masked npz ymix). v22 = corrected sflux-epseri.txt
+               # normalization in vulcan-jax (3.4265x; the UV file is keyed
+               # by NAME in canonical_params, so a content fix must bump
+               # here -- see docs/audit_decisions_2026-07-21.md).
 
 # Baseline (unperturbed) carbon-to-oxygen ratio of the shipped network, defined
 # the standard way for exoplanet atmospheres: the total-carbon / total-oxygen
