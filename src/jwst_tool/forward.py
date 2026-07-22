@@ -382,8 +382,10 @@ CLIMATE_N_LEVELS = 91
 # 91-level grid = the deepest CLIMATE_RCB_DEEP_MARGIN layers). Derive both the
 # default and the range top from CLIMATE_N_LEVELS so changing the grid keeps
 # the seed near the bottom automatically. The floor stays a shallow 10 so an
-# advanced user can still probe seed sensitivity (shallow seeds are refused by
-# the cert gate, not silently accepted).
+# advanced user can still probe seed sensitivity (a shallow seed is refused
+# only when it drives the profile outside the T_WINDOW cert gate; an in-window
+# shallow seed runs and carries the spurious-convective-zone bias -- the GUI
+# help says so).
 CLIMATE_RCB_DEEP_MARGIN = 6                            # convective layers below
 CLIMATE_RCB_DEFAULT = CLIMATE_N_LEVELS - CLIMATE_RCB_DEEP_MARGIN   # 85 @ 91
 CLIMATE_RCB_RANGE = (10, CLIMATE_N_LEVELS - 3)        # (10, 88) @ 91
