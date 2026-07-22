@@ -317,10 +317,38 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     if audit is None:
         errors = [f for f in findings
                   if str(f.get("severity", "")).lower() == "error"]
+        # Name the cells that actually blocked it, and say whether they are
+        # CREEPING or OSCILLATING -- the two need opposite responses and the
+        # bare scan table cannot tell them apart. A genuine fixed point has
+        # G(y) -> y as body_dt -> 0, so a defect that does not fall with the
+        # probe step is oscillation: converging tighter or probing smaller
+        # will not fix it, and the gate must not be relaxed to get past it.
+        worst = [f"{w['species']} layer {w['layer']} "
+                 f"(defect {w['rel_defect']:.2f}, ymix {w['ymix']:.1e})"
+                 for w in (a.get("worst_cells") or [])[:3]]
+        _by_dt = sorted(audit_trail, key=lambda r: r["body_dt"])
+        _falls = (len(_by_dt) > 1
+                  and _by_dt[0]["max_rel_defect"]
+                  < 0.5 * _by_dt[-1]["max_rel_defect"])
+        _diag = (
+            "the defect FALLS with the probe step, so these cells are still "
+            "creeping at the forward tolerance -- converging y_star tighter "
+            "(lower yconv_cri) may certify them"
+            if _falls else
+            "the defect does NOT fall with the probe step, so these cells are "
+            "OSCILLATING, not creeping: no probe step and no tighter "
+            "convergence certifies them, and the gate must not be relaxed")
+        _dead = a.get("n_clip_dead_excluded")
+        _dead_txt = ("" if not _dead else
+                     f" ({_dead} zero-clip-dead cell(s) were already excluded "
+                     "as solver noise, so these are real abundances.)")
         raise RuntimeError(
             "adjoint scope audit REFUSED this state at every sanctioned "
             "probe step -- the gradient would drop a live process or "
-            "differentiate a defective fixed point. Scan: "
+            "differentiate a defective fixed point. Worst cells: "
+            + "; ".join(worst) + f". Diagnosis: {_diag}.{_dead_txt} "
+            "The forward model and the Fisher path are unaffected -- this "
+            "gate is specific to the reverse-mode adjoint. Scan: "
             + json.dumps(audit_trail) + "; findings at the last step: "
             + json.dumps(errors or findings))
     log(f"[adj] audit ok at body_dt {body_dt:.0e}: max_rel_defect "
