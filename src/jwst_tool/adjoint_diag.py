@@ -335,9 +335,12 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
             "creeping at the forward tolerance -- converging y_star tighter "
             "(lower yconv_cri) may certify them"
             if _falls else
-            "the defect does NOT fall with the probe step, so these cells are "
-            "OSCILLATING, not creeping: no probe step and no tighter "
-            "convergence certifies them, and the gate must not be relaxed")
+            "the defect does NOT fall with the probe step, so no probe step "
+            "certifies this state. Tightening yconv_cri is unlikely to help "
+            "either: on the W39b reference case 1e-2 / 1e-3 / 1e-4 were "
+            "MEASURED to give a bit-identical converged state (longdy "
+            "plateaus at 0.0997 in all three), so the tolerance knob is inert "
+            "there. Do not relax this gate to get past it")
         _dead = a.get("n_clip_dead_excluded")
         _dead_txt = ("" if not _dead else
                      f" ({_dead} zero-clip-dead cell(s) were already excluded "
