@@ -346,7 +346,8 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
             "adjoint scope audit REFUSED this state at every sanctioned "
             "probe step -- the gradient would drop a live process or "
             "differentiate a defective fixed point. Worst cells: "
-            + "; ".join(worst) + f". Diagnosis: {_diag}.{_dead_txt} "
+            + ("; ".join(worst) if worst else "(none reported)")
+            + f". Diagnosis: {_diag}.{_dead_txt} "
             "The forward model and the Fisher path are unaffected -- this "
             "gate is specific to the reverse-mode adjoint. Scan: "
             + json.dumps(audit_trail) + "; findings at the last step: "
