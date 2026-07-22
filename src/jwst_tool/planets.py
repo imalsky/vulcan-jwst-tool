@@ -31,6 +31,8 @@ nearest available spectral type (shown in the GUI, never silently swapped).
 """
 from __future__ import annotations
 
+import math
+
 R_JUP_CM = 7.1492e9
 R_SUN_CM = 6.957e10
 G_CGS = 6.67430e-8  # gravitational constant (cm^3 g^-1 s^-2); for gs_cgs -> Mp
@@ -147,6 +149,5 @@ def default_tirr(planet: dict) -> float:
     the GUI, so a "default" API run and a "default" GUI run built different
     profiles for every planet whose T_eq was not WASP-39 b's (HD 209458 b
     disagreed by 470 K)."""
-    import math
     return min(max(round(planet["teq_k"] * math.sqrt(2.0) / 10.0) * 10.0,
                    800.0), 2500.0)
