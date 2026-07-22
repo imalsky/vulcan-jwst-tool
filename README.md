@@ -89,18 +89,35 @@ abundances. Kzz profiles: constant, two parametric forms (Pfunc, JM16), or
 the table's Kzz column; the Fisher lnKzz row is a multiplicative scale of
 the whole profile in every mode.
 
-**Defaults on WASP-39b are the measured structure, not an analytic
-stand-in.** Under the VULCAN kinetics engine the reference target defaults to
-the shipped evening-terminator table -- the same `atm_file` the bundled
-VULCAN W39b config runs on (Tsai et al. 2023) -- for BOTH T(P) and Kzz(P).
-Every other planet, and the PICASO equilibrium provider, default to Guillot
-plus a constant Kzz, because that table is WASP-39b's and must never be
-substituted for another planet silently. The trade-off is stated rather than
-hidden: a tabulated profile has no temperature parameter, so file-mode Fisher
-forecasts carry NO temperature row. They are conditional on the profile being
-exactly right, and the reported sigmas are optimistic by the amount
-temperature uncertainty would add -- switch to Guillot when you need a
-temperature row.
+**Defaults are the measured structure wherever one exists, not an analytic
+stand-in.** Under the VULCAN kinetics engine a planet defaults to the T-P +
+Kzz table VULCAN bundles for *that* planet, used for BOTH T(P) and Kzz(P):
+
+| Planet | Default structure | Bundled table |
+|---|---|---|
+| WASP-39 b | `atm_W39b_evening_TP_Kzz.txt` (Tsai et al. 2023 evening terminator) | default |
+| HD 189733 b | Guillot + constant Kzz | `atm_HD189_Kzz.txt`, selectable but not default: the solver does not certify a steady state on it at default settings, while the analytic default converges in ~36 s |
+| HD 209458 b | Guillot + constant Kzz | refused -- a full thermosphere model reaching 2997 K inside the chemistry grid, above the 2980 K opacity ceiling, and never clipped |
+| WASP-107 b | Guillot + constant Kzz | none bundled |
+
+Two facts are kept separate on purpose: whether a table *exists* for a planet,
+and whether a default run on it has been *verified end to end*. A table only
+becomes the default once it has, so enabling one can never turn a working
+planet into one that errors on arrival. Tables are per-planet and never
+substituted -- selecting a planet without a usable one tells you why. The
+PICASO equilibrium provider keeps the analytic default in every case.
+
+This matters because the analytic defaults are biased in a systematic
+direction: a constant Kzz cannot follow a profile that climbs orders of
+magnitude with altitude, and it is the photochemically active upper atmosphere
+that pays. The constant 1e9 cm²/s default runs 4-33x low for WASP-39 b and
+15-17x low for HD 189733 b, always suppressing photochemical products.
+
+The trade-off is stated rather than hidden: a tabulated profile has no
+temperature parameter, so file-mode Fisher forecasts carry NO temperature row.
+They are conditional on the profile being exactly right, and the reported
+sigmas are optimistic by the amount temperature uncertainty would add --
+switch to Guillot when you need a temperature row.
 
 Boundary conditions (all off by default): gravitational settling,
 diffusion-limited escape (H/H2/He), and constant top/bottom per-species

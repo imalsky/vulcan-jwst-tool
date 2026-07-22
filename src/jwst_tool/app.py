@@ -807,8 +807,9 @@ with st.sidebar:
         tp_kwargs = {}
         tp_file, tp_file_path, tp_file_ok = "", None, True
         if tp_mode == "guillot":
-            tirr0 = float(np.clip(round(teq * np.sqrt(2.0) / 10) * 10,
-                                  800.0, 2500.0))
+            # one definition shared with canonical_params, so the widget
+            # default and the API default can never drift apart again
+            tirr0 = planets.default_tirr(pdef)
             tp_kwargs["Tirr"] = st.number_input(
                 "T_irr (K)", 800.0, 2500.0, tirr0, 20.0, key=_k("tirr"),
                 help="≈ √2 × equilibrium temperature.")
@@ -890,20 +891,30 @@ with st.sidebar:
                     "uniform shift the analysis absorbs into the reference "
                     "radius).")
         elif tp_mode == "file":
+            # the shipped table is PER-PLANET; a planet without one may only
+            # upload (and is told why its table is missing/refused)
+            _ship_name = forward.shipped_tp_table_name(planet_key)
+            _src_opts = ([forward.TP_FILE_SHIPPED, forward.TP_FILE_UPLOAD]
+                         if _ship_name else [forward.TP_FILE_UPLOAD])
+            if not _ship_name and st.session_state.get(
+                    _k("tpsrc")) == forward.TP_FILE_SHIPPED:
+                st.session_state[_k("tpsrc")] = forward.TP_FILE_UPLOAD
             tp_file = st.radio(
-                "Profile source", [forward.TP_FILE_SHIPPED,
-                                   forward.TP_FILE_UPLOAD],
+                "Profile source", _src_opts,
                 horizontal=True, key=_k("tpsrc"),
                 format_func={forward.TP_FILE_SHIPPED:
-                             "Shipped W39b evening terminator",
+                             f"Shipped measured profile ({_ship_name})",
                              forward.TP_FILE_UPLOAD: "Upload an array"}.get,
-                help="The shipped table is the WASP-39b evening-terminator "
-                     "T-P + Kzz profile bundled with VULCAN (Tsai et al. "
-                     "2023). Uploads use the same VULCAN atm format.")
-            if tp_file == forward.TP_FILE_SHIPPED and planet_key != "wasp39b":
+                help="The shipped table is the measured T-P + Kzz profile "
+                     "VULCAN bundles for THIS planet, and is the default "
+                     "structure wherever one exists. Uploads use the same "
+                     "VULCAN atm format.")
+            if not _ship_name:
                 st.warning(
-                    "The shipped table is the WASP-39b evening terminator; "
-                    "it is applied verbatim to the selected planet.")
+                    "No shipped profile for "
+                    f"{pdef['label'] if planet_key in planets.PLANETS else 'this planet'}: "
+                    + (pdef.get("tp_table_note") or "none is bundled.")
+                    + " Upload a table, or switch to the Guillot profile.")
             if tp_file == forward.TP_FILE_UPLOAD:
                 _tp_example = (
                     "#(dyne/cm2) (K) (cm2/s)\n"

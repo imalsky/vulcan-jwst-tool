@@ -340,32 +340,42 @@ TP_FILE_UPLOAD = "upload"         # user-supplied table; content-addressed copy
 # cross-checks these constants against the LIVE cfg, CO_BASELINE-style.
 CHEM_P_SPAN_DYN = (0.1, 7.6e6)
 
-# Structure DEFAULTS for the reference target (2026-07-21). On WASP-39b under
-# the VULCAN kinetics engine the shipped evening-terminator table IS the
-# measured-target structure -- it is the very atm_file the bundled W39b cfg
-# runs on (Tsai et al. 2023), carrying both T(P) and Kzz(P) -- so it and its
-# Kzz column are the defaults, rather than an analytic stand-in fitted by eye.
-# Measured against that table, the previous Guillot default (Tirr 1560 /
-# log kappa -2.3 / log gamma -1.0) ran +91 K hot through the 0.01-1 mbar SO2
-# formation zone, and the previous constant Kzz = 1e9 cm^2/s sat 4-30x BELOW
-# the tabulated Kzz there (3.8e9 - 3.3e10) -- both in the direction that
-# suppresses photochemical SO2, the headline W39b science.
+# Structure DEFAULTS (2026-07-21, generalized 2026-07-22). Where vulcan_jax
+# bundles a MEASURED T-P/Kzz table for a planet, that table -- and its Kzz
+# column -- is the default structure, because an analytic stand-in fitted to
+# nothing is the weaker choice. Which planets have one is data, not policy:
+# planets.PLANETS[...]["tp_table"] (HD 209458 b's exists but is refused; its
+# thermosphere breaches the opacity ceiling inside the chemistry grid).
 #
-# Deliberately NOT global: the shipped table is WASP-39b's evening terminator
-# and applying it to another planet by default would silently substitute the
-# wrong structure (the GUI already warns when it is selected explicitly for
-# one). The picaso provider keeps the analytic default too -- its composition
-# and C/O defaults are tuned to the equilibrium-grid nodes, and the file path
-# is validated under the kinetics engine.
-REFERENCE_TP_FILE_PLANET = "wasp39b"
-
-
+# Measured against its table, the previous WASP-39b default (Guillot Tirr 1560
+# / log kappa -2.3 / log gamma -1.0, constant Kzz 1e9) ran +103 K hot through
+# the 0.01-1 mbar SO2 formation zone with Kzz 4-33x LOW -- both suppressing
+# photochemical SO2, the headline W39b science, which is why the tool reported
+# 2.0 sigma on G395H against a published 4.5-4.8. The same analytic defaults
+# are 15-17x low in Kzz for HD 189733 b. The bias is systematic, not a W39b
+# quirk: a CONSTANT Kzz cannot follow a profile that climbs orders of magnitude
+# with altitude, and it is always the photochemically active upper atmosphere
+# that pays.
+#
+# The picaso provider keeps the analytic default: its composition and C/O
+# defaults are pinned to equilibrium-grid nodes, and the file path is
+# validated under the kinetics engine only.
 def _default_tp_mode(params: dict) -> str:
-    """The tp_mode default for this request (see REFERENCE_TP_FILE_PLANET)."""
-    if (str(params.get("planet", "wasp39b")) == REFERENCE_TP_FILE_PLANET
+    """tp_mode default: the planet's measured table where a default run on it
+    is VERIFIED, else the analytic Guillot profile. Having a table is not
+    enough -- see shipped_tp_table_is_default."""
+    planet = str(params.get("planet", "wasp39b"))
+    if (shipped_tp_table_is_default(planet)
             and str(params.get("chem_provider", "vulcan")) == "vulcan"):
         return "file"
     return "guillot"
+
+
+def default_tirr(planet: str) -> float:
+    """Guillot T_irr default for ``planet`` -- sqrt(2) * T_eq, GUI-identical
+    (planets.default_tirr is the single definition both sides call)."""
+    return planets.default_tirr(
+        planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS))
 
 # --- PICASO equilibrium provider + climate T-P mode (v18) -------------------
 # chem_provider selects the atmospheric-state engine; everything downstream of
@@ -538,19 +548,52 @@ def param_axis(name: str) -> str:
 # tp_mode="file" helpers (light path: no vulcan_jax/jax imports)
 # ---------------------------------------------------------------------------
 
-def _shipped_tp_file() -> Path:
-    """Path of the shipped W39b evening-terminator T-P/Kzz table (the W39b
-    cfg's own atm_file) WITHOUT importing vulcan_jax -- importing it parses
-    the reaction network, far too heavy for the GUI's cache-key path.
-    find_spec locates the installed package without executing it."""
+def shipped_tp_table_name(planet: str) -> str:
+    """Filename of the MEASURED structure table bundled for ``planet``, or ""
+    when that planet has none (planets.PLANETS[...]["tp_table"])."""
+    entry = planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS)
+    return entry.get("tp_table") or ""
+
+
+def shipped_tp_table_is_default(planet: str) -> bool:
+    """Whether ``planet``'s bundled table is its DEFAULT structure.
+
+    Separate from merely having one: a table only becomes the default once a
+    default run on it has been verified end-to-end here. HD 189733 b ships a
+    good profile the solver will not certify at default settings, so it stays
+    selectable-but-not-default rather than making that planet error on
+    arrival (planets.PLANETS[...]["tp_table_note"] carries the measurement)."""
+    entry = planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS)
+    return bool(entry.get("tp_table") and entry.get("tp_table_default"))
+
+
+def _shipped_tp_file(planet: str) -> Path:
+    """Path of the shipped T-P/Kzz table for ``planet``, WITHOUT importing
+    vulcan_jax -- importing it parses the reaction network, far too heavy for
+    the GUI's cache-key path. find_spec locates the package without executing
+    it.
+
+    Per-planet since 2026-07-22: this used to hard-code the W39b table, which
+    made every other planet's bundled profile unreachable even though
+    vulcan_jax ships them. A planet with no usable table raises with the
+    REASON (planets.PLANETS[...]["tp_table_note"]) rather than silently
+    substituting someone else's atmosphere."""
+    name = shipped_tp_table_name(planet)
+    if not name:
+        entry = planets.PLANETS.get(planet, planets.CUSTOM_DEFAULTS)
+        why = entry.get("tp_table_note") or "no table is bundled for it"
+        raise ValueError(
+            f"tp_file='shipped' is not available for planet {planet!r}: {why} "
+            "Choose tp_mode='guillot' (or 'picaso_climate'), or upload a table "
+            "with tp_file='upload'.")
     import importlib.util
     spec = importlib.util.find_spec("vulcan_jax")
     if spec is None or not spec.origin:
         raise RuntimeError(
             "vulcan_jax is not installed (or has no package origin): "
-            "tp_mode='file' with tp_file='shipped' needs its bundled "
-            "atm/atm_W39b_evening_TP_Kzz.txt table.")
-    return Path(spec.origin).parent / "atm" / "atm_W39b_evening_TP_Kzz.txt"
+            f"tp_mode='file' with tp_file='shipped' needs its bundled "
+            f"atm/{name} table.")
+    return Path(spec.origin).parent / "atm" / name
 
 
 def _uploads_dir() -> Path:
@@ -606,12 +649,31 @@ def _read_tp_table(path: Path) -> dict:
             "the deep quench region (CO/CH4/NH3 quenching lives there), "
             "silently biasing quenched abundances. Extend the table to at "
             "least the grid bottom.")
-    if T.min() < T_WINDOW[0] or T.max() > T_WINDOW[1]:
+    # Temperature window applies to what the ENGINE ACTUALLY EVALUATES: T
+    # re-gridded onto the fixed chemistry span, not every row in the file.
+    # Checking raw rows (the pre-2026-07-22 behaviour) rejected any table that
+    # merely EXTENDS past the span -- a full atmosphere model with a
+    # thermosphere above it or a hot deep interior below it -- even when the
+    # in-grid profile was entirely modelable. That wrongly disqualified the
+    # bundled HD 189733 b profile (6000 K thermosphere at 0.012 dyn/cm^2, but
+    # only 861-1575 K across the grid). The engine samples the table by
+    # interpolation in log P with edge clamping, so mirror exactly that.
+    _o = np.argsort(P)
+    _grid = np.logspace(np.log10(CHEM_P_SPAN_DYN[0]),
+                        np.log10(CHEM_P_SPAN_DYN[1]), 200)
+    T_grid = np.interp(np.log10(_grid), np.log10(P[_o]), T[_o])
+    if T_grid.min() < T_WINDOW[0] or T_grid.max() > T_WINDOW[1]:
+        _lo_all, _hi_all = float(T.min()), float(T.max())
+        _extra = ("" if (_lo_all >= T_WINDOW[0] and _hi_all <= T_WINDOW[1]) else
+                  f" (the file spans [{_lo_all:.0f}, {_hi_all:.0f}] K in total; "
+                  "only the part covering the chemistry grid is checked)")
         raise ValueError(
-            f"T-P table {path}: temperatures [{T.min():.0f}, {T.max():.0f}] K "
-            f"leave the modelable window [{T_WINDOW[0]:.0f}, {T_WINDOW[1]:.0f}] K "
-            "(opacity tables end there; out-of-window profiles are rejected, "
-            "never clipped)")
+            f"T-P table {path}: on the chemistry grid "
+            f"({CHEM_P_SPAN_DYN[0]:g}-{CHEM_P_SPAN_DYN[1]:g} dyn/cm^2) the "
+            f"profile spans [{T_grid.min():.0f}, {T_grid.max():.0f}] K, which "
+            f"leaves the modelable window [{T_WINDOW[0]:.0f}, "
+            f"{T_WINDOW[1]:.0f}] K{_extra}. Opacity tables end there; "
+            "out-of-window profiles are rejected, never clipped.")
     Kzz = None
     if "Kzz" in names:
         Kzz = np.asarray(tab["Kzz"], dtype=np.float64)
@@ -623,13 +685,13 @@ def _read_tp_table(path: Path) -> dict:
 def _resolve_tp_file(params: dict) -> tuple[Path, str]:
     """(path, content-sha1[:16]) of the requested T-P table.
 
-    'shipped' resolves to the vulcan_jax bundled W39b evening profile;
+    'shipped' resolves to the vulcan_jax table bundled FOR THIS PLANET;
     'upload' takes params['tp_file_path'] (any readable path -- run_model
     copies it to the content-addressed uploads/<sha1>.txt so later
     re-resolution from the canonical params alone always works)."""
     src = str(params.get("tp_file", TP_FILE_SHIPPED))
     if src == TP_FILE_SHIPPED:
-        path = _shipped_tp_file()
+        path = _shipped_tp_file(str(params.get("planet", "wasp39b")))
     elif src == TP_FILE_UPLOAD:
         raw = params.get("tp_file_path")
         if raw:
@@ -648,8 +710,8 @@ def _resolve_tp_file(params: dict) -> tuple[Path, str]:
             path = _uploads_dir() / f"{sha}.txt"
     else:
         raise ValueError(
-            f"tp_file={src!r}: choose '{TP_FILE_SHIPPED}' (the W39b evening-"
-            f"terminator table bundled with vulcan_jax) or '{TP_FILE_UPLOAD}'")
+            f"tp_file={src!r}: choose '{TP_FILE_SHIPPED}' (the measured table "
+            f"bundled with vulcan_jax for this planet) or '{TP_FILE_UPLOAD}'")
     if not path.exists():
         raise ValueError(f"T-P table not found: {path}")
     sha1 = hashlib.sha1(path.read_bytes()).hexdigest()[:16]
@@ -662,7 +724,7 @@ def _tp_file_from_cp(cp: dict) -> Path:
     uploads/<sha1>.txt (run_model wrote it). Verifies the content hash --
     a table that changed since the cache key was computed is refused."""
     if cp["tp_file"] == TP_FILE_SHIPPED:
-        path = _shipped_tp_file()
+        path = _shipped_tp_file(cp["planet"])
     else:
         path = _uploads_dir() / f"{cp['tp_file_sha1']}.txt"
     if not path.exists():
@@ -910,14 +972,18 @@ def canonical_params(params: dict) -> dict:
         # tables can never share an entry ("" outside file mode)
         "tp_file": tp_file,
         "tp_file_sha1": tp_file_sha1,
-        # Guillot T_irr default = sqrt(2) * T_eq of the reference planet
-        # (WASP-39b, T_eq = 1120 K -> 1583.9, rounded to the GUI's 20 K step
-        # grid), i.e. the f=0.25 whole-surface redistribution convention
-        # exojax's atmprof_Guillot uses. This MATCHES the value the GUI
-        # computes from T_eq; it read 1560 here and 1580 in the GUI until
-        # 2026-07-21, so an API caller relying on the default got a slightly
-        # different profile than the same "default" run from the app.
-        "Tirr": round(float(params.get("Tirr", 1580.0)), 2),
+        # Guillot T_irr default = sqrt(2) * T_eq OF THE SELECTED PLANET, on
+        # the GUI's 20 K step grid: the f=0.25 whole-surface redistribution
+        # convention exojax's atmprof_Guillot uses. planets.default_tirr is
+        # the single definition the sidebar widget calls too.
+        #
+        # This was a bare constant until 2026-07-22 (1560, then 1580) while
+        # the GUI always derived it from T_eq, so a "default" API run and a
+        # "default" GUI run built DIFFERENT profiles for every planet whose
+        # T_eq was not WASP-39 b's -- 1580 vs 1700 on HD 189733 b, vs 2050 on
+        # HD 209458 b (470 K), vs 1050 on WASP-107 b. Deriving it here closes
+        # the drift for all four instead of just the reference planet.
+        "Tirr": round(float(params.get("Tirr", default_tirr(planet))), 2),
         "Tint": round(float(params.get("Tint", 100.0)), 2),
         "log_kappa": round(float(params.get("log_kappa", -2.3)), 3),
         "log_gamma": round(float(params.get("log_gamma", -1.0)), 3),

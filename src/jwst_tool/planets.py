@@ -46,6 +46,25 @@ SFLUX_CHOICES = {
     "sflux-GJ1214.txt": "GJ 1214 (M4.5V, MUSCLES)",
 }
 
+# Per-planet MEASURED structure tables bundled with vulcan_jax (atm/).
+#
+# TWO SEPARATE FACTS, deliberately not conflated:
+#   tp_table          the table exists and is SELECTABLE for this planet
+#   tp_table_default  a default run on it has been VERIFIED end-to-end here
+#
+# Shipping a table is not evidence that the tool converges on it. HD 189733 b
+# has a perfectly good bundled profile that the solver does NOT certify at the
+# default settings (measured 2026-07-22: longdy 0.0998 against the 0.1 gate but
+# conv_normal False -- a stall exit, so the run correctly hard-refuses), while
+# its analytic default converges in 36 s. Making that table the default would
+# have turned a working planet into one that errors on arrival, so it is
+# offered rather than imposed. `tp_table_note` carries the reason in both
+# directions so neither the gap nor the caveat is silent.
+#
+# The tool runs every planet on the W39b cfg's FIXED chemistry grid
+# (forward.CHEM_P_SPAN_DYN = 0.1 to 7.6e6 dyn/cm^2), so a table only has to be
+# valid ACROSS THAT SPAN; rows deeper or higher are never evaluated. What
+# disqualifies HD 209458 b is that its thermosphere is already inside the span.
 PLANETS = {
     "wasp39b": dict(
         label="WASP-39 b",
@@ -53,6 +72,8 @@ PLANETS = {
         rstar_rsun=0.932, rp_rjup=1.279, gs_cgs=422.0,
         orbit_au=0.04828, teq_k=1120.0, t14_hr=2.80,
         sflux="sflux-W39b_Tsai2023.txt",
+        tp_table="atm_W39b_evening_TP_Kzz.txt", tp_table_default=True,
+        tp_table_note="",
         note="Inflated ~Saturn-mass planet (Ks = 10.2, G8V host); a well-observed "
              "warm transmission-spectroscopy target.",
     ),
@@ -62,6 +83,18 @@ PLANETS = {
         rstar_rsun=0.756, rp_rjup=1.138, gs_cgs=2190.0,
         orbit_au=0.0313, teq_k=1200.0, t14_hr=1.80,
         sflux="sflux-HD189_Moses11.txt",
+        tp_table="atm_HD189_Kzz.txt", tp_table_default=False,
+        tp_table_note=(
+            "selectable, but NOT the default: at the tool's default settings "
+            "the solver does not certify a steady state on it (measured "
+            "2026-07-22: longdy 0.0998 vs the 0.1 gate with conv_normal False "
+            "-- a stall exit, which the run refuses rather than presents as "
+            "converged), whereas the analytic default converges in ~36 s. "
+            "Tightening yconv_cri to 1e-3 does NOT help: same longdy, same "
+            "1445 accepted steps, so the blocker is the stall exit and not the "
+            "tolerance. Its tabulated Kzz is 15-17x the constant default in "
+            "the photochemically active layers, so it is the better structure "
+            "on paper; certify a run before trusting one."),
         note="Very bright host (Ks = 5.5) with a high-gravity planet: expect "
              "most modes to saturate and small spectral features.",
     ),
@@ -71,6 +104,13 @@ PLANETS = {
         rstar_rsun=1.155, rp_rjup=1.359, gs_cgs=930.0,
         orbit_au=0.0475, teq_k=1450.0, t14_hr=3.07,
         sflux="Gueymard_solar.txt",
+        tp_table=None, tp_table_default=False,
+        tp_table_note=(
+            "vulcan_jax bundles atm_HD209_Kzz.txt, but it is a full "
+            "thermosphere model: re-gridded onto the chemistry span it reaches "
+            "2997 K at the grid top, above the 2980 K premodit opacity ceiling. "
+            "Out-of-window profiles are refused, never clipped, so this planet "
+            "keeps the analytic default."),
         note="The classic inflated hot Jupiter (G0V host; solar UV spectrum, "
              "same proxy the VULCAN HD209 config uses).",
     ),
@@ -80,6 +120,8 @@ PLANETS = {
         rstar_rsun=0.67, rp_rjup=0.94, gs_cgs=270.0,
         orbit_au=0.0553, teq_k=740.0, t14_hr=2.74,
         sflux="sflux-epseri.txt",
+        tp_table=None, tp_table_default=False,
+        tp_table_note="vulcan_jax bundles no measured T-P/Kzz table for this planet.",
         note="Warm Neptune-mass super-puff: very low gravity means huge "
              "spectral features (K6V host; eps Eri UV proxy).",
     ),
@@ -94,3 +136,17 @@ def system_fields(planet: dict) -> dict:
     return dict(rp_rjup=planet["rp_rjup"], gs_cgs=planet["gs_cgs"],
                 rstar_rsun=planet["rstar_rsun"], orbit_au=planet["orbit_au"],
                 sflux=planet["sflux"])
+
+
+def default_tirr(planet: dict) -> float:
+    """Guillot T_irr default for a registry entry: sqrt(2) * T_eq, on the GUI's
+    20 K step grid and clipped to the widget range.
+
+    ONE definition, used by BOTH canonical_params and the sidebar widget. It
+    used to be a hard-coded constant on the API side and a T_eq expression in
+    the GUI, so a "default" API run and a "default" GUI run built different
+    profiles for every planet whose T_eq was not WASP-39 b's (HD 209458 b
+    disagreed by 470 K)."""
+    import math
+    return min(max(round(planet["teq_k"] * math.sqrt(2.0) / 10.0) * 10.0,
+                   800.0), 2500.0)

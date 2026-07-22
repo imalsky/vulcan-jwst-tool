@@ -33,19 +33,34 @@ def test_app_renders_without_exception():
 def test_gui_structure_defaults_match_canonical_params():
     """The GUI and the API must mean the SAME atmosphere by "the defaults".
 
-    canonical_params defaults WASP-39b under the kinetics engine to the
-    shipped evening-terminator table + its Kzz column; the sidebar has to
-    land on the same two selections, or a default GUI run and a default API
-    run silently model different structures. (This invariant is exactly what
-    the 1560-vs-1580 T_irr split violated before 2026-07-21.)
+    Checked on EVERY planet, not just the reference one: the drift this test
+    exists to catch (a hard-coded API T_irr vs a T_eq-derived widget) was
+    invisible on WASP-39 b and 470 K wide on HD 209458 b. Structure mode, Kzz
+    mode, and T_irr must all agree, or a "default" GUI run and a "default"
+    API run silently model different atmospheres.
     """
-    from jwst_tool import forward
+    from jwst_tool import forward, planets
 
-    cp = forward.canonical_params(dict(planet="wasp39b"))
     at = _run_app()
     assert not at.exception, at.exception
-    assert at.selectbox(key="n0_wasp39b_tp").value == cp["tp_mode"] == "file"
-    assert at.selectbox(key="n0_wasp39b_kzzmode").value == cp["kzz_mode"] == "file"
+    for key in planets.PLANETS:
+        at.selectbox(key="n0_planet").set_value(key).run()
+        assert not at.exception, (key, at.exception)
+        cp = forward.canonical_params(dict(planet=key))
+        assert at.selectbox(key=f"n0_{key}_tp").value == cp["tp_mode"], key
+        if cp["tp_mode"] == "file":
+            assert at.selectbox(key=f"n0_{key}_kzzmode").value == \
+                cp["kzz_mode"] == "file", key
+        # T_irr: drive the GUI into Guillot mode so the widget renders, and
+        # compare it to what the API would default to for THIS planet. Compare
+        # against canonical_params, never against the same helper the widget
+        # calls -- that would pass even while the API drifted.
+        at.selectbox(key=f"n0_{key}_tp").set_value("guillot").run()
+        assert not at.exception, (key, at.exception)
+        api_tirr = forward.canonical_params(
+            dict(planet=key, tp_mode="guillot"))["Tirr"]
+        assert at.number_input(key=f"n0_{key}_tirr").value == api_tirr, key
+        at.selectbox(key=f"n0_{key}_tp").set_value(cp["tp_mode"]).run()
 
 
 def test_default_instrument_modes_are_the_observed_ones():

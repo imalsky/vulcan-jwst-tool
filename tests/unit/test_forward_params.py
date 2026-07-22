@@ -80,45 +80,102 @@ def test_gcm_baseline_and_scale_are_removed():
     assert all("has_gcm_baseline" not in pd for pd in planets.PLANETS.values())
 
 
-def test_default_structure_is_the_measured_w39b_table():
-    # 2026-07-21: on the reference target under the kinetics engine the
-    # default structure is the SHIPPED evening-terminator table (the W39b
-    # cfg's own atm_file), and its Kzz column supplies the mixing profile --
-    # not a hand-set analytic stand-in.
-    cp = forward.canonical_params(dict(planet="wasp39b"))
-    assert cp["tp_mode"] == "file"
-    assert cp["tp_file"] == forward.TP_FILE_SHIPPED
-    assert cp["tp_file_sha1"]                     # content-addressed
-    assert cp["kzz_mode"] == "file"
-    assert cp["kzz_const"] == 0.0                 # inert once tabulated
-
-
-def test_shipped_table_default_never_leaks_to_another_planet():
-    # the shipped table is WASP-39b's evening terminator: applying it to a
-    # different planet by DEFAULT would silently substitute the wrong
-    # structure. Every non-reference planet keeps the analytic default.
+def test_default_structure_is_the_planets_own_verified_table():
+    # Where a planet's bundled profile is VERIFIED as its default, it -- and
+    # its Kzz column -- is the default structure instead of an analytic
+    # stand-in. Data-driven so editing planets.py cannot leave this stale.
     for key in planets.PLANETS:
-        if key == forward.REFERENCE_TP_FILE_PLANET:
-            continue
         cp = forward.canonical_params(dict(planet=key))
-        assert cp["tp_mode"] == "guillot", key
-        assert cp["kzz_mode"] == "const", key
-    # ... and so does the equilibrium provider on the reference planet.
-    # (Checked on the pure default-resolver: a full canonical_params call
-    # under chem_provider="picaso" would demand the PICASO refdata tree.)
+        if forward.shipped_tp_table_is_default(key):
+            assert cp["tp_mode"] == "file", key
+            assert cp["tp_file"] == forward.TP_FILE_SHIPPED, key
+            assert cp["tp_file_sha1"], key            # content-addressed
+            assert cp["kzz_mode"] == "file", key      # table carries Kzz
+            assert cp["kzz_const"] == 0.0, key        # inert once tabulated
+        else:
+            assert cp["tp_mode"] == "guillot", key
+            assert cp["kzz_mode"] == "const", key
+
+
+def test_having_a_table_does_not_by_itself_make_it_the_default():
+    # The two facts are deliberately separate: HD 189733 b ships a good
+    # profile that the solver does NOT certify at default settings, so it is
+    # SELECTABLE but not the default -- otherwise a working planet would
+    # start erroring. Any planet in that state must carry a written reason.
+    assert forward.shipped_tp_table_name("hd189733b")
+    assert not forward.shipped_tp_table_is_default("hd189733b")
+    assert forward.canonical_params(dict(planet="hd189733b"))["tp_mode"] == "guillot"
+    # ... and choosing it explicitly still resolves to that planet's own table
+    cp = forward.canonical_params(dict(planet="hd189733b", tp_mode="file"))
+    assert cp["tp_mode"] == "file" and cp["kzz_mode"] == "file"
+    for key in planets.PLANETS:
+        if not forward.shipped_tp_table_is_default(key):
+            assert planets.PLANETS[key]["tp_table_note"], key
+    # only WASP-39 b is a verified default today
+    assert [k for k in planets.PLANETS
+            if forward.shipped_tp_table_is_default(k)] == ["wasp39b"]
+
+
+def test_shipped_table_is_per_planet_never_a_substitute():
+    # Each planet resolves to ITS OWN table; a planet without one refuses
+    # loudly (with the reason) rather than borrowing another's atmosphere.
+    seen = {}
+    for key in planets.PLANETS:
+        name = forward.shipped_tp_table_name(key)
+        if name:
+            seen[key] = name
+        else:
+            with pytest.raises(ValueError, match="not available for planet"):
+                forward.canonical_params(dict(planet=key, tp_mode="file"))
+    assert len(set(seen.values())) == len(seen)       # no shared table
+    # the equilibrium provider keeps the analytic default even where a table
+    # exists (checked on the pure resolver -- a full canonical_params call
+    # under chem_provider="picaso" would demand the PICASO refdata tree)
     assert forward._default_tp_mode(
         dict(planet="wasp39b", chem_provider="picaso")) == "guillot"
-    assert forward._default_tp_mode(dict(planet="wasp39b")) == "file"
 
 
-def test_guillot_default_tirr_matches_the_reference_teq():
-    # T_irr default = sqrt(2) * T_eq (the f=0.25 whole-surface convention
-    # exojax's atmprof_Guillot uses), on the GUI's 20 K step grid. The GUI
-    # computes this from T_eq; canonical_params must not disagree with it.
-    teq = planets.PLANETS[forward.REFERENCE_TP_FILE_PLANET]["teq_k"]
-    expect = round(teq * math.sqrt(2.0) / 10.0) * 10.0
-    cp = forward.canonical_params(dict(planet="wasp39b", tp_mode="guillot"))
-    assert cp["Tirr"] == expect == 1580.0
+def test_guillot_default_tirr_follows_the_selected_planet():
+    # T_irr default = sqrt(2) * T_eq of THE SELECTED PLANET (f=0.25
+    # whole-surface convention), on the GUI's 20 K grid. Until 2026-07-22 this
+    # was a bare constant on the API side while the GUI derived it from T_eq,
+    # so the two built different profiles for every planet but WASP-39 b.
+    for key, p in planets.PLANETS.items():
+        expect = min(max(round(p["teq_k"] * math.sqrt(2.0) / 10.0) * 10.0,
+                         800.0), 2500.0)
+        cp = forward.canonical_params(dict(planet=key, tp_mode="guillot"))
+        assert cp["Tirr"] == expect, key
+    # the values that used to disagree, pinned explicitly
+    assert forward.default_tirr("wasp39b") == 1580.0
+    assert forward.default_tirr("hd209458b") == 2050.0   # was 1580 via the API
+
+
+def test_tp_table_window_check_is_chemistry_grid_scoped():
+    # The modelable-temperature gate judges the profile the ENGINE evaluates
+    # (re-gridded onto CHEM_P_SPAN_DYN), not every row in the file: a full
+    # atmosphere model that extends past the grid with a hot thermosphere
+    # above or a hot interior below is fine, so long as the in-grid part is
+    # modelable. Checking raw rows wrongly rejected the bundled HD 189733 b
+    # profile (6000 K thermosphere, 861-1575 K across the grid).
+    import numpy as np
+
+    def _write(tmp, P, T):
+        tmp.write_text("#(dyne/cm2) (K)\nPressure Temp\n"
+                       + "\n".join(f"{p:.6e} {t:.2f}" for p, t in zip(P, T)))
+        return tmp
+
+    import tempfile
+    from pathlib import Path
+    d = Path(tempfile.mkdtemp())
+    lo, hi = forward.CHEM_P_SPAN_DYN
+    # extends BOTH ways past the grid, in-grid profile is a modelable 900 K
+    P = np.array([lo / 100, lo, hi, hi * 100])
+    T = np.array([5000.0, 900.0, 900.0, 5000.0])       # out of window only outside
+    assert forward._read_tp_table(_write(d / "ok.txt", P, T))["T"].size == 4
+    # in-grid profile itself breaches the ceiling -> refused
+    T_bad = np.array([5000.0, 2990.0, 900.0, 5000.0])
+    with pytest.raises(ValueError, match="chemistry grid"):
+        forward._read_tp_table(_write(d / "bad.txt", P, T_bad))
 
 
 def test_isothermal_is_removed():
