@@ -358,3 +358,56 @@ def test_rt_knobs_fragment_the_cache_key():
     assert forward.params_key(_p(rt_ptop_bar=1.0e-7)) != k0
     assert forward.params_key(_p(rt_integration="trapezoid")) != k0
     assert forward.params_key(_p(rt_dit_res=0.5)) != k0
+
+
+# --- WASP-39 b reference state: DO NOT let this drift ------------------------
+# The default W39b configuration is the one measured against the published
+# JWST detection (G395H SO2 4.16 sigma in 1 transit at R=100 / 76 ppm per bin,
+# vs 4.8 published by Alderson+2023 and 4.5 by Tsai+2023; SO2 peaking at
+# 25.5 ppm near 0.03 mbar, inside Tsai's 10-100 ppm at 0.01-1 mbar). That
+# agreement is a property of a SPECIFIC atmosphere, so these pins fix the
+# inputs that produce it. A change here is a change to the science result:
+# re-measure against the literature before updating the expected values.
+W39B_REFERENCE = {
+    "tp_mode": "file",                      # measured evening-terminator table
+    "tp_file": "shipped",
+    "tp_file_sha1": "1a4ce744e65205d8",     # exact profile bytes (T AND Kzz)
+    "kzz_mode": "file",                     # mixing from the table, not a stand-in
+    "kzz_const": 0.0,                       # inert once tabulated
+    "met_x_solar": 10.0,                    # Tsai+2023 10x solar
+    "co_ratio": 0.549348,                   # cfg C_H/O_H
+    "use_photo": True,                      # SO2 is photochemical; non-negotiable
+    "sl_angle_deg": 83.0,                   # Tsai+2023 terminator slant
+    "use_vm_mol": False,                    # validated pre-flip baseline
+    "nz": 100,
+}
+
+
+def test_wasp39b_default_is_the_literature_validated_state():
+    cp = forward.canonical_params(dict(planet="wasp39b"))
+    for key, want in W39B_REFERENCE.items():
+        assert cp[key] == want, (
+            f"WASP-39 b default {key}: {cp[key]!r} != {want!r}. This changes "
+            "the atmosphere behind the published-detection agreement -- "
+            "re-measure G395H SO2 against Alderson+2023 / Tsai+2023 before "
+            "updating W39B_REFERENCE.")
+
+
+def test_wasp39b_default_cache_key_is_stable():
+    # The key is the content hash of every canonical parameter, so it is the
+    # single tightest guard: if ANY default feeding the reference run changes,
+    # this trips even when the individual pins above are still satisfied.
+    assert forward.params_key(forward.canonical_params(
+        dict(planet="wasp39b"))) == "4c09f1902f90a0a2"
+
+
+def test_wasp39b_shipped_table_bytes_are_unchanged():
+    # The sha1 above is only meaningful if it is re-derived from the file the
+    # run actually reads -- this catches the table itself being swapped.
+    path = forward._shipped_tp_file("wasp39b")
+    assert path.name == "atm_W39b_evening_TP_Kzz.txt"
+    tab = forward._read_tp_table(path)
+    assert tab["Kzz"] is not None, "the reference table must carry its Kzz column"
+    import hashlib
+    assert hashlib.sha1(path.read_bytes()).hexdigest()[:16] == \
+        W39B_REFERENCE["tp_file_sha1"]
