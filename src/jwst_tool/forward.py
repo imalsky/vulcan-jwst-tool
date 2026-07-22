@@ -456,18 +456,23 @@ def active_molecules(cp: dict) -> list[str]:
 # layer count (art_nlayer) is LOCKED equal to nz in run_model (chemistry and RT
 # share one grid), so there is no separate RT-layer knob.
 #
-# STALE-MEASUREMENT WARNING (2026-07-21): the fast-vs-high agreement numbers
-# this block used to quote as "W39b defaults" (G395H SO2 3.6 vs 3.8 sigma,
-# F444W 2.8 vs 3.0, Fisher sigma(lnZ) 0.027 vs 0.029 dex, MIRI LRS 0.9 vs 1.9)
-# were measured on 2026-07-15, when the DEFAULT T-P was the globally
-# isothermal mode at T_iso = 1100 K. That mode was removed on 2026-07-21
-# (3937835) and the structure default is now the tabulated W39b profile
-# (REFERENCE_TP_FILE_PLANET below), so those sigmas do not describe any
-# reachable default and have been withdrawn rather than re-quoted. The
-# QUALITATIVE finding still holds and is what the ranges below encode: the
-# weak mid-IR SO2 bands are the one real casualty of the low-resolution tier,
-# so raise nz / tighten yconv_cri for final mid-IR numbers. Re-measure before
-# quoting any sigma as a default-configuration result.
+# RE-MEASURED 2026-07-21 on the CURRENT defaults (tabulated W39b T-P + Kzz,
+# 1 transit, R_bin = 100), low tier (nz 100 / nu_pts 4000 / yconv 1e-2) vs
+# high tier (nz 150 / nu_pts 8000 / yconv 1e-3), SO2 conditional template S/N:
+#
+#     NIRSpec G395H   4.16 -> 4.40      NIRSpec PRISM   2.06 -> 2.19
+#     MIRI LRS        0.74 -> 1.41      NIRCam F322W2   0.03 -> 0.02
+#
+# The near-IR modes are tier-insensitive (<= 6%); the weak mid-IR SO2 bands
+# are the one real casualty, nearly doubling. Raise nz / tighten yconv_cri
+# for final mid-IR numbers.
+#
+# (The block previously quoted 3.6 -> 3.8 for G395H and 0.9 -> 1.9 for MIRI
+# LRS, labelled "W39b defaults". Those were measured 2026-07-15 under the
+# globally isothermal T_iso = 1100 K default, a mode removed on 2026-07-21
+# (3937835), so they described a configuration no longer reachable. The
+# qualitative mid-IR finding survived re-measurement; the digits did not.
+# Re-measure before quoting any sigma as a default-configuration result.)
 NZ_DEFAULT, NU_PTS_DEFAULT, YCONV_DEFAULT = 100, 4000, 1.0e-2
 NZ_RANGE = (60, 150)            # chemistry (= RT) layers
 NU_PTS_RANGE = (4000, 8000)     # native wavenumber points (native R ~ nu_pts/2.7)
