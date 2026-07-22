@@ -279,7 +279,20 @@ class _TimedBar:
     measured pace, weighting the measurement by the completed fraction, so
     it starts at the prior and converges to the measured rate; with no
     prior it is purely measured and appears once the first progress
-    fraction lands. It is labeled "about" -- stage weights are rough."""
+    fraction lands. It is labeled "about" -- stage weights are rough.
+
+    The blend is over the two REMAINING-time estimates, not the two totals.
+    Blending totals is the natural-looking thing to write and is what this
+    class did until 2026-07-21:
+
+        total = frac * (e / frac) + (1 - frac) * prior
+
+    but ``frac * (e / frac)`` is identically ``e``, so that collapses to
+    ``remaining = (1 - frac) * prior`` -- the measured pace cancels out and
+    the countdown is FROZEN for the whole stage, no matter how long it
+    actually runs. A photochemistry stage that overran its weight by 13x
+    still read "about 58 s left" at 7m50s elapsed. Keep the blend on
+    remaining times."""
 
     def __init__(self, prior_total_s: float | None = None,
                  text: str = "starting ..."):
@@ -293,10 +306,16 @@ class _TimedBar:
         e = time.monotonic() - self._t0
         remaining = None
         if self._frac > 0.0:
-            total = e / self._frac
+            # measured: at the pace observed so far, (1 - frac) of the work
+            # is still ahead. Grows with e when a stage overruns -- which is
+            # the whole point of showing a live estimate.
+            measured_left = e * (1.0 - self._frac) / self._frac
             if self._prior:
-                total = self._frac * total + (1.0 - self._frac) * self._prior
-            remaining = max(total - e, 0.0)
+                prior_left = max(self._prior * (1.0 - self._frac), 0.0)
+                remaining = (self._frac * measured_left
+                             + (1.0 - self._frac) * prior_left)
+            else:
+                remaining = measured_left
         elif self._prior:
             remaining = max(self._prior - e, 0.0)
         txt = f"{self._label}  (elapsed {_fmt_dur(e)}"
@@ -761,10 +780,15 @@ with st.sidebar:
 
     with st.expander("Atmosphere structure, T-P profile (shared with RT)"):
         _tp_opts = ["guillot", "file", "picaso_climate"]
+        # Mirror canonical_params' default exactly, so "the defaults" mean the
+        # same profile whether the run comes from the GUI or the API: the
+        # measured WASP-39b table under the kinetics engine, Guillot otherwise.
+        _tp_default = forward._default_tp_mode(
+            {"planet": planet_key, "chem_provider": chem_provider})
         if st.session_state.get(_k("tp")) not in _tp_opts:
-            st.session_state[_k("tp")] = _tp_opts[0]
+            st.session_state[_k("tp")] = _tp_default
         tp_mode = st.selectbox(
-            "T-P profile", _tp_opts, index=0,
+            "T-P profile", _tp_opts, index=_tp_opts.index(_tp_default),
             key=_k("tp"),
             format_func={"guillot": "Guillot (2010)",
                          "file": "Tabulated table (T-P, optional Kzz)",
@@ -1061,10 +1085,18 @@ with st.sidebar:
             _kzz_file_ok = tp_mode == "file"
             if _kzz_file_ok:
                 _kzz_opts.append("file")
+                # Same rule as canonical_params: a table that carries Kzz
+                # supplies the mixing profile, so it is the default rather
+                # than a flat stand-in. Seed session_state on first render
+                # (Streamlit ignores index= once the key exists).
+                if _k("kzzmode") not in st.session_state:
+                    st.session_state[_k("kzzmode")] = "file"
             elif st.session_state.get(_k("kzzmode")) == "file":
                 st.session_state[_k("kzzmode")] = "const"
             kzz_mode = st.selectbox(
-                "K_zz profile", _kzz_opts, index=0, key=_k("kzzmode"),
+                "K_zz profile", _kzz_opts,
+                index=_kzz_opts.index("file") if _kzz_file_ok else 0,
+                key=_k("kzzmode"),
                 format_func={"const": "Constant",
                              "Pfunc": "Power law in P (Pfunc)",
                              "JM16": "Moses-type P^-0.5 (JM16)",

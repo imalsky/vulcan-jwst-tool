@@ -30,6 +30,32 @@ def test_app_renders_without_exception():
     assert not at.exception, at.exception
 
 
+def test_gui_structure_defaults_match_canonical_params():
+    """The GUI and the API must mean the SAME atmosphere by "the defaults".
+
+    canonical_params defaults WASP-39b under the kinetics engine to the
+    shipped evening-terminator table + its Kzz column; the sidebar has to
+    land on the same two selections, or a default GUI run and a default API
+    run silently model different structures. (This invariant is exactly what
+    the 1560-vs-1580 T_irr split violated before 2026-07-21.)
+    """
+    from jwst_tool import forward
+
+    cp = forward.canonical_params(dict(planet="wasp39b"))
+    at = _run_app()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="n0_wasp39b_tp").value == cp["tp_mode"] == "file"
+    assert at.selectbox(key="n0_wasp39b_kzzmode").value == cp["kzz_mode"] == "file"
+
+
+def test_default_instrument_modes_are_the_observed_ones():
+    from jwst_tool import instruments as ins
+
+    at = _run_app()
+    assert not at.exception, at.exception
+    assert set(at.multiselect(key="n0_modes").value) == set(ins.DEFAULT_MODES)
+
+
 def test_data_status_panel_present():
     at = _run_app()
     # the availability expander renders on the main page, pre-run

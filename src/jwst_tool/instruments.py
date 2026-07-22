@@ -339,8 +339,14 @@ for _key, _m in MODES.items():
 
 MODE_COLOR = {key: _COLORS[i % len(_COLORS)] for i, key in enumerate(MODES)}
 
-# GUI default selection: blue-to-red coverage with the three workhorses.
+# GUI default selection: the modes WASP-39b was actually observed in, which is
+# also blue-to-red coverage. NIRISS SOSS (Feinstein et al. 2023), NIRSpec PRISM
+# (Rustamkulov et al. 2023), NIRSpec G395H (Alderson et al. 2023) and NIRCam
+# F322W2 (Ahrer et al. 2023) are the four JWST/ERS 1366 transit observations;
+# MIRI LRS is the later mid-IR SO2 transit (Powell et al. 2024). G235H and
+# NIRCam F444W stay available but were never pointed at this target.
 # (The ETC always computes ALL modes per star, so changing the selection is free.)
-DEFAULT_MODES = ["niriss_soss", "nirspec_g395h", "miri_lrs"]
+DEFAULT_MODES = ["niriss_soss", "nirspec_prism", "nirspec_g395h",
+                 "nircam_f322w2", "miri_lrs"]
 
 # Per-planet system defaults (star, geometry, T14, UV spectrum) live in planets.py.

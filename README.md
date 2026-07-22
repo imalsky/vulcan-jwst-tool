@@ -80,15 +80,27 @@ atmosphere maps to different (Z, C/O) coordinates in different codes, and
 different molecules carry the C/O signature (C-bearing species here;
 H2O/CO2 in O-varied codes). Near-solar C/O the conventions agree.
 
-T-P profiles are explicit only: isothermal, Guillot, or a tabulated table
-(the shipped WASP-39b evening-terminator profile or an upload; the cache
-key carries the table's content hash). A tabulated profile has no
-temperature parameter, so file-mode Fisher forecasts carry NO temperature
-row: they are conditional on the profile being exactly right, and the
-reported sigmas are optimistic by the amount temperature uncertainty
-would add. Kzz profiles: constant, two parametric forms (Pfunc, JM16),
-or the table's Kzz column; the Fisher lnKzz row is a multiplicative scale
-of the whole profile in every mode.
+T-P profiles are explicit only: Guillot, a tabulated table (the shipped
+WASP-39b evening-terminator profile or an upload; the cache key carries the
+table's content hash), or a PICASO radiative-convective climate solve. A
+globally isothermal profile was removed in July 2026 -- it held the deep
+CO/CH4/NH3 quench region at one temperature and biased disequilibrium
+abundances. Kzz profiles: constant, two parametric forms (Pfunc, JM16), or
+the table's Kzz column; the Fisher lnKzz row is a multiplicative scale of
+the whole profile in every mode.
+
+**Defaults on WASP-39b are the measured structure, not an analytic
+stand-in.** Under the VULCAN kinetics engine the reference target defaults to
+the shipped evening-terminator table -- the same `atm_file` the bundled
+VULCAN W39b config runs on (Tsai et al. 2023) -- for BOTH T(P) and Kzz(P).
+Every other planet, and the PICASO equilibrium provider, default to Guillot
+plus a constant Kzz, because that table is WASP-39b's and must never be
+substituted for another planet silently. The trade-off is stated rather than
+hidden: a tabulated profile has no temperature parameter, so file-mode Fisher
+forecasts carry NO temperature row. They are conditional on the profile being
+exactly right, and the reported sigmas are optimistic by the amount
+temperature uncertainty would add -- switch to Guillot when you need a
+temperature row.
 
 Boundary conditions (all off by default): gravitational settling,
 diffusion-limited escape (H/H2/He), and constant top/bottom per-species

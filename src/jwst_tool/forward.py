@@ -142,8 +142,13 @@ Jacobian d(depth)/d(param) row by row, by one of two methods
 * "ad" -- one warm-started forward-mode jvp per row ("ad-jvp": the
   validated sensitivity pattern -- continuation from the converged column,
   photochemistry ON required), ~1.7-4x faster per row. Cross-validated
-  against the FD rows on W39b defaults: T_iso 0.14%, dlnCO 0.07%, lnKzz
-  exact, lnR0 0.9999, lnZ 1.6%. Two stated caveats: the lnZ jvp is the
+  against the FD rows 2026-07-15, on the W39b configuration that was
+  default THEN (isothermal T-P at 1100 K, constant Kzz 1e9 -- the T-P row
+  was the since-removed T_iso, and the structure default is now the
+  tabulated table): T_iso 0.14%, dlnCO 0.07%, lnKzz exact, lnR0 0.9999,
+  lnZ 1.6%. Not re-measured on the current defaults; treat the percentages
+  as the method's demonstrated agreement, not as a per-row guarantee for
+  this configuration. Two stated caveats: the lnZ jvp is the
   FIXED-STRUCTURAL-GRID derivative (the 1.6% gap is the hydrostatic-grid
   rebuild only FD includes), and the dlnCO jvp uses the fixed-O
   differential direction, which is undefined on C-rich baselines where its
@@ -181,7 +186,7 @@ MOLECULES = ["H2O", "CO2", "CO", "CH4", "SO2"]   # always-on WIDE-profile set
 # feature, NH3 the cool (<~900 K) nitrogen chemistry, OCS the second
 # equilibrium sulfur carrier (nu3 ~4.85 um; the SNCHO network token is COS).
 EXTRA_MOLECULES = ["C2H2", "H2S", "HCN", "NH3", "OCS"]
-_VERSION = 22  # model_cache buster: bump whenever the physics or the
+_VERSION = 23  # model_cache buster: bump whenever the physics or the
                # canonical key set changes (invalidates all cached spectra).
                # Per-version history lives in notes.md. v18 = the PICASO
                # equilibrium provider + picaso_climate T-P mode; v19 = the
@@ -224,8 +229,11 @@ CO_BASELINE = 0.00295 / 0.00537   # = 0.54935, cfg C_H/O_H (Tsai 2023 10x-solar)
 # The reported row is the Richardson combination (4 J_h - J_2h)/3. Cost: a
 # composition row is 4 build+solve cycles (~6-8 min), a theta row 4 cold
 # solves (~3-5 min); the price of certified, machinery-free derivatives.
-# VALIDATED 2026-07-15 against the warm-jvp AD rows on W39b defaults
-# (yconv 1e-3): corr >= 0.9999 and scale within 0.07-1.6% on every row
+# VALIDATED 2026-07-15 against the warm-jvp AD rows on the W39b
+# configuration that was default THEN (yconv 1e-3, isothermal T-P at 1100 K,
+# constant Kzz 1e9; the T-P row was T_iso, a parameter removed 2026-07-21
+# with the isothermal mode, and the structure default is now the tabulated
+# W39b table): corr >= 0.9999 and scale within 0.07-1.6% on every row
 # (T_iso 0.14%, dlnCO 0.07%, lnKzz exact, lnZ 1.6% -- the lnZ gap is the
 # hydrostatic-grid rebuild the FD row includes and the fixed-grid AD chain
 # approximated); h-vs-2h consistency 0.004-0.113, all far under the gate.
@@ -332,6 +340,33 @@ TP_FILE_UPLOAD = "upload"         # user-supplied table; content-addressed copy
 # cross-checks these constants against the LIVE cfg, CO_BASELINE-style.
 CHEM_P_SPAN_DYN = (0.1, 7.6e6)
 
+# Structure DEFAULTS for the reference target (2026-07-21). On WASP-39b under
+# the VULCAN kinetics engine the shipped evening-terminator table IS the
+# measured-target structure -- it is the very atm_file the bundled W39b cfg
+# runs on (Tsai et al. 2023), carrying both T(P) and Kzz(P) -- so it and its
+# Kzz column are the defaults, rather than an analytic stand-in fitted by eye.
+# Measured against that table, the previous Guillot default (Tirr 1560 /
+# log kappa -2.3 / log gamma -1.0) ran +91 K hot through the 0.01-1 mbar SO2
+# formation zone, and the previous constant Kzz = 1e9 cm^2/s sat 4-30x BELOW
+# the tabulated Kzz there (3.8e9 - 3.3e10) -- both in the direction that
+# suppresses photochemical SO2, the headline W39b science.
+#
+# Deliberately NOT global: the shipped table is WASP-39b's evening terminator
+# and applying it to another planet by default would silently substitute the
+# wrong structure (the GUI already warns when it is selected explicitly for
+# one). The picaso provider keeps the analytic default too -- its composition
+# and C/O defaults are tuned to the equilibrium-grid nodes, and the file path
+# is validated under the kinetics engine.
+REFERENCE_TP_FILE_PLANET = "wasp39b"
+
+
+def _default_tp_mode(params: dict) -> str:
+    """The tp_mode default for this request (see REFERENCE_TP_FILE_PLANET)."""
+    if (str(params.get("planet", "wasp39b")) == REFERENCE_TP_FILE_PLANET
+            and str(params.get("chem_provider", "vulcan")) == "vulcan"):
+        return "file"
+    return "guillot"
+
 # --- PICASO equilibrium provider + climate T-P mode (v18) -------------------
 # chem_provider selects the atmospheric-state engine; everything downstream of
 # the chemistry (ExoJax RT, one binning operator, Pandeia noise, detect/
@@ -419,11 +454,20 @@ def active_molecules(cp: dict) -> list[str]:
 # these replaced the old "fast"/"high" fidelity switch. Defaults reproduce the
 # old "fast" tier; the validated ceiling is the old "high" tier. The ExoJax RT
 # layer count (art_nlayer) is LOCKED equal to nz in run_model (chemistry and RT
-# share one grid), so there is no separate RT-layer knob. Measured fast-vs-high
-# agreement (W39b defaults): G395H SO2 3.6 vs 3.8 sigma, F444W 2.8 vs 3.0, Fisher
-# sigma(lnZ) 0.027 vs 0.029 dex; the weak mid-IR SO2 bands are the one real
-# casualty (MIRI LRS 0.9 vs 1.9 sigma at nz=100 / yconv 1e-2) -- raise nz / tighten
-# yconv for final mid-IR numbers.
+# share one grid), so there is no separate RT-layer knob.
+#
+# STALE-MEASUREMENT WARNING (2026-07-21): the fast-vs-high agreement numbers
+# this block used to quote as "W39b defaults" (G395H SO2 3.6 vs 3.8 sigma,
+# F444W 2.8 vs 3.0, Fisher sigma(lnZ) 0.027 vs 0.029 dex, MIRI LRS 0.9 vs 1.9)
+# were measured on 2026-07-15, when the DEFAULT T-P was the globally
+# isothermal mode at T_iso = 1100 K. That mode was removed on 2026-07-21
+# (3937835) and the structure default is now the tabulated W39b profile
+# (REFERENCE_TP_FILE_PLANET below), so those sigmas do not describe any
+# reachable default and have been withdrawn rather than re-quoted. The
+# QUALITATIVE finding still holds and is what the ranges below encode: the
+# weak mid-IR SO2 bands are the one real casualty of the low-resolution tier,
+# so raise nz / tighten yconv_cri for final mid-IR numbers. Re-measure before
+# quoting any sigma as a default-configuration result.
 NZ_DEFAULT, NU_PTS_DEFAULT, YCONV_DEFAULT = 100, 4000, 1.0e-2
 NZ_RANGE = (60, 150)            # chemistry (= RT) layers
 NU_PTS_RANGE = (4000, 8000)     # native wavenumber points (native R ~ nu_pts/2.7)
@@ -753,7 +797,7 @@ CONDEN_CFG = {
 
 
 def canonical_params(params: dict) -> dict:
-    tp_mode = str(params.get("tp_mode", "guillot"))
+    tp_mode = str(params.get("tp_mode", _default_tp_mode(params)))
     if tp_mode not in TP_PARAM_NAMES:
         raise ValueError(
             f"unknown tp_mode {tp_mode!r} (choose from {list(TP_PARAM_NAMES)}). "
@@ -839,7 +883,14 @@ def canonical_params(params: dict) -> dict:
             "co_ratio",
             0.55 if tp_mode == "picaso_climate"
             else (0.50 if provider == "picaso" else CO_BASELINE))), 6),
-        "kzz_mode": str(params.get("kzz_mode", "const")),
+        # Kzz default follows the structure: a tabulated T-P that CARRIES a
+        # Kzz column supplies the mixing profile too (the shipped W39b table
+        # does), so the measured profile is used rather than a flat stand-in.
+        # An uploaded table with no Kzz column falls back to constant.
+        "kzz_mode": str(params.get(
+            "kzz_mode",
+            "file" if (tp_mode == "file" and tp_table is not None
+                       and tp_table["Kzz"] is not None) else "const")),
         "kzz_x": round(float(params.get("kzz_x", 1.0)), 4),
         "kzz_const": round(float(params.get("kzz_const", 1.0e9)), 1),
         # parametric Kzz profiles (v16): Pfunc (kzz_kmax = deep Kzz cm^2/s,
@@ -854,7 +905,14 @@ def canonical_params(params: dict) -> dict:
         # tables can never share an entry ("" outside file mode)
         "tp_file": tp_file,
         "tp_file_sha1": tp_file_sha1,
-        "Tirr": round(float(params.get("Tirr", 1560.0)), 2),
+        # Guillot T_irr default = sqrt(2) * T_eq of the reference planet
+        # (WASP-39b, T_eq = 1120 K -> 1583.9, rounded to the GUI's 20 K step
+        # grid), i.e. the f=0.25 whole-surface redistribution convention
+        # exojax's atmprof_Guillot uses. This MATCHES the value the GUI
+        # computes from T_eq; it read 1560 here and 1580 in the GUI until
+        # 2026-07-21, so an API caller relying on the default got a slightly
+        # different profile than the same "default" run from the app.
+        "Tirr": round(float(params.get("Tirr", 1580.0)), 2),
         "Tint": round(float(params.get("Tint", 100.0)), 2),
         "log_kappa": round(float(params.get("log_kappa", -2.3)), 3),
         "log_gamma": round(float(params.get("log_gamma", -1.0)), 3),

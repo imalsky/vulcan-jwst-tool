@@ -1,8 +1,13 @@
 """Pure-Python validation of forward.canonical_params (no chemistry stack).
 
 Covers the parameter-scope contract. The WASP-39b GCM special cases
-(tp_mode='baseline', kzz_mode='scale', has_gcm_baseline) are REMOVED: only
-explicit isothermal/Guillot profiles with constant Kzz exist. Condensation
+(tp_mode='baseline', kzz_mode='scale', has_gcm_baseline) are REMOVED, as is
+the globally isothermal profile: the structure is a Guillot analytic profile,
+an explicit tabulated table, or a PICASO climate solve, and no profile is ever
+silently substituted. On the reference target under the kinetics engine the
+DEFAULT is the shipped W39b evening-terminator table (T-P + its Kzz column);
+every other planet, and the equilibrium provider, default to Guillot +
+constant Kzz. Condensation
 (use_condense, v14) is a canonical parameter again, accepted as a
 DETECTION-ONLY forward option; canonical_params refuses it in combination
 with fisher_params under ANY jac_method (the pinned condensed reservoir is a
@@ -10,6 +15,8 @@ step-sequence-dependent transient, so neither AD nor FD rows through it are
 trustworthy), with photochemistry off (no certifiable steady state), and
 with molecular diffusion off (the growth term IS the moldiff coefficient).
 """
+import math
+
 import pytest
 
 from jwst_tool import forward, planets
@@ -73,10 +80,45 @@ def test_gcm_baseline_and_scale_are_removed():
     assert all("has_gcm_baseline" not in pd for pd in planets.PLANETS.values())
 
 
-def test_default_tp_mode_is_guillot():
-    # isothermal (and the older GCM baseline) were removed; Guillot is the
-    # default and every profile must be explicit
-    assert forward.canonical_params(dict(planet="wasp39b"))["tp_mode"] == "guillot"
+def test_default_structure_is_the_measured_w39b_table():
+    # 2026-07-21: on the reference target under the kinetics engine the
+    # default structure is the SHIPPED evening-terminator table (the W39b
+    # cfg's own atm_file), and its Kzz column supplies the mixing profile --
+    # not a hand-set analytic stand-in.
+    cp = forward.canonical_params(dict(planet="wasp39b"))
+    assert cp["tp_mode"] == "file"
+    assert cp["tp_file"] == forward.TP_FILE_SHIPPED
+    assert cp["tp_file_sha1"]                     # content-addressed
+    assert cp["kzz_mode"] == "file"
+    assert cp["kzz_const"] == 0.0                 # inert once tabulated
+
+
+def test_shipped_table_default_never_leaks_to_another_planet():
+    # the shipped table is WASP-39b's evening terminator: applying it to a
+    # different planet by DEFAULT would silently substitute the wrong
+    # structure. Every non-reference planet keeps the analytic default.
+    for key in planets.PLANETS:
+        if key == forward.REFERENCE_TP_FILE_PLANET:
+            continue
+        cp = forward.canonical_params(dict(planet=key))
+        assert cp["tp_mode"] == "guillot", key
+        assert cp["kzz_mode"] == "const", key
+    # ... and so does the equilibrium provider on the reference planet.
+    # (Checked on the pure default-resolver: a full canonical_params call
+    # under chem_provider="picaso" would demand the PICASO refdata tree.)
+    assert forward._default_tp_mode(
+        dict(planet="wasp39b", chem_provider="picaso")) == "guillot"
+    assert forward._default_tp_mode(dict(planet="wasp39b")) == "file"
+
+
+def test_guillot_default_tirr_matches_the_reference_teq():
+    # T_irr default = sqrt(2) * T_eq (the f=0.25 whole-surface convention
+    # exojax's atmprof_Guillot uses), on the GUI's 20 K step grid. The GUI
+    # computes this from T_eq; canonical_params must not disagree with it.
+    teq = planets.PLANETS[forward.REFERENCE_TP_FILE_PLANET]["teq_k"]
+    expect = round(teq * math.sqrt(2.0) / 10.0) * 10.0
+    cp = forward.canonical_params(dict(planet="wasp39b", tp_mode="guillot"))
+    assert cp["Tirr"] == expect == 1580.0
 
 
 def test_isothermal_is_removed():

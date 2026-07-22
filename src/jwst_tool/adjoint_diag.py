@@ -285,9 +285,13 @@ def run_adjoint(params: dict, species: str, log=print) -> Path:
     # --- scope audit FIRST: refuse on errors ---------------------------------
     # The audit's per-cell fixed-point defect is measured under ONE probe
     # step of length body_dt, and near-zero trace cells OSCILLATE under
-    # small probe steps (measured on W39b defaults 2026-07-15: max defect
-    # 0.65 at dt 1e6 falling to 0.023 at dt 3e7, on H2S/C cells at
-    # ymix ~ 1e-13 while the loss footprint stayed <= 9e-3 throughout).
+    # small probe steps (measured 2026-07-15 on the then-default W39b
+    # configuration -- isothermal 1100 K, constant Kzz 1e9; the structure
+    # default is now the tabulated table, so read these as illustrative
+    # magnitudes: max defect 0.65 at dt 1e6 falling to 0.023 at dt 3e7, on
+    # H2S/C cells at ymix ~ 1e-13 while the loss footprint stayed <= 9e-3
+    # throughout). Nothing below depends on the digits -- the scan refuses
+    # when no candidate passes, whatever the configuration.
     # So scan the upstream-sanctioned candidate probe steps and use the
     # first dt whose audit passes -- for BOTH the audit and the gradient
     # solves; if none passes, refuse. The scan trail is cached.
